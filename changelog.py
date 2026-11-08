@@ -237,6 +237,12 @@ RELEASES: List[Dict[str, Any]] = [
         "When the web page will not open, ./home_monitor.sh --report on the Proxmox host makes the same report with the end of the service log. It changes nothing.",
         "After an update, Settings, Updates no longer says you skipped the version you just installed.",
     ]},
+    {"id": 30, "date": "2026-11-08", "title": "Updates that are cut short", "items": [
+        "Fixed: an update could fail with the new version unable to start, because the web port was still held by connections the old version had just closed. The new version now takes the port as soon as the old one has stopped. While it waits, the monitor no longer restarts over and over, which kept the processor busy.",
+        "An update cut short by a restart (or a power cut) no longer leaves Settings, Updates waiting for ever with its buttons locked. When the monitor starts again it puts the app in one piece, records what happened in the update history and lets you try again.",
+        "When the new version was already in place but not yet checked, Undo stays open for two days to put the previous version and its data back.",
+        "The problem report from the Proxmox host also shows the updater's own log.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 

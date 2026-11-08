@@ -1132,6 +1132,7 @@ EnvironmentFile=-${KEY_DIR}/setup.env
 ExecStart=/usr/bin/python3 ${APP_DIR}/server.py
 Restart=on-failure
 RestartSec=5
+RestartSec=5
 # ping needs a raw socket; nothing else is granted.
 AmbientCapabilities=CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_RAW
@@ -1212,6 +1213,30 @@ NoNewPrivileges=yes
 LockPersonality=yes
 RestrictRealtime=yes
 UNIT
+
+# At boot, before the monitor starts: an update or undo that a restart cut short is closed (the app
+# folder put in one piece, the result recorded), so the page does not wait for it for ever. It runs
+# the updater from the app folder, or from the one beside it when the app folder is missing.
+cat > "$FILES/hm-update-recover.service" <<UNIT
+[Unit]
+Description=Close an update that a restart cut short
+After=local-fs.target
+Before=homelab-monitor.service hm-update.path
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /root/.hm-update-recover.sh ${APP_DIR} ${DATA_DIR}
+TimeoutStartSec=5min
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat > "$FILES/update-recover.sh" <<'EOF'
+#!/usr/bin/env bash
+# hm-update-recover.service: $1 the app folder, $2 the data folder.
+for d in "$1" "$1.old" "$1.rolledback"; do
+  if [[ -f "$d/updatectl.py" ]]; then exec /usr/bin/python3 "$d/updatectl.py" recover --data "$2"; fi
+done
+echo "No updatectl.py beside $1: nothing to recover with"
+EOF
 
 # Root SSH with a key, for containers made before ROOT_SSH_KEY or when it changes: the key is added
 # and password logins over SSH are switched off. Run by an upgrade or a restore when the key is set.
@@ -1801,6 +1826,7 @@ install_services() {
     cd / && rm -rf \$d /root/.hm-files.tgz
     systemctl daemon-reload
     systemctl enable --now hm-egress.service hm-egress-refresh.timer homelab-monitor.service homelab-monitor-backup.timer hm-site.path hm-backup-now.path hm-update.path
+    systemctl enable hm-update-recover.service
     $([[ "$TARGET" == container ]] && echo "systemctl enable hm-ingress.service && systemctl restart hm-ingress.service || echo 'The inbound firewall did not load (see journalctl -u hm-ingress)'")"
 }
 
@@ -1808,7 +1834,7 @@ install_services() {
 # folder for install.conf and layout (read by root, so the app's user cannot change them).
 files_into_place() {
   cat <<CMDS
-    install -m 0644 homelab-monitor.service hm-egress.service hm-egress-refresh.service hm-egress-refresh.timer hm-ingress.service homelab-monitor-backup.service homelab-monitor-backup.timer hm-site.path hm-site.service hm-backup-now.path hm-update.path hm-update.service /etc/systemd/system/
+    install -m 0644 homelab-monitor.service hm-egress.service hm-egress-refresh.service hm-egress-refresh.timer hm-ingress.service homelab-monitor-backup.service homelab-monitor-backup.timer hm-site.path hm-site.service hm-backup-now.path hm-update.path hm-update.service hm-update-recover.service /etc/systemd/system/
     install -d -m 0755 /etc/homelab-monitor-egress
     install -m 0644 egress-hosts /etc/homelab-monitor-egress/hosts
     install -m 0644 github-hosts /etc/homelab-monitor-egress/github-hosts
@@ -1819,6 +1845,7 @@ files_into_place() {
     install -m 0755 egress-refresh.sh /etc/homelab-monitor-egress/refresh.sh
     install -m 0700 backup.sh restore.sh update.sh reset-admin.sh setup-code.sh /root/
     install -m 0600 hm-look.sh /root/.hm-look.sh
+    install -m 0700 update-recover.sh /root/.hm-update-recover.sh
     if [ -f install.conf ]; then install -m 0640 -o root -g ${SERVICE_USER} install.conf ${INSTALL_DIR}/install.conf;
     elif [ -f ${KEY_DIR}/install.conf ] && [ ! -f ${INSTALL_DIR}/install.conf ]; then install -m 0640 -o root -g ${SERVICE_USER} ${KEY_DIR}/install.conf ${INSTALL_DIR}/install.conf; fi
     rm -f ${KEY_DIR}/install.conf ${KEY_DIR}/layout
@@ -1900,6 +1927,7 @@ install_helpers() {
     systemctl daemon-reload
     systemctl restart hm-egress.service
     systemctl enable --now hm-site.path hm-backup-now.path hm-update.path
+    systemctl enable hm-update-recover.service     # at boot only: an update from the app may be running now
     $([[ "$TARGET" == container ]] && echo "systemctl enable hm-ingress.service && systemctl restart hm-ingress.service || echo 'The inbound firewall did not load (see journalctl -u hm-ingress)'")
     if [ '$1' = yes ]; then systemctl start homelab-monitor; fi"
 }

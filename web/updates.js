@@ -114,6 +114,15 @@ function updateResultHtml(u) {
     </div>`;
   }
   const failedStep = UPDATE_STEPS.find(([id]) => (p.steps || {})[id] === "fail");
+  if (p.interrupted) {
+    return `<div class="update-result failed" role="status">
+    <svg class="update-cross" viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="24"/><path d="M18 18l16 16M34 18L18 34"/></svg>
+    <div><h4>The update to ${escapeHtml(p.to || "the new version")} was cut short</h4>
+      <p class="form-help">${failedStep ? `It stopped while ${escapeHtml(failedStep[1].toLowerCase())}. ` : ""}This monitor runs ${escapeHtml(u.current)} now. You can check for updates and try again; the history below has what was logged.</p>
+      ${p.error ? `<p class="update-error">${escapeHtml(p.error)}</p>` : ""}</div>
+    <button type="button" class="btn btn-small" data-update-action="dismiss">Dismiss</button>
+  </div>`;
+  }
   return `<div class="update-result failed" role="status">
     <svg class="update-cross" viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="24"/><path d="M18 18l16 16M34 18L18 34"/></svg>
     <div><h4>The update to ${escapeHtml(p.to)} did not go through</h4>

@@ -111,6 +111,18 @@ class InstallerTests(unittest.TestCase):
         for src in re.findall(r"python3 -c '([^']*)'", tpl):
             compile(src, "<installer python3 -c>", "exec")
 
+    def test_recovery_runs_at_boot_never_during_an_update(self):
+        """hm-update-recover is installed and enabled for boot, before the monitor; it is never started
+        while installing (an update from the app runs that very code)."""
+        tpl = read(os.path.join(ROOT, "deploy", "install-template.sh"))
+        unit = tpl.split('cat > "$FILES/hm-update-recover.service" <<UNIT')[1].split("\nUNIT\n")[0]
+        self.assertIn("Before=homelab-monitor.service hm-update.path", unit)
+        self.assertIn("WantedBy=multi-user.target", unit)
+        self.assertIn("hm-update-recover.service /etc/systemd/system/", tpl)
+        self.assertIn("install -m 0700 update-recover.sh /root/.hm-update-recover.sh", tpl)
+        self.assertIn("systemctl enable hm-update-recover.service", tpl)
+        self.assertNotRegex(tpl, r"(enable --now|start|restart)[^\n]*hm-update-recover")
+
     def test_settings_folder_made_before_use(self):
         """Upgrading an install from before 0.8.0: the folder exists before settings.env goes into it."""
         tpl = read(os.path.join(ROOT, "deploy", "install-template.sh"))

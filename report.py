@@ -217,6 +217,10 @@ def build(db: str, app_dir: str = HERE, install_dir: str = INSTALL_DIR, journal:
     last = _json(os.path.join(data_dir, "update.result.json")) or {}
     if last:
         add(f"Last update or undo: {_ago(last.get('time'))}, " + ("passed" if last.get("ok") else f"failed: {free(str(last.get('error'))[:300])}"))
+    prog = _json(os.path.join(data_dir, "update-progress.json")) or {}
+    if prog:
+        add(f"Last progress: {prog.get('from') or '?'} to {prog.get('to') or '?'}, {prog.get('state')} at step "
+            f"{prog.get('current') or '-'}, last written {_ago(prog.get('time'))}{', cut short by a restart' if prog.get('interrupted') else ''}")
     history = _json(os.path.join(install_dir, "update-history.json")) or []
     for h in history[:8] if isinstance(history, list) else []:
         if isinstance(h, dict):
@@ -246,6 +250,17 @@ def build(db: str, app_dir: str = HERE, install_dir: str = INSTALL_DIR, journal:
             out.extend(f"  {free(line)}" for line in (r.stdout or r.stderr).strip().splitlines()[-60:])
         except (OSError, subprocess.SubprocessError):
             add("The service log could not be read.")
+        for unit, label in (("hm-update", "The updater's log"), ("hm-update-recover", "Recovery at boot")):
+            try:
+                r = subprocess.run(["journalctl", "-u", unit, "-n", "40", "--no-pager", "-o", "short-iso"],
+                                   capture_output=True, text=True, timeout=20)
+                lines = [l for l in (r.stdout or "").strip().splitlines() if l and not l.startswith("-- No entries")]
+                if lines:
+                    add("")
+                    add(f"## {label}")
+                    out.extend(f"  {free(line)}" for line in lines[-40:])
+            except (OSError, subprocess.SubprocessError):
+                pass
 
     if conn is not None:
         conn.close()

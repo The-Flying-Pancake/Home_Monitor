@@ -275,6 +275,75 @@ class UpdateTests(unittest.TestCase):
         with self.assertRaises(updatectl.UpdateError):
             updatectl.record_cmd(argparse.Namespace(**dict(vars(ns), version_from="1; rm -rf /")))
 
+    # --- Cut short by a restart (updatectl.py recover, at boot) ---
+
+    def ask(self, action, when):
+        with open(os.path.join(self.data, "requests", action), "w") as f:
+            f.write(str(int(when)))
+
+    def progress(self, **kw):
+        self.write(os.path.join(self.data, "update-progress.json"), json.dumps(dict(
+            {"from": "0.8.0", "to": "9.9.9", "started": int(time.time()) - 60, "state": "running", "current": "replace",
+             "steps": {"download": "ok", "replace": "run", "health": "pending"}, "boot": "old-boot"}, **kw)))
+
+    def recover(self):
+        work = os.path.join(self.tmp, "root")
+        os.makedirs(work, exist_ok=True)
+        return updatectl.recover(argparse.Namespace(data=self.data), work_root=work), work
+
+    def test_recover_does_nothing_without_a_cut(self):
+        out, _ = self.recover()
+        self.assertEqual(out["action"], "nothing")
+        self.assertFalse(os.path.exists(os.path.join(self.data, "update.result.json")))
+        self.assertEqual(updatectl.read_history(), [])
+
+    def test_recover_puts_a_half_swapped_app_back(self):
+        # Cut between "app to app.old" and "app.new to app": no app folder at all.
+        shutil.rmtree(self.app)
+        self.write(os.path.join(self.app + ".old", "server.py"), 'APP_VERSION = "0.8.0"\n')
+        self.write(os.path.join(self.app + ".new", "server.py"), 'APP_VERSION = "9.9.9"\n')
+        self.ask("update-install", time.time() - 120)
+        self.progress()
+        out, work = self.recover()
+        self.assertFalse(out["ok"])
+        self.assertEqual(updatectl.installed_version(self.app), "0.8.0")
+        self.assertFalse(os.path.exists(self.app + ".new"))
+        self.assertIn("cut short", out["error"])
+        result = json.load(open(os.path.join(self.data, "update.result.json")))
+        self.assertTrue(result["interrupted"] and not result["ok"])
+        prog = json.load(open(os.path.join(self.data, "update-progress.json")))
+        self.assertEqual((prog["state"], prog["steps"]["replace"]), ("failed", "fail"))
+        self.assertFalse(updatectl.read_history()[0]["ok"])
+        self.assertEqual(self.recover()[0]["action"], "nothing")       # a second boot finds nothing to do
+
+    def test_recover_keeps_the_way_back_when_the_new_version_was_never_checked(self):
+        self.write(os.path.join(self.app, "server.py"), 'APP_VERSION = "9.9.9"\n')
+        self.write(os.path.join(self.app + ".old", "server.py"), 'APP_VERSION = "0.8.0"\n')
+        folder = os.path.join(self.data, "backups", "pre-update")
+        os.makedirs(folder)
+        open(os.path.join(folder, "monitor-backup-20261109-100000.tar.gz"), "w").close()
+        self.ask("update-install", time.time() - 120)
+        self.progress(current="health", steps={"health": "run"})
+        work = os.path.join(self.tmp, "root", "hm-update-abc")
+        self.write(os.path.join(work, "install.log"), "===== health =====\nwaiting\n")
+        out, root = self.recover()
+        self.assertIn("Undo below puts 0.8.0 back", out["error"])
+        o = updatectl.rollback_options(self.data)
+        self.assertTrue(o["all"])
+        self.assertFalse(o["code"])                                     # the data may not suit 0.8.0: only the full way back
+        self.assertFalse(os.path.exists(work))                          # the cut-short download is cleared
+        log = open(os.path.join(self.inst, "update-logs", f"{updatectl.read_history()[0]['id']}.log"), encoding="utf-8").read()
+        self.assertIn("waiting", log)
+
+    def test_recover_finishes_a_cut_short_undo(self):
+        shutil.rmtree(self.app)
+        self.write(os.path.join(self.app + ".rolledback", "server.py"), 'APP_VERSION = "9.9.9"\n')
+        self.ask("rollback-all", time.time() - 120)
+        out, _ = self.recover()
+        self.assertEqual(out["action"], "rollback-all")
+        self.assertEqual(updatectl.installed_version(self.app), "9.9.9")
+        self.assertIn("undo was cut short", out["error"])
+
     def test_requests_run_only_what_was_asked(self):
         self.fake_release()
         with open(os.path.join(self.data, "requests", "update-check"), "w") as f:

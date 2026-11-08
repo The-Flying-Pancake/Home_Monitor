@@ -898,9 +898,23 @@ def update_status() -> Dict[str, Any]:
                 "to": state.get("from_version"), "expires": int(float(state["time"]) + UPDATE_KEEP_SECONDS)}
     installed = os.path.isdir(os.path.join(data_dir, "requests")) and os.path.exists("/etc/systemd/system/hm-update.path")
     skipped = database.get_all_settings().get(UPDATE_SKIP_KEY) or ""
+    progress = update_progress(data_dir, pending_work)
+    # An update cut short by a restart (or one that stopped answering for hours) never writes its result:
+    # without this the page would show it running for ever and keep Update and Undo locked. At boot,
+    # updatectl.py recover records it properly; until then it is shown as cut short.
+    if progress and progress["state"] == "running" and (
+            (progress["boot"] and progress["boot"] != _boot_id()) or time.time() - progress["updated"] > 2 * 3600):
+        progress.update(state="failed", interrupted=True, finished=progress["updated"] or int(time.time()),
+                        error="The update was cut short: the monitor's machine restarted (or the update stopped) "
+                              "before it finished. Settings, System shows the version that runs now.")
+        progress["steps"] = {s: ("fail" if v == "run" else v) for s, v in progress["steps"].items()}
+        pending_work = False
+    elif pending_work and not progress and time.time() - max(_request_time(data_dir, k) for k in
+                                                              ("update-install", "rollback-code", "rollback-all")) > 2 * 3600:
+        pending_work = False       # asked hours ago and never answered: the request is not waited for
     return {"installed": installed, "current": APP_VERSION, "check": check, "last": last,
             "pending": {"check": pending_check, "work": pending_work}, "rollback": back,
-            "progress": update_progress(data_dir, pending_work), "skipped": skipped,
+            "progress": progress, "skipped": skipped,
             "waiting": update_waiting(check, skipped),
             "repository": "https://github.com/The-Flying-Pancake/Home_Monitor"}
 
@@ -937,15 +951,22 @@ def update_progress(data_dir: str, running: bool) -> Optional[Dict[str, Any]]:
     if not isinstance(raw, dict):
         return None
     ended = int(raw.get("finished") or 0)
-    if not running and raw.get("state") == "running" and time.time() - int(raw.get("time") or 0) > 3600:
-        return None      # left over from an update that never finished (the box restarted)
     if ended and time.time() - ended > 600 and not running:
         return None
     steps = raw.get("steps") if isinstance(raw.get("steps"), dict) else {}
     return {"state": str(raw.get("state") or "")[:10], "from": str(raw.get("from") or "")[:20], "to": str(raw.get("to") or "")[:20],
             "started": int(raw.get("started") or 0), "finished": ended, "current": str(raw.get("current") or "")[:20],
-            "error": str(raw.get("error") or "")[:2000],
+            "error": str(raw.get("error") or "")[:2000], "interrupted": bool(raw.get("interrupted")),
+            "boot": str(raw.get("boot") or "")[:64], "updated": int(raw.get("time") or 0),
             "steps": {s: str(steps.get(s) or "pending")[:10] for s in UPDATE_STEPS}}
+
+
+def _boot_id() -> str:
+    try:
+        with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as f:
+            return f.read().strip()[:64]
+    except OSError:
+        return ""
 
 
 def update_history() -> List[Dict[str, Any]]:
@@ -5826,7 +5847,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "0.11.0"
+APP_VERSION = "0.11.1"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:
@@ -5868,7 +5889,11 @@ class ThreadingServer(socketserver.ThreadingTCPServer):
     from this machine (health checks, the installer, the shell scripts) is served as before."""
 
     daemon_threads = True
-    allow_reuse_address = False
+    # Linux: lets a restarted monitor take its port while connections the previous one closed are still
+    # winding down (TIME_WAIT, about a minute). It never lets a second program take a port that is in
+    # use. Without it, an update (the browser polling all the while) could not start the new version.
+    # Windows: off, because there it would let two programs share the port.
+    allow_reuse_address = os.name != "nt"
     HANDSHAKE_SECONDS = 10
 
     def finish_request(self, request, client_address) -> None:
@@ -5981,10 +6006,28 @@ def initialise() -> None:
     database.mark_schema()
 
 
+def open_listener(tries: int = 30, wait: float = 2.0) -> "ThreadingServer":
+    """The web port, opened before anything else starts. Still taken (a previous copy shutting down):
+    wait and try again for a minute, rather than fail and be restarted over and over."""
+    import errno
+    for attempt in range(tries):
+        try:
+            return ThreadingServer((LISTEN_HOST, LISTEN_PORT), ApiRequestHandler)
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE or attempt == tries - 1:
+                raise
+            if attempt == 0:
+                log.warning("Port %s is still in use (the previous copy is stopping?): waiting for it", LISTEN_PORT)
+            time.sleep(wait)
+    raise RuntimeError("unreachable")
+
+
 def start_server() -> None:
     """Initializes the database and starts the scheduler and HTTP server."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     initialise()
+    # The port first: when it cannot be opened, nothing else has started (no polling, no messages).
+    httpd = open_listener()
     NOTIFIER.start()
     BOT.start()
 
@@ -5993,7 +6036,6 @@ def start_server() -> None:
     threading.Thread(target=_auto_update_loop, daemon=True, name="update-check").start()
     logging.getLogger().addHandler(RECENT_LOG)
 
-    httpd = ThreadingServer((LISTEN_HOST, LISTEN_PORT), ApiRequestHandler)
     print(f"Server listening on {'https' if tls.SERVER.context else 'http'}://{LISTEN_HOST}:{LISTEN_PORT}")
     try:
         httpd.serve_forever()

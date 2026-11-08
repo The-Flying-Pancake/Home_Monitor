@@ -15,6 +15,13 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 0.11.1: Release 30, Updates that are cut short (2026-11-08)
+
+- Fixed: an update could fail with the new version unable to start, because the web port was still held by connections the old version had just closed. The new version now takes the port as soon as the old one has stopped. While it waits, the monitor no longer restarts over and over, which kept the processor busy.
+- An update cut short by a restart (or a power cut) no longer leaves Settings, Updates waiting for ever with its buttons locked. When the monitor starts again it puts the app in one piece, records what happened in the update history and lets you try again.
+- When the new version was already in place but not yet checked, Undo stays open for two days to put the previous version and its data back.
+- The problem report from the Proxmox host also shows the updater's own log.
+
 ### 0.11.0: Release 29, Report a problem (2026-11-08)
 
 - Settings, System, Report a problem makes a short report to attach to an issue on the project's GitHub page: the version, how the monitor was installed, device counts, recent updates and recent warnings.

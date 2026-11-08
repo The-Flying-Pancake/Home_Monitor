@@ -295,6 +295,35 @@ class UserApiTests(unittest.TestCase):
         finally:
             os.remove(result)
 
+    def test_update_cut_short_by_a_restart_unlocks_the_page(self):
+        """A progress file from another boot (or silent for hours) means the update was cut short: the
+        page shows that and the buttons are not locked for ever."""
+        import json
+        import os
+        from unittest import mock
+        data_dir = os.path.dirname(os.path.abspath(database.DB_FILE))
+        req = os.path.join(data_dir, "requests")
+        os.makedirs(req, exist_ok=True)
+        files = [os.path.join(data_dir, "update-progress.json"), os.path.join(req, "update-install")]
+        with open(files[1], "w") as f:
+            f.write(str(int(time.time()) - 60))
+        try:
+            for boot, age, cut in (("an-earlier-boot", 30, True), ("this-boot", 30, False), ("this-boot", 3 * 3600, True)):
+                with open(files[0], "w", encoding="utf-8") as f:
+                    json.dump({"state": "running", "to": "9.9.9", "current": "health", "steps": {"health": "run"},
+                               "boot": boot, "time": int(time.time()) - age}, f)
+                with mock.patch.object(server, "_boot_id", return_value="this-boot"):
+                    u = server.update_status()
+                self.assertEqual(u["progress"]["state"] == "failed", cut, (boot, age))
+                self.assertEqual(u["pending"]["work"], not cut, (boot, age))
+                if cut:
+                    self.assertTrue(u["progress"]["interrupted"])
+                    self.assertEqual(u["progress"]["steps"]["health"], "fail")
+        finally:
+            for p in files:
+                if os.path.exists(p):
+                    os.remove(p)
+
     def test_demo_routes(self):
         """Settings, Demo data: hidden (off) on a monitor without demo data; removing is for administrators."""
         self.assertEqual(request("GET", "/api/system")[1]["demo"], {"on": False, "devices": 0})

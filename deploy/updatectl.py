@@ -6,6 +6,7 @@
   updatectl.py rollback --data DIR --mode code|all
   updatectl.py prune    --data DIR      pre-update backups older than two days are removed
   updatectl.py record   --data DIR --kind upgrade --ok 1|0 [--from V --to V --why W --log FILE --source host]
+  updatectl.py recover  --data DIR      at boot: close an update or undo that a restart cut short
                                         add an upgrade run from the Proxmox host to the update history
 
 How an update is trusted: a release carries home_monitor.sh and home_monitor.sh.sig. The signature is checked
@@ -297,13 +298,22 @@ def _stream(cmd, on_line=None, **kw) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(cmd, proc.returncode, "".join(lines), "")
 
 
+def boot_id() -> str:
+    """Changes at every start of the machine: a progress file from another boot was cut short."""
+    try:
+        with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as f:
+            return f.read().strip()[:64]
+    except OSError:
+        return ""
+
+
 class Progress:
     """DATA/update-progress.json: which step an update is on, for the app's progress screen. The app
     is down for part of it (while it restarts); the file is there for when it is back."""
 
     def __init__(self, data: str, frm: str, to: str):
         self.data, self.state = data, {"from": frm, "to": to, "started": int(time.time()), "state": "running",
-                                       "steps": {s: "pending" for s in STEPS}, "current": ""}
+                                       "steps": {s: "pending" for s in STEPS}, "current": "", "boot": boot_id()}
 
     def step(self, sid: str, status: str = "run") -> None:
         if sid not in STEPS:
@@ -589,6 +599,85 @@ def _result_time(data: str, kind: str) -> int:
         return 0
 
 
+def _read_json(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            out = json.load(f)
+        return out if isinstance(out, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def recover(args, work_root: str = "/root") -> dict:
+    """Run at boot, before the monitor starts (hm-update-recover.service). An update or undo that a
+    restart (or a crash) cut short left no result, so the app would show it running for ever and keep
+    its buttons locked. This puts the app folder in one piece, records what happened and, when the
+    new version is in place but was never checked, keeps the way back open."""
+    data = args.data
+    progress = _read_json(os.path.join(data, "update-progress.json"))
+    result_time = _result_time(data, "update")
+    asked = [a for a in ACTIONS[1:] if _request_time(data, a) > result_time]
+    if progress.get("state") != "running" and not asked:
+        return {"ok": True, "action": "nothing"}
+    notes = []
+    old, new, back = APP_DIR + ".old", APP_DIR + ".new", APP_DIR + ".rolledback"
+    if not os.path.isdir(APP_DIR):
+        for spare in (back, old):        # an undo cut short first, then an update cut short mid-swap
+            if os.path.isdir(spare):
+                os.rename(spare, APP_DIR)
+                notes.append(f"The app folder was put back from {os.path.basename(spare)}.")
+                break
+    if os.path.isdir(new):
+        shutil.rmtree(new, ignore_errors=True)
+    if os.path.isdir(back) and os.path.isdir(APP_DIR):
+        shutil.rmtree(back, ignore_errors=True)
+    running = installed_version()
+    frm, to = str(progress.get("from") or ""), str(progress.get("to") or "")
+    action = "update-install" if progress.get("state") == "running" or "update-install" in asked else (asked[0] if asked else "update-install")
+    if action == "update-install":
+        error = (f"The update to {to or 'the new version'} was cut short: the monitor's machine restarted before it "
+                 f"finished. {running or 'No version'} is installed now.")
+        if to and running == to and installed_version(old) == frm:
+            backup = _newest(os.path.join(data, "backups", "pre-update"), since=float(progress.get("started") or 0) - 5)
+            if backup:
+                # The new version is in place but was never checked: the way back stays open for two days.
+                _write_state({"from_version": frm, "to_version": to, "time": int(time.time()), "backup": backup,
+                              "schema_same": False, "interrupted": True})
+                error += f" It was not checked before the restart: if anything is wrong, Undo below puts {frm} back."
+    else:
+        error = f"The undo was cut short by a restart. {running or 'No version'} is installed now."
+    if notes:
+        error += " " + " ".join(notes)
+    steps = progress.get("steps") if isinstance(progress.get("steps"), dict) else {}
+    for s, st in steps.items():
+        if st == "run":
+            steps[s] = "fail"
+    if progress:
+        try:
+            write_json(data, "update-progress.json", dict(progress, steps=steps, state="failed", error=error,
+                                                            finished=int(time.time()), interrupted=True))
+        except OSError:
+            pass
+    log = ""
+    try:
+        works = sorted((os.path.join(work_root, n) for n in os.listdir(work_root) if n.startswith("hm-update-")),
+                       key=os.path.getmtime)
+    except OSError:
+        works = []
+    if works:
+        try:
+            with open(os.path.join(works[-1], "install.log"), encoding="utf-8", errors="replace") as f:
+                log = f.read(LOG_LIMIT * 4)
+        except OSError:
+            pass
+    for w in works:
+        shutil.rmtree(w, ignore_errors=True)
+    record({"kind": "update" if action == "update-install" else action, "source": "app", "from": frm, "to": to,
+            "ok": False, "error": error}, log)
+    write_result(data, "update", {"ok": False, "action": action, "error": error, "interrupted": True})
+    return {"ok": False, "action": action, "error": error}
+
+
 def requests(args) -> None:
     """Every action the app asked for since its last result, in a fixed order. One update at a time."""
     prune(args.data)
@@ -613,7 +702,7 @@ def requests(args) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("requests", "check", "install", "prune", "rollback", "record"):
+    for name in ("requests", "check", "install", "prune", "rollback", "record", "recover"):
         p = sub.add_parser(name)
         p.add_argument("--data", required=True)
         if name == "rollback":
@@ -638,6 +727,8 @@ def main() -> None:
             print(json.dumps(rollback(args), indent=2))
         elif args.cmd == "record":
             print(json.dumps(record_cmd(args), indent=2))
+        elif args.cmd == "recover":
+            print(json.dumps(recover(args), indent=2))
         else:
             for p in prune(args.data):
                 print(f"Removed {p}")
