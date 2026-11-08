@@ -1,0 +1,483 @@
+<!-- The usage guide: loaded into the Guide page (guide.js). Each <section> is one topic; its id is the link (#/guide/<id>). -->
+<section id="start" data-title="Getting started">
+  <h2>Getting started</h2>
+  <p>Homelab Monitor watches the things on your network: whether they answer, how fast, what they report over SNMP and whether a port or web page responds. It keeps history, raises problems, tells you on Telegram and can run commands on your hosts when something needs doing.</p>
+  <h3>Installing</h3>
+  <ol>
+    <li>Copy <code>infra.sh</code> to the Proxmox host. Change the settings block at the top if you need to (container ID, storage, address); keep the file's Linux line endings or run it as <code>bash infra.sh</code> so it can repair them itself.</li>
+    <li>On the Proxmox host, as root: <code>bash infra.sh</code>. Without options it shows a menu: install, upgrade, check, restore, rebuild or preview. Type the number, then <em>yes</em> to go ahead. Options such as <code>--upgrade</code> skip the menu. A first install asks in a framed box for the container ID (a free one is offered), its name and its address: <em>dhcp</em> or a fixed one such as 192.168.1.51/24 with its gateway. Enter keeps the answer shown, which comes from the settings block. The container gets a 20 GB disk. It then creates the container, installs everything and prints the address and a <strong>setup code</strong>. Run without a person at the terminal (or with <code>HM_NO_ASK=1</code>) it asks nothing and uses the settings block. The new container gets the Proxmox tag <code>homelab-monitor</code> and a note saying so: that tag is how upgrades find it.</li>
+    <li>Open the address in a browser, create your account (the setup code proves you are the one who installed it) and follow the setup guide.</li>
+  </ol>
+  <p><strong>On a phone:</strong> the menu sits behind the menu button at the top left; tap beside it to close it. Tables too wide for the screen scroll sideways inside their panel; windows fill the screen. The Devices list shows status, name, address and ping; tap a device for the rest. Arranging dashboards, the map and workflows is easier on a larger screen.</p>
+  <p><strong>In a VM or without Proxmox:</strong> copy <code>infra.sh</code> to the machine (Ubuntu 22.04 or newer, Debian 12 or newer; best a VM of its own) and run <code>sudo bash infra.sh --local</code>. It skips the container steps and installs everything on that machine. The outbound firewall then covers the whole machine (package sources and Telegram only), so set <code>NTP_SERVER</code> at the top to a time server on your network (your router, say) unless the machine already uses one. Your logins and SSH settings are left alone. Upgrade later with <code>sudo bash infra.sh --local --upgrade</code>; <code>--rebuild</code> does not apply.</p>
+  <p>Lost the setup code before creating the account? On the container (or the <code>--local</code> machine), <code>/root/setup-code.sh</code> makes a new one. It refuses once an account exists.</p>
+  <p><strong>Trying it without real devices:</strong> demo mode fills the monitor with sixteen made-up devices and a week of believable history. Start it with the environment variable <code>MONITOR_DEMO=1</code> and run <code>demo.py seed</code> once against an empty database (the project's README has the exact commands). Only addresses in the documentation ranges (192.0.2.x, 198.51.100.x and 203.0.113.x) are simulated; anything else is polled for real.</p>
+  <h3>The setup guide</h3>
+  <p>It runs once, on a fresh install. The rest of the app stays locked until it is applied. Every step can be skipped and changed later in Settings.</p>
+  <ul>
+    <li><strong>Network scan</strong>: pings every address in your subnets and asks each one over SNMP what it is.</li>
+    <li><strong>Devices</strong>: tick what to monitor. Each device can be <em>Ping only</em> or use an SNMP template.</li>
+    <li><strong>Services</strong>: looks for open ports (web pages, SSH, file shares, media servers) on the devices you ticked; each port you tick becomes a port check.</li>
+    <li><strong>Monitoring</strong>: how often things are checked and how long history is kept.</li>
+    <li><strong>SSH, Syncthing, NFS, Telegram</strong>: optional extras. Telegram has its own topic below; Syncthing and NFS are about backups; SSH credentials are under Automation.</li>
+    <li><strong>Review</strong>: what will happen, in plain words; your password confirms it.</li>
+  </ul>
+  <h3>Finding your way around</h3>
+  <ul>
+    <li>The menu on the left lists the pages. Proxmox, Wi-Fi (from UniFi) and Pi-hole appear once they are connected in Settings. Inventory is hidden from users limited to some devices.</li>
+    <li><strong>Settings</strong> has a menu of its own: it slides in when you open Settings. <em>Back</em> slides the main menu in again and returns you to where you were.</li>
+    <li>After an upgrade, your next login shows what changed. <em>What's changed</em> on this Guide page shows the whole list again.</li>
+  </ul>
+  <h3>Version numbers</h3>
+  <p>Settings, System shows the version the monitor runs (for example 0.4.0). The installer and every backup record it too. The middle number goes up for new features or a change to the database; an upgrade then brings your data up to date. The last number goes up for fixes and small changes to what is already there.</p>
+</section>
+
+<section id="adding" data-title="Adding things to monitor">
+  <h2>Adding things to monitor</h2>
+  <p>Devices page, <strong>+ Add Target</strong>. First choose what kind of thing it is, then whether you know its address or want to scan for it.</p>
+  <table>
+    <tr><th>Kind</th><th>What you get</th><th>Needs</th></tr>
+    <tr><td><strong>Ping</strong></td><td>Up or down, response time, availability, the unreachable alert</td><td>Only an address. Good for phones, TVs, cameras, smart plugs, anything without SNMP</td></tr>
+    <tr><td><strong>Device statistics (SNMP)</strong></td><td>Everything above, plus interfaces and traffic, CPU, memory, storage, temperatures, processes and more, depending on the template</td><td>SNMP running on the device (v2c, with a community string)</td></tr>
+    <tr><td><strong>Service</strong></td><td>A TCP port that must accept a connection or a web page that must answer with the right status (and optionally contain a word)</td><td>The port or the page address</td></tr>
+  </table>
+  <h3>One address</h3>
+  <p>Fill in the address and press <strong>Test</strong> before adding: Test ping, Test &amp; auto-detect (which also picks the SNMP template) or Test connection. Something that is off right now can still be added: tick <em>Add it even if it does not answer yet</em>.</p>
+  <h3>Scanning the network</h3>
+  <ul>
+    <li><strong>Ping or SNMP</strong>: every address in the subnets is pinged and asked over SNMP what it is. For each host found, <em>Monitor as</em> offers Ping only or an SNMP template; hosts without SNMP start as Ping only.</li>
+    <li><strong>Service</strong>: looks for open TCP ports. <em>Common services</em> tries about 80 well-known ports and takes seconds; <em>Choose ports</em> takes lists and ranges such as <code>22,80,8000-8100</code>; <em>All 65,535 ports</em> tries every port.</li>
+  </ul>
+  <p>A full scan takes a while: about a minute per host on a quiet network, longer for hosts with a firewall. It first finds which hosts are up, then scans only those. Open ports appear as they are found. The bar shows how far it is and roughly how long is left. <strong>Stop</strong> keeps everything found so far.</p>
+  <p>Scans only accept private ranges (10.x, 172.16 to 31.x, 192.168.x), up to 1024 addresses at a time.</p>
+</section>
+
+<section id="devices" data-title="The Devices page">
+  <h2>The Devices page</h2>
+  <p>Every device, grouped (see <a href="#/guide/groups">Groups and tags</a>), with status, response time, CPU, memory, ports and when it was last seen. The tiles at the top filter the list: online, offline, with problems, wireless clients.</p>
+  <ul>
+    <li><strong>Group and tag filters</strong> above the list show one group or one tag. Untick <em>Group them</em> for one flat list.</li>
+    <li><strong>+ tag</strong> beside each name opens the tag manager for that device. When it has tags, a small bubble shows how many; hover over it to see them. See <a href="#/guide/groups">Groups and tags</a>.</li>
+    <li><strong>Tick boxes</strong> next to the names select devices: then <em>Add tags</em>, <em>Remove tags</em> or <em>Delete selected</em> act on all of them.</li>
+    <li><strong>Poll</strong> checks one device now; <strong>Poll all</strong> every device.</li>
+    <li><strong>Current problems</strong> above the list shows what is wrong now; <em>Acknowledge</em> marks one as seen (it stays until it is fixed). A <em>Device restarted</em> notice leaves this list after a minute.</li>
+    <li>A small mark next to a status shows the device's worst open problem (<strong>!</strong>) or something that happened in the last half hour, such as a restart (<strong>i</strong>). Hover over it for what; click it for the device's events.</li>
+  </ul>
+</section>
+
+<section id="device" data-title="A device's page">
+  <h2>A device's page</h2>
+  <p>Click a device's name. Tabs appear only when the device has data for them: Overview, Ports, Neighbours, Wireless, Storage, Health, Processes, Software, Graphs, DNS, Custom values, Latest Data and Events.</p>
+  <p>The buttons at the top: <strong>Poll now</strong> checks it at once, <strong>LIVE</strong> turns live mode on or off, <strong>Host actions</strong> and <strong>Fix SNMP</strong> appear for Linux hosts, <strong>Maintenance</strong> keeps its messages quiet for a while (see <a href="#/guide/maintenance">Maintenance windows</a>), <strong>Alert rules</strong> opens this device's own rules, then <strong>Edit device</strong> and <strong>Delete</strong>. Its open problems are listed under the title; <em>Device restarted</em> stays there for the first hour after a restart.</p>
+  <ul>
+    <li><strong>Overview</strong>: the headline figures, availability (see <a href="#/guide/availability">Availability</a>), system details, recent events and a few graphs. <em>Choose graphs</em> picks which graphs (up to 12) and their order is kept; <em>Use the default</em> goes back to the usual set. Everyone sees the same Overview for a device.</li>
+    <li><strong>Graphs</strong>: pick the range at the top. Drag across a graph to zoom in, <em>Reset zoom</em> to go back, <em>Enlarge</em> for a big view with its own range and a comparison with the previous period. Hover for the exact readings. <em>Add to overview</em> on a graph puts it on the Overview (<em>On overview</em> takes it off again). On a graph with more than one line (download and upload, for example) click a name under it to hide or show that line; the scale and the readout follow. The enlarged view starts with the same choice. A busy graph is drawn as a smooth average with a faint band up to the highest reading, so spikes stay visible.</li>
+    <li><strong>Live</strong>: while a device page is open its figures refresh every few seconds; nothing extra is stored.</li>
+    <li><strong>Custom values</strong>: SNMP values the device's template does not read (on any device polled over SNMP). <em>Browse</em> lists what the device answers, starting with its vendor's own values; <em>Use</em> on a row (or <em>+ Add by OID</em>) makes it a value that is polled for this device or every device on its template. Each number gets a graph here and on the Graphs tab, can go on the Overview, can open a problem when it crosses a threshold and can start a workflow (Automation, <em>A measurement goes above or below a value</em>, where it is listed by the name you gave it).</li>
+    <li><strong>Latest Data</strong>: every value as last read.</li>
+  </ul>
+  <h3>Edit device</h3>
+  <p>The window has two columns:</p>
+  <ul>
+    <li><strong>The device</strong>: its name; for a service the check (TCP port or web page) and the address or port; its group; its tags, shown as coloured labels, with <em>Change tags</em> to open the tag manager.</li>
+    <li><strong>How it is watched</strong>: the template and how often it is pinged. For a device read over SNMP, a box holds the community, the port and how often it is read. SSH for host actions and workflows is not set here: it uses a stored credential (Automation, Credentials).</li>
+  </ul>
+  <p>Below them, <strong>Place on the map and details</strong> holds the device it is connected to (its uplink, for the map), the port on that uplink and corrected details (location, model) that replace what the device reports.</p>
+  <h3>Fix SNMP (Linux hosts)</h3>
+  <p>Many Linux hosts only show basic system information over SNMP. <strong>Fix SNMP</strong> logs in over SSH, shows you the new <code>/etc/snmp/snmpd.conf</code> before anything is written, keeps a dated backup, restarts snmpd and checks from the monitor that interfaces, CPU, memory and storage now answer. If they do not, the backup is put back. It needs a stored credential (root or a user with passwordless sudo) and the host's SSH key approved; <em>Copy as commands</em> gives the same steps to paste by hand.</p>
+  <p>When the SSH login itself fails (refused, no answer or nothing listening), <strong>Copy console commands</strong> appears beside Preview changes. It copies one line to paste into the host's root shell (on Proxmox: the guest's <em>Console</em>). That line installs SSH if it is missing, lets the monitor's address log in with a password or a key (root included, from that address only), adds the credential's public key when it has one, checks the new SSH settings before using them and restarts SSH. It sets no password: if the account has none yet, it tells you to run <code>passwd</code>. Then approve the host key if asked and press Preview changes again. Host actions offer the same button after a failed login.</p>
+  <p>The new file allows only this monitor's address (and the host itself). Run it from the monitor that will poll the host.</p>
+</section>
+
+<section id="groups" data-title="Groups and tags">
+  <h2>Groups and tags</h2>
+  <p><strong>Groups</strong> decide where a device is listed. Every device is in exactly one: by default the one its template suggests (a switch template puts a device in Switches) or the one chosen under <em>Group</em> in Edit device.</p>
+  <p><strong>Tags</strong> are labels for whatever cuts across groups: a room, an owner, how critical something is. A device can have up to 20.</p>
+  <h3>The tag manager</h3>
+  <p>On the Devices page, <strong>+ tag</strong> beside a device's name shows a bubble with the number of tags it has; hover over it to see them. Click it to open the tag manager:</p>
+  <ul>
+    <li><strong>Applied</strong>: the tags on the device. Click one to take it off.</li>
+    <li><strong>Available</strong>: the other tags. Click one to add it.</li>
+    <li>The box below makes a new tag: type it and press <em>Add</em>. New tags join the list in Settings, Groups and tags, where they get a colour and a description. <em>Manage tags</em> goes there.</li>
+  </ul>
+  <p>Press <em>Save tags</em> to keep the changes. The same window opens from <em>Change tags</em> in Edit device; there the tags are saved with the device when you press <em>Save changes</em>. To tag several devices at once, tick them and press <em>Add tags</em> or <em>Remove tags</em>: put the tags under Applied and confirm. <em>Remove tags</em> offers only the tags those devices have.</p>
+  <h3>Settings, Groups and tags</h3>
+  <ul>
+    <li>Add groups of your own, rename any group (built-in ones too) and put them in the order you want lists to use. Deleting one of your groups sends its devices back to the group their template suggests.</li>
+    <li>Give each tag a colour and a description. Put tags in the order you want. Renaming a tag renames it on every device and in its alert rules; deleting it removes it from both.</li>
+  </ul>
+  <h3>Where they are used</h3>
+  <ul>
+    <li>Filters on the Devices, Availability and Events pages.</li>
+    <li>Dashboard tiles: adding a tile that can be narrowed asks which devices it covers (all of them, a group or a tag); the list in the tile's header changes it later while you edit the dashboard.</li>
+    <li>Alert rules: every tag can have its own rules (see <a href="#/guide/alerts">Alerts and problems</a>).</li>
+    <li>Maintenance windows for a group or a tag. Your own Telegram commands can also cover the devices of a group or a tag.</li>
+  </ul>
+</section>
+
+<section id="dashboard" data-title="The dashboard">
+  <h2>The dashboard</h2>
+  <p>The first page: tiles for status, problems, availability, the internet connection, busy ports, wireless, device load and recent events, plus graph tiles for any device graph you choose. Click a tile's figures to open the data behind them.</p>
+  <p><strong>Active problems</strong> lists what is wrong now. A <em>Device restarted</em> notice (info) leaves it after a minute; warnings and worse stay until they are fixed. The restart stays on the device's own page for the first hour.</p>
+  <h3>Several dashboards</h3>
+  <ul>
+    <li><strong>+ Add dashboard</strong> beside the title opens a window: give the dashboard a name, then pick <em>Blank</em> or one of 20 ready-made dashboards. Each card lists the tiles it brings.</li>
+    <li>The ready-made ones: Overview, Problems first, Wall screen, Morning check, Outage, Minimal, Network, Internet, Wi-Fi, Proxmox, Servers, Storage and NAS, DNS and Pi-hole, Automation, Maintenance, New and unknown devices, Capacity, Websites and services, Homelab at a glance and Power and printers.</li>
+    <li>Once there are two or more, a list beside the title switches between them. Your browser remembers the one you looked at last and opens it next time.</li>
+    <li>Dashboards are shared: every user sees the same ones. A change is saved for everyone.</li>
+  </ul>
+  <h3>Changing a dashboard</h3>
+  <p>Press <strong>Edit dashboard</strong>. While editing, the bar at the top has:</p>
+  <ul>
+    <li>The grid width (2 to 12 columns) and <em>+ Add tile</em>.</li>
+    <li><em>Rename</em> for the dashboard's name.</li>
+    <li><em>Reset to default</em>, which puts back the standard Overview tiles.</li>
+    <li><em>Delete</em>, shown only when there are two or more dashboards. The others stay.</li>
+  </ul>
+  <p>Each tile then shows its own tools: <em>Rename</em> gives it a title of your own (leave it empty for the standard name), the arrows move it earlier or later, <em>−</em> and <em>+</em> make it narrower or wider and <em>×</em> removes it. You can also drag a tile by its header to move it and by its bottom-right corner to resize it. Graph tiles have <em>Configure</em> (device, graph, range, comparison). Press <strong>Done</strong> to finish.</p>
+  <h3>Tiles</h3>
+  <ul>
+    <li><strong>Status summary</strong>, <strong>Active problems</strong>, <strong>Device availability</strong>, <strong>Internet (WAN)</strong>, <strong>Busiest ports</strong>, <strong>Wireless</strong>, <strong>Device load</strong>, <strong>Recent events</strong> and <strong>Graph</strong>.</li>
+    <li><strong>Offline now</strong>: the devices that do not answer.</li>
+    <li><strong>Proxmox guests</strong>, <strong>Pi-hole</strong> and <strong>Disks filling up</strong>: figures from Proxmox, Pi-hole and the storage forecasts.</li>
+    <li><strong>Host actions</strong> and <strong>Workflow runs</strong>: what ran lately.</li>
+    <li><strong>Maintenance windows</strong> and <strong>New devices</strong> (from the Inventory).</li>
+    <li><strong>Note</strong>: plain text of your own, such as who to call or where the spare cables are. <em>Edit text</em> on the tile writes it.</li>
+  </ul>
+  <p>Status summary, Active problems, Device availability, Recent events, Busiest ports, Device load, Wireless and Offline now can be narrowed to one group or one tag. Adding one asks which devices it covers; the list in its header changes that later.</p>
+</section>
+
+<section id="availability" data-title="Availability">
+  <h2>Availability</h2>
+  <p>Like a status page: every device with its uptime and response time. Choose <strong>24 h, 7 d, 30 d or 90 d</strong> at the top; the bars, the uptime figure and the average follow it (hourly bars for a day, quarter days for a week, days beyond that). Grey means nothing was checked then, for example while the monitor was stopped, so it counts neither as up nor down.</p>
+  <p>Each device's Overview has the same card, with the four uptime figures as buttons, the last checks and the list of down periods in the chosen range.</p>
+</section>
+
+<section id="alerts" data-title="Alerts and problems">
+  <h2>Alerts and problems</h2>
+  <p>A <strong>problem</strong> opens when a condition holds: a device stops answering, CPU stays above a threshold, a disk fills up, a service stops answering. It shows on the Devices page, the dashboard and the device. It closes itself when the condition clears.</p>
+  <h3>Alert rules (Settings, Alert rules)</h3>
+  <p>Each rule has: on or off, a threshold where it has one, a wait (how many minutes the condition must last before a problem opens) and a severity. It also says whether it goes to Telegram, whether a resolved message follows and whether the phone rings.</p>
+  <p>Severities are info, warning, high and critical. Info problems are notices: <em>Device restarted</em> is one. It leaves Active problems after a minute. Warnings and worse stay until the condition clears. A problem that comes from a threshold must stay clear for a few minutes before it closes (<em>Resolve after</em>, 5 minutes by default), so it does not flap.</p>
+  <p><strong>Apply to</strong> chooses where you set them. Each level overrides the ones before it:</p>
+  <ol>
+    <li><strong>All devices</strong>: the defaults for everything.</li>
+    <li><strong>One template</strong>: every device using it.</li>
+    <li><strong>One tag</strong>: every device with that tag, whatever its template. When two tags of a device set the same thing, the tag lower in the list (Settings, Groups and tags) wins.</li>
+    <li><strong>One device</strong>: that device only. Always the last word.</li>
+  </ol>
+  <p>Faded values are inherited (hover to see from where); outlined values are set at the level you are looking at. <em>Overview</em> lists everything set anywhere in one place.</p>
+  <p>Example: tag your NAS boxes <code>storage</code>, then set the disk full threshold to 85% for the tag. A NAS that needs something different still gets its own value on its device level.</p>
+  <h3>One alert for one failure</h3>
+  <p>When a switch goes down, everything behind it on the map stops answering too. You get one message, for the device that failed, listing the devices behind it; theirs say "unreachable behind switch-01, which is down" and send nothing of their own (nor a "back online" message when it returns). If the map has a link wrong, set the uplink in Edit device, <em>Place on the map and details</em>.</p>
+  <h3>Warnings before things break</h3>
+  <ul>
+    <li><strong>Volume or disk filling up</strong>: from the way a volume or disk grew over the last two weeks, the monitor works out when it will be full (Storage tab, <em>Filling up</em>). The rule opens a problem when the volume is at least 80% full and that is within 14 days (change the days in the rule). An emptier volume that grows fast is shown on the Storage tab but is not a problem.</li>
+    <li><strong>Certificate expiring</strong>: website checks on an <code>https://</code> address read the site's certificate once an hour (self-signed ones too) and warn 21 days before it runs out.</li>
+  </ul>
+</section>
+
+<section id="maintenance" data-title="Maintenance windows">
+  <h2>Maintenance windows</h2>
+  <p>Planned work, such as a firmware update or a reboot. For the time you set, the devices covered still show their problems, but no messages are sent (no reminders and no "back online" either). Failed checks count as planned downtime: they appear in blue on the availability bar and do not lower the uptime figures.</p>
+  <ul>
+    <li><strong>One device, now</strong>: <em>Maintenance</em> on its page, pick how long. The page says it is in maintenance until when; <em>End maintenance</em> stops it early.</li>
+    <li><strong>A group, a tag or everything, now or later</strong>: Settings, Maintenance windows. A window can start at a set time and last up to 14 days. Ended windows stay listed for a week.</li>
+  </ul>
+  <p>A window on a device does not cover the devices behind it on the map; use a group or tag for those or rely on <a href="#/guide/alerts">one alert for one failure</a>.</p>
+</section>
+
+<section id="inventory" data-title="Inventory and new devices">
+  <h2>Inventory and new devices</h2>
+  <p>The Inventory page lists every hardware (MAC) address seen on your network, from the switches' address tables and the gateway's address list (and UniFi, when it is connected): its IP address, the switch port or access point it is on, its maker and name where known and when it was first and last seen. Devices you monitor are marked and linked.</p>
+  <ul>
+    <li><strong>Edit</strong> gives an address your own name, a location, a note and a purchase date. These never change by themselves.</li>
+    <li><strong>New devices</strong>: for the first day after the inventory starts it only learns what is there. After that, an address never seen before is announced: an event, the bell and a Telegram message (<em>New device on the network</em>, switched under Notifications, Messages). It stays marked <em>new</em> until you tick <em>Known</em> or press <em>Mark all new as known</em>.</li>
+    <li><strong>Private addresses</strong>: phones and laptops often use a made-up address per network, marked <em>private</em>. Some change it every few weeks, which shows up as a new device.</li>
+    <li><strong>Known</strong> on a row ends the <em>new</em> mark at once, whether or not the device is online. <strong>Add a device</strong> puts in an address you know (from its label, say) as known, before it is ever seen.</li>
+    <li><strong>Wi-Fi network</strong>: for a device on Wi-Fi (from UniFi), the column shows the SSID it last joined. It is cleared when the device moves to a cable and kept while it is offline.</li>
+    <li><strong>Quiet networks</strong> (a tenant's or a guest network): devices on them are still recorded and kept up to date, but never announced, never counted as new (on this page, in the daily summary or /changes) and not touched by <em>Mark all new as known</em>. They are hidden from the list; choose <em>Quiet only</em> or <em>Everything, quiet too</em> to see them. One device can also be made quiet on its own: <em>Quiet</em> in its Edit window.</li>
+    <li><strong>Weak Wi-Fi signal</strong> (Edit, for a Wi-Fi device): an access point's <em>Wi-Fi devices on weak signal</em> problem lists every device below the line. For one that is always weak, choose <em>Never report it</em> or <em>Report it only below a line of its own</em> (for example -86 dBm). The Wi-Fi page marks such devices.</li>
+    <li><strong>Forget</strong> removes an address; if it shows up again it is new again.</li>
+  </ul>
+  <p>Users limited to some devices do not see the Inventory: it lists the whole network.</p>
+</section>
+
+<section id="shutdown-alerts" data-title="Shutting a machine down">
+  <h2>Shutting a machine down</h2>
+  <p>When a machine shuts down, its SNMP agent (or a checked service) usually stops a few seconds before it stops answering ping. The warning for that (<em>SNMP agent not responding</em>, <em>not answering</em>) therefore waits one ping interval plus 30 seconds before it goes to Telegram. If the device is offline by then, only the offline message is sent; neither the warning nor its resolved message is (the event log says so). If the device still answers ping, the warning is sent as usual, a little later.</p>
+  <p>A machine that runs others (a Proxmox host with its containers): set each guest's uplink to the host (Edit device, <em>Place on the map and details</em>). Then the host's offline message lists the guests, instead of one message each. Grouped messages (Notifications, When) combine whatever else arrives together.</p>
+  <p>A problem on a device that is already offline is not sent: the offline message covers it. So a Proxmox guest that stops because you shut its host down sends no second message. Back online and resolved messages never ring in the silent window (see <a href="#/guide/notifications">Notifications</a>).</p>
+  <p>To restart machines on purpose without any messages, use a <a href="#/guide/maintenance">maintenance window</a> or the workflow step <em>Suppress notifications</em>. Restarting a machine from <a href="#/guide/host-actions">Host actions</a> mutes it until it is back.</p>
+</section>
+
+<section id="host-actions" data-title="Host actions (Linux)">
+  <h2>Host actions (Linux)</h2>
+  <p>A fixed list of maintenance jobs for Linux hosts (Debian, Ubuntu, Proxmox VE), run once over SSH. Open it with <strong>Host actions</strong> on a host's page, with <strong>Fix...</strong> next to one of its problems (the actions that suit that problem come first) or from the Automation page. It needs a stored credential (root or a user allowed to run sudo without a password) and the host's SSH key approved, the same as workflows.</p>
+  <ul>
+    <li><strong>Checks</strong> change nothing and run at one click: what is using the disk (with the big files written in the last day, which is what makes a disk grow), a quick health check, the busiest processes, failed services, one service's status and log, updates waiting, disk health (SMART), read-only filesystems, Docker containers, network and DNS, a security report, time sync, Proxmox storage and ZFS, Pi-hole.</li>
+    <li><strong>Clean-ups and repairs</strong> show a preview of what they would change; Run unlocks after it: empty the package cache, shrink the journal, remove unused packages and old kernels, Docker dangling images and build cache, rotate logs, week-old files in /tmp, finish interrupted installs, install updates (no restart), clear failed service markers, flush the DNS cache, update Pi-hole blocklists, start a ZFS scrub.</li>
+    <li><strong>Restarts</strong> preview too, then ask you to type the host's name: one service, one Docker container, the services still running old libraries after updates or the whole machine. Restarting the machine mutes its notifications and waits until it stops and answers ping again. It is refused for the machine the monitor itself runs on. The network, systemd and the monitor's own service are never offered for a restart.</li>
+  </ul>
+  <p>When the host is a Proxmox guest the monitor knows and the Proxmox action token is set (Settings, Proxmox), clean-ups and restarts offer <em>Take a Proxmox snapshot first</em>. Nothing in the list deletes files by name or stops guests. Disks, users and the firewall are not touched either; those stay with you or in a workflow you write.</p>
+  <p><strong>Make this a workflow</strong> saves the action as a workflow on that host, ready to run again or to get a schedule on its trigger. The same jobs are in the workflow builder's command templates (on the <em>Run command</em> step) (names start with <em>Host action:</em>). Every run, with its output, who ran it and the problem it was for, is listed under Host actions on the Automation page; the audit log records each run and the host's events record each change.</p>
+</section>
+
+<section id="pihole" data-title="Pi-hole">
+  <h2>Pi-hole</h2>
+  <p>Settings, Pi-hole: queries, blocking and blocklists from Pi-hole's own web API (no SNMP needed) plus a real DNS lookup through the Pi-hole every minute. The figures appear on the Pi-hole's device page (add it first, <em>Ping</em> is enough) on a <strong>DNS</strong> tab: where queries go, the most blocked domains and graphs.</p>
+  <ul>
+    <li><strong>Pi-hole 6</strong>: in its web interface, Settings, Web interface / API, switch to Expert, <em>Configure app password</em>; copy it and enable it. <strong>Pi-hole 5</strong>: Settings, API / Web interface, <em>Show API token</em>.</li>
+    <li>Enter the address (<code>http://</code> and its IP) and the password or token, <em>Test connection</em>, <em>Save</em>.</li>
+  </ul>
+  <p>Alert rules (group DNS): <em>DNS not answering</em>, <em>DNS slow</em>, <em>Pi-hole blocking switched off</em>, <em>Pi-hole blocklists out of date</em>.</p>
+  <p>Once connected, <strong>Pi-hole</strong> has its own page in the menu: today's figures, where queries go, the most blocked domains and graphs. When a site breaks because of a blocklist, <em>Pause</em> blocking for 5, 30 or 60 minutes; it comes back on by itself and a pause raises no alert (blocking switched off with no end is still a problem). <em>Resume blocking</em> ends a pause early. Pausing needs an app password that may change settings.</p>
+</section>
+
+<section id="unifi" data-title="UniFi Wi-Fi">
+  <h2>UniFi Wi-Fi</h2>
+  <p>The monitor is built with UniFi networks in mind. Its access points report totals per radio over SNMP; Settings, UniFi adds what each Wi-Fi device experiences, read from the UniFi Network application on your gateway: signal, band, channel, speed, retries, how often it roamed and UniFi's experience score. They are listed on each access point's <strong>Wireless</strong> tab, weakest first. They also give the Inventory names and makers.</p>
+  <ol>
+    <li>In UniFi, Settings, Admins &amp; Users, <em>Create New Admin</em>: tick <em>Restrict to local access only</em> (no UI.com account and no two-step login), role <em>View Only</em>.</li>
+    <li>In the monitor: the gateway's <code>https://</code> address, that username and password; <em>Fetch fingerprint</em>, compare it with the one your browser shows for the UniFi page, <em>Test connection</em>, <em>Save</em>.</li>
+  </ol>
+  <p>Alert rule <em>Wi-Fi devices on weak signal</em> opens a problem on an access point when devices stay below the line (-75 dBm by default) for 15 minutes. As a guide: -67 dBm or better is good for calls, below -80 barely works.</p>
+  <h3>The Wi-Fi page</h3>
+  <p>Once connected, <strong>Wi-Fi</strong> has its own page in the menu: every access point side by side (devices, weak ones, average experience, bands; click one to show only its devices) and every Wi-Fi device in one list, weakest first, filterable by access point, band and weak signal.</p>
+  <h3>Reconnect</h3>
+  <p>A device can stay on a far access point after you move around the house. <em>Reconnect</em> on the Wi-Fi page drops it so it joins again, ideally to the nearest access point (the device decides). The workflow step <em>Reconnect weak Wi-Fi</em> does it for every device below the weak-signal line on one access point; pair it with the trigger <em>A problem opens</em>, rule <em>Wi-Fi devices on weak signal</em>. A device is reconnected at most once an hour. The <em>Never reconnect</em> list in Settings, UniFi keeps printers and gadgets out of it. Reconnecting needs a UniFi account that may make changes; with a View Only account everything else still works. UniFi's own <em>Minimum RSSI</em> and <em>BSS Transition</em> settings help devices move by themselves.</p>
+  <h3>On the map</h3>
+  <p>With UniFi connected the map uses UniFi's own layout: which device and port each switch and access point is plugged into, plus the switch port of each wired device. Monitored devices on Wi-Fi hang off their access point on a dashed blue line. Each access point counts its other Wi-Fi devices. An uplink set in Edit device still has the last word. A link to one of your own objects (an unmanaged switch) is kept.</p>
+</section>
+
+<section id="notifications" data-title="Notifications (Telegram)">
+  <h2>Notifications (Telegram)</h2>
+  <p>Settings, Notifications. Messages reach your phone through a Telegram bot you create with @BotFather; the token is stored encrypted. This is the monitor's only connection to the internet.</p>
+  <ul>
+    <li><strong>Delivery</strong>: the bot, your chat (press <em>Find my chat</em>, send your bot a message within two minutes, press it again and confirm the chat name it shows), a test message and which problems are sent (from a minimum severity or per rule). <em>Send silent test</em> sends one message without a sound and shows the monitor's clock, so you can check both.</li>
+    <li><strong>When</strong>: <em>Quiet hours</em> hold non-critical messages and send one summary when they end. The <em>Silent window</em> delivers at once without a sound. Problems from the severity in <em>Still ring from</em> still ring; device offline is critical, so with the default (critical) it rings. Back online and resolved messages never ring. Also here: <em>Repeat reminders</em> for problems nobody has acknowledged, quiet for devices just added (30 minutes by default) and an optional <em>Summary message</em>. The summary comes daily or weekly at a time you choose, with availability, problems, new devices, volumes filling up and certificates running out.</li>
+    <li><strong>Group messages that come at once</strong> (under When, on by default): when several devices go down or come back together, as when you restart access points, you get one message listing them instead of one each. Problem and device messages wait until none has come for <em>Wait to group</em> seconds (30), so machines shut down one after another end up together (at most four times that after the first). Fewer than <em>Group from</em> (3) still go one by one. Devices unreachable behind an offline one are listed after it in brackets and counted, for example <em>Offline (6): switch-01 (+ nas-01, web-app), media-server (+ downloads), test</em>. Proxmox messages get their own section. A problem on a device that is already offline (a Proxmox guest stopped, say) is not sent at all: the offline message covers it. The grouped message has its own text under Messages, <em>Several at once, grouped</em>.</li>
+    <li><strong>Messages</strong>: the text of each message, with placeholders such as <code>{device}</code> and <code>{problem}</code>.</li>
+  </ul>
+  <p>Messages that cannot be sent (no internet for a while) wait and are retried for 24 hours. Every message sent shows on the device's events.</p>
+  <p><strong>Asking the bot</strong>: send it a command from your chat and it answers. All of them only read; none changes anything.</p>
+  <ul>
+    <li><code>/status</code>: how many devices are up and down, which are down, the open problems and any maintenance on now.</li>
+    <li><code>/problems</code>: the open problems, most severe first, with how long each has been open.</li>
+    <li><code>/device nas-01</code>: one device by its name, the start of its name or its address: state, ping, CPU, memory, uptime and its open problems.</li>
+    <li><code>/changes</code>: the last 24 hours: new devices on the network, restarts, problems opened and resolved.</li>
+    <li><code>/help</code>: the list.</li>
+  </ul>
+  <p>Only your chat (the one in Delivery) gets answers; anyone else who finds the bot is ignored and noted in the audit log. Every command answered is in the audit log too. The monitor fetches new messages from Telegram itself, so nothing connects in from the internet. Switch it off with <em>Answer commands</em> under Delivery.</p>
+  <p><strong>The command builder</strong> (the <em>Commands</em> tab) lists every command, built in and your own. Each has an <em>on</em> box; Telegram's command menu (type <code>/</code> in the chat) shows exactly the ones that are on.</p>
+  <ul>
+    <li><strong>Built-in replies</strong>: <em>Edit</em> opens the reply text with its placeholders (<code>{up}</code>, <code>{down_list}</code>, <code>{figures}</code> and so on). <em>One problem in a list</em> sets how each problem is written in <code>/problems</code> and <code>/device</code>. <em>Original</em> puts the first text back.</li>
+    <li><strong>Add command</strong>: a name (lowercase, like <code>wifi</code>), a description for <code>/help</code> and the menu. Then what it <em>Shows</em>: devices, problems, Wi-Fi networks, access points or Wi-Fi devices, Proxmox VMs and containers, nodes or storage, Pi-hole or storage forecasts.</li>
+    <li><strong>Covers</strong>: tick the items it is about (devices one by one, a tag or a group; SSIDs; guests); nothing ticked means all. <strong>Only</strong> narrows it further: only down, only running, only weak signal, only full within 60 days.</li>
+    <li><strong>The reply</strong>: a header (once), a line (once for each item) and a footer (once). The right side lists the placeholders for each; for devices also <em>any figure a device records</em>, as <code>{metric:name}</code>, your custom SNMP values included.</li>
+    <li><strong>Preview</strong>: the real reply from your data now, as you type. The box under it tries a word after the command: <code>/wifi guest</code> lists only items with "guest" in their name.</li>
+  </ul>
+  <p><strong>Sort by</strong> orders the lines by one of the line's placeholders (numbers by value; tick <em>highest first</em> to turn it round). <strong>At most</strong> keeps only the first so many; <code>{more}</code> says how many it left out.</p>
+  <p>A placeholder with nothing to say is empty. A line left empty is dropped, so <code>{down_list}</code> adds nothing while everything is up. A misspelled placeholder stays as written, so you see it. Commands only read: they cannot run anything or reach anything the monitor does not already watch.</p>
+  <h3>Writing messages: tricks that work everywhere</h3>
+  <p>Every Telegram text (notification messages, the workflow step, the built-in replies and your own commands) understands the same extras. The editors list them under <em>Tricks</em>; click one to insert it.</p>
+  <ul>
+    <li><strong>Conditions</strong>: <code>{if down &gt; 0}</code> ... <code>{elif problems}</code> ... <code>{else}</code> ... <code>{end}</code>. Compare with <code>&gt; &lt; &gt;= &lt;= == !=</code>, combine with <code>and</code>, <code>or</code>, <code>not</code>; text goes in quotes: <code>{if state == "down"}</code>. A name on its own is true when it is not empty and not 0. A line holding only <code>{if}</code>, <code>{else}</code> or <code>{end}</code> leaves no empty line.</li>
+    <li><strong>Arithmetic</strong>: <code>{= up / total * 100 | round:1}</code> with <code>+ - * / %</code>, brackets and <code>min()</code>, <code>max()</code>, <code>round(x, n)</code>, <code>abs()</code>, <code>floor()</code>, <code>ceil()</code>. A name with a dash or colon goes in square brackets: <code>{= [metric:temp.cpu-0] * 1.8 + 32}</code>.</li>
+    <li><strong>Numbers</strong>: a value such as <code>34%</code>, <code>12 ms</code> or <code>-80 dBm</code> counts as its number in arithmetic, comparisons and number filters.</li>
+    <li><strong>Filters</strong>, after a bar and applied left to right (<code>{cpu|round:0|default:"-"}</code>):
+      <code>upper</code> <code>lower</code> <code>title</code> <code>trim</code>;
+      <code>default:TEXT</code> (when empty); <code>before:TEXT</code> and <code>after:TEXT</code> (added only when there is a value);
+      <code>round:N</code> <code>fixed:N</code> <code>int</code> <code>abs</code> <code>add:N</code> <code>sub:N</code> <code>mul:N</code> <code>div:N</code>;
+      <code>plural:device</code> ("3 devices"; <code>plural:box:boxes</code> for odd words); <code>bar:10</code> (a 0 to 100 value as ▰▰▰▱▱);
+      <code>truncate:N</code> <code>pad:N</code> <code>lpad:N</code> <code>replace:OLD:NEW</code>;
+      for lists, one item per line: <code>first:N</code> <code>last:N</code> <code>sort</code> <code>rsort</code> <code>unique</code> <code>count</code> <code>join:", "</code>.</li>
+    <li>A literal brace is written <code>{{</code> or <code>}}</code>. A mistake in a tag shows as <code>{?what went wrong}</code> in the preview, so it is caught before it is sent.</li>
+  </ul>
+</section>
+
+<section id="automation" data-title="Automation">
+  <h2>Automation</h2>
+  <p>The Automation page has four parts: Credentials, Workflows, Host actions and Workflow runs.</p>
+  <ul>
+    <li><strong>Credentials</strong>: SSH logins (password or private key) stored encrypted. A key can be pasted or generated here. <em>Test</em> tries one on a host.</li>
+    <li><strong>Host keys</strong>: before the monitor connects to a host over SSH you approve its key once, in a window that opens when it is needed. A changed key stops the connection until you approve the new one.</li>
+    <li><strong>Workflows</strong>: steps run one after another: commands on one or more hosts, pauses and waits until a host stops or starts answering ping or SNMP. A step can go to another step when it fails. Use them for update and restart sequences where one thing must be back before the next goes down.</li>
+    <li>Workflows run by hand, on a schedule or when something happens: a device goes offline or comes back, it answers ping but not SNMP, a measurement crosses a value, a watched service stops or a problem opens. Each run is kept with the output of every step, under Workflow runs.</li>
+    <li><strong>Host actions</strong>: pick a host to open its <a href="#/guide/host-actions">Host actions</a>, the fixed maintenance jobs for Linux hosts. Every run is listed here with its output; click one to see it again.</li>
+  </ul>
+  <h3>The workflow builder</h3>
+  <p>The left column has two tabs, <strong>Steps</strong> and <strong>Templates</strong>. The middle is the canvas. The right side shows whatever you picked: a step's settings, the trigger or a template's options.</p>
+  <p>Steps come in three families. Each family has its own colour, the same in the list and on the canvas:</p>
+  <ul>
+    <li><strong>Do something</strong>: <em>Run command</em> (an SSH command on one or more hosts; host actions are among its command templates, named <em>Host action:</em>), <em>Snapshot a Proxmox guest</em> and <em>Reconnect weak Wi-Fi</em>.</li>
+    <li><strong>Wait</strong>: <em>Wait</em> (a number of seconds), <em>Wait until down</em>, <em>Wait until up</em> (ping) and <em>Wait for SNMP</em>.</li>
+    <li><strong>Tell and keep quiet</strong>: <em>Send Telegram</em>, <em>Suppress notifications</em> and <em>Notifications back on</em>.</li>
+  </ul>
+  <p>Picking a template on the left shows on the right what it does, the hosts to tick (those it suits are marked) and its options: the credential, whether to suppress notifications and whether to send a quiet summary at the end. <em>Add these steps</em> puts them on the canvas after the selected step, where you can change them like any other step.</p>
+  <h3>Restarting without a flood of messages</h3>
+  <ul>
+    <li><strong>Suppress notifications</strong> (a step): keeps Telegram quiet for this workflow's hosts, devices you pick, a group, a tag or everything. It opens a maintenance window, so problems still show and are logged and the downtime counts as planned. <em>Until the run ends</em> lifts it when the run finishes (however it finishes) plus a few minutes, so the "back online" messages stay quiet too; <em>At most</em> is a safety limit.</li>
+    <li><strong>Notifications back on</strong> (a step): ends the suppression early, for example before a final check you do want to hear about.</li>
+    <li><strong>Send quietly</strong> (on Send Telegram): the message arrives without a sound. Its text understands the message tricks, so <code>{if status == "a step failed"}❌{else}✅{end}</code> works.</li>
+  </ul>
+  <h3>Ready-made workflows</h3>
+  <p>The <em>Templates</em> tab in the workflow builder adds whole sequences; the ones that restart things suppress notifications by default and can end with a quiet summary.</p>
+  <ul>
+    <li><strong>Update and restart Linux hosts</strong>, <strong>Update Linux hosts, no restart</strong>, <strong>Restart UniFi devices in order</strong> (furthest from the gateway first) and <strong>Restart sequence (any hosts, your command)</strong>.</li>
+    <li><strong>Snapshot, update and restart Proxmox guests</strong>: a snapshot first for every host that is a Proxmox VM or container.</li>
+    <li><strong>Restart a service on Linux hosts</strong>: restarts it and checks it is running; pair it with the trigger <em>A watched service or process stops</em>.</li>
+    <li><strong>Free disk space on Linux hosts</strong> and <strong>Health check, results on Telegram</strong> (changes nothing; good weekly).</li>
+    <li><strong>Update Pi-hole and its block lists</strong> and <strong>Reconnect weak Wi-Fi on access points</strong>.</li>
+  </ul>
+  <p>These are made of <a href="#/guide/host-actions">host actions</a>, the same fixed jobs as the Host actions window:</p>
+  <ul>
+    <li><strong>Weekly tidy-up on Linux hosts</strong>: empties the package cache, shrinks the journal, removes unused packages and old kernels, clears week-old files in /tmp. Give it a weekly schedule.</li>
+    <li><strong>Disk filling up: report, clean, report again</strong>: what is using the disk, the safe clean-ups, then the disk again so the summary shows what was freed. Pair it with the trigger <em>A measurement goes above or below a value</em> on disk use.</li>
+    <li><strong>Security and updates report</strong>: changes nothing. The security report, updates waiting and failed services.</li>
+    <li><strong>Install updates, then restart what still uses old libraries</strong>: the machine itself keeps running.</li>
+    <li><strong>Docker tidy-up</strong>: lists the containers, then removes untagged images and build cache only.</li>
+    <li><strong>Disk health check</strong>: changes nothing. SMART health of every disk, filesystems that went read-only and time sync.</li>
+    <li><strong>Proxmox host check</strong>: changes nothing. Storage and ZFS pools, failed services and updates waiting.</li>
+    <li><strong>Clear failed services and check again</strong>: lists failed services, clears their failed markers and lists them again, so only the ones that are really broken remain.</li>
+  </ul>
+</section>
+
+<section id="proxmox" data-title="Proxmox">
+  <h2>Proxmox</h2>
+  <p>Settings, Proxmox: switch it on, then connect with a read-only API token. Once a connection is saved, Proxmox has its own page in the menu: nodes, VMs and containers, storage, backups and failed tasks. Click a node or guest for CPU, memory, network and disk graphs from Proxmox's own history.</p>
+  <ol>
+    <li>In Proxmox: Datacenter, Permissions, API Tokens, <em>Add</em>. User <code>root@pam</code>, Token ID <code>monitor</code>, keep Privilege Separation ticked. Copy the secret: it is shown once.</li>
+    <li>Give the token read access: click <strong>Permissions</strong> itself in the left menu (not API Tokens or Roles under it), <em>Add</em>, <em>API Token Permission</em>: path <code>/</code>, the token, role <strong>PVEAuditor</strong>, Propagate ticked. Or in the host's shell: <code>pveum acl modify / --tokens 'root@pam!monitor' --roles PVEAuditor</code></li>
+    <li>In the monitor: the address (<code>https://</code>, the host, port 8006), the token ID and the secret. <em>Fetch fingerprint</em>, compare it with the node's certificate in Proxmox, then save. <em>Test connection</em> says what the token can see or which permission is missing.</li>
+  </ol>
+  <h3>What it adds elsewhere</h3>
+  <ul>
+    <li><strong>The map</strong>: every monitored VM and container hangs off the node Proxmox runs it on. A guest is matched to a monitored device by its name, a container's address or its network card's address seen by the gateway, so the names need not match (a guest called Win11 can be the device desktop-01).</li>
+    <li><strong>Alerts</strong> (Alert rules, group Proxmox): a guest set to start at boot that is not running (it clears within a minute of the guest running again); one that restarted several times in an hour; a guest's memory or a container's disk nearly full. They show on the guest when it is monitored, otherwise on its node.</li>
+    <li><strong>Forecasts</strong>: each storage pool (local-lvm, your data pools) is recorded every five minutes on the node's device. Its Storage tab says when it will be full.</li>
+    <li><strong>Monitor</strong>: a guest that is not monitored yet has a <em>Monitor</em> button on the Proxmox page, which opens the Add window with its name and address.</li>
+  </ul>
+  <h3>Actions (optional)</h3>
+  <p>The token above only reads. A second token lets the Proxmox page <em>Start</em>, <em>Shut down</em> (cleanly, through the guest) and <em>Reboot</em> guests. It also gives the workflow step <em>Snapshot a Proxmox guest</em>: take a snapshot before an update, so a failed update can be rolled back in Proxmox (the guest, Snapshots). Settings, Proxmox, <em>Actions</em> has the three commands to make it: a role with only VM.Audit, VM.PowerMgmt and VM.Snapshot, a token and that role on <code>/vms</code>. Every action asks for your password, is confirmed and is in the audit log.</p>
+</section>
+
+<section id="map" data-title="Network map">
+  <h2>Network map</h2>
+  <p>How your devices connect, drawn from what the switches report (and the uplinks you set in Edit device). Drag to arrange, click a device to see what depends on it, add objects the monitor cannot see (an ISP modem, a wall socket) and link them by hand.</p>
+  <ul>
+    <li><strong>Reading it</strong>: the coloured edge of a box is its state (the key at the bottom left). Solid lines are cables, dotted lines are virtual machines and services on a host, blue lines are links you drew. The small tags on a line are the switch ports at each end. Hover a line to pick it out.</li>
+    <li><strong>Moving around</strong>: drag the background to pan, scroll or use + and − to zoom, <em>Fit</em> to see everything. A box you drop snaps to the grid and its branch moves with it; hold Alt to move one box on its own. <em>Edit</em>, <em>Arrange as tree</em> tidies everything.</li>
+    <li><strong>This monitor</strong> is not drawn. With nothing selected, the side panel says where it connects; clicking a device it depends on warns you that restarting that device cuts the monitor off.</li>
+  </ul>
+</section>
+
+<section id="logs" data-title="Events and the audit log">
+  <h2>Events and the audit log</h2>
+  <ul>
+    <li><strong>Events</strong>: everything that happened to devices: problems and recoveries, ports going up or down, restarts, software changes, messages sent, actions run. Search, filter by device, tag, severity, type and time.</li>
+    <li><strong>Audit log</strong>: who did what in the app: logins, settings changed, devices added, credentials used. Search and filter by category and time. Details of sensitive entries are only shown to users allowed to see them.</li>
+    <li>The bell at the top right collects what needs your attention.</li>
+  </ul>
+</section>
+
+<section id="users" data-title="Users and security">
+  <h2>Users and security</h2>
+  <ul>
+    <li><strong>Logging in</strong>: when you are signed out, the login screen fills the whole page. A refresh never shows the app behind it. Sessions end after a while without use; repeated wrong passwords lock the login for a time. After you log in you return to the page you were on.</li>
+    <li><strong>Users</strong> (Settings, Users): one account per person. Roles give sets of permissions (Viewer: read only; Operator: day-to-day running; Administrator: everything) or Custom picks them one by one; a user can be limited to some templates or devices.</li>
+    <li><strong>Two-factor authentication</strong> (Settings, Account): an authenticator app code at login, with one-time recovery codes. Recommended for every administrator.</li>
+    <li><strong>Confirmations</strong>: changes that lose data or touch devices ask for your password again; anything that grants access or holds secrets also asks for the authenticator code. The confirmation lasts a few minutes.</li>
+    <li><strong>Secrets</strong> (credentials, tokens, communities) are encrypted with the vault key; they are never sent to the browser or written to logs.</li>
+    <li><strong>Managing users without being an administrator</strong>: someone with <em>Manage users</em> can add and change users with up to their own permissions and device access. Only an administrator can make an administrator, give <em>Manage users</em>, change an administrator account or change their own rights.</li>
+    <li><strong>Stored passwords stay where they belong</strong>: <em>Test connection</em> for Pi-hole, UniFi and Proxmox reuses the saved password or token only for the saved address and certificate; for a new one, type it again. Testing asks for your password first, like saving.</li>
+    <li><strong>Workflows</strong>: saving one asks for your password and may only use devices you can see. Run logs need Run or Edit workflows and show only your devices. A scheduled or event workflow is skipped (with a note in its run) when the person who last saved it is blocked, deleted or lost the rights. A password credential in a host action, Fix SNMP or a workflow needs <em>Manage credentials</em>; SSH keys do not.</li>
+    <li><strong>Devices</strong>: changing a device's address forgets its approved SSH host key, so the next SSH connection asks you to approve the new one.</li>
+    <li><strong>2FA</strong>: turning it on or off logs out your other sessions. Each code works once, even when sent twice at the same moment.</li>
+    <li><strong>Web checks</strong> report a redirect instead of following it, and do not fetch the monitor's own addresses (127.0.0.1, localhost and link-local).</li>
+    <li><strong>The container</strong>: only SSH and the web page can be reached from outside, and only from private addresses, or from the ones set in <code>ADMIN_NET</code> at the top of <code>infra.sh</code> (for example <code>"192.168.1.0/24"</code>). Syncthing and DHCP are let in from the LAN; everything else coming in is dropped, and new SSH connections are limited to 10 a minute per address. Set <code>ROOT_SSH_KEY</code> to your public key (the line itself, or a file on the Proxmox host such as <code>/root/.ssh/id_ed25519.pub</code>) and root logs in over SSH with that key only; the Proxmox console still takes the password. An upgrade applies both.</li>
+    <li><strong>Unprivileged container</strong>: <code>UNPRIVILEGED=1</code> at the top of <code>infra.sh</code> makes the safer kind, where root inside the container is not root on the Proxmox host. It cannot mount NFS itself: the Proxmox host copies the Syncthing identity in (and, for a rebuild with <code>RESTORE="latest"</code> from <code>BACKUP_NFS</code>, the newest backup). Other shares are passed in from the host as mount points, for example <code>pct set 201 -mp0 /mnt/pve/media,mp=/mnt/media</code>. An existing container changes kind only by a rebuild: set it, then <code>bash infra.sh --rebuild</code> with <code>RESTORE="latest"</code>.</li>
+    <li><strong>Shares</strong> (NFS mounts and the Syncthing folder) go below <code>/mnt</code> or <code>/srv</code>, and are always mounted with <code>nosuid,nodev,noexec</code>: nothing on a share can run as a program in the container. The container checks this again before it mounts anything, whatever the database or a backup says.</li>
+    <li><strong>Forgot the password?</strong> With 2FA and Telegram set up, press <em>Forgot your password?</em> on the login page: it asks for your authenticator code and sends a one-time code to Telegram. Otherwise, on the container (or the <code>--local</code> machine): <code>/root/reset-admin.sh</code> (it can also turn 2FA off for that user).</li>
+  </ul>
+</section>
+
+<section id="https" data-title="HTTPS">
+  <h2>HTTPS</h2>
+  <p>Settings, HTTPS decides how browsers connect. The address stays the same (same port); old <code>http://</code> links and bookmarks are sent on to <code>https://</code>.</p>
+  <ul>
+    <li><strong>Certificate made here</strong> (a new install starts with this): the monitor makes a certificate for its own name and address and renews it before it runs out. Browsers warn once because no public authority signed it. Check that the fingerprint in the warning matches the one in Settings, HTTPS and continue. Or press <em>Download certificate</em> and add it to your computer's or phone's trusted certificates to stop the warning. Opening the monitor by another name (for example <code>monitor.home.example.com</code>)? Add it under <em>Extra names</em>.</li>
+    <li><strong>Your own certificate</strong>: from your own certificate authority or anywhere else, for the name you use. Paste or choose the certificate (server certificate first, then intermediates) and its key without a passphrase; it is checked before it is used. You get a warning in the bell and on Telegram from 21 days before it expires.</li>
+    <li><strong>HTTP</strong>: not encrypted. Only for a network you fully trust.</li>
+  </ul>
+  <p>The certificate and its key are kept in the database (the key encrypted), so a normal backup carries them and a restore brings them back. After an upgrade from a version without HTTPS the monitor keeps plain HTTP and asks an administrator once which to use.</p>
+  <p>Locked out by a certificate? In the container shell run <code>/root/update.sh</code> and choose 6: the monitor answers on plain HTTP again and the certificate is kept.</p>
+  <p>Uptime Kuma or another tool checking the monitor over <code>http://</code> is redirected once HTTPS is on: point it at <code>https://</code> and allow the certificate (in Uptime Kuma, "Ignore TLS/SSL errors" for one made here).</p>
+</section>
+
+<section id="backups" data-title="Backups, restore and upgrades">
+  <h2>Backups, restore and upgrades</h2>
+  <h3>Backups</h3>
+  <p>A backup is made every day by itself. <em>Back up now</em> (Settings, Backups) makes one at once. Each backup records the version that made it. Without Syncthing they stay in the container (the newest 7); with Syncthing they are written to the synced folder, so your NAS holds them. A backup has everything a rebuild needs, including the key that unlocks the stored passwords: keep the backup folder as private as a password store.</p>
+  <h3>Sealing backups with a passphrase</h3>
+  <p>Set <code>BACKUP_PASSPHRASE</code> at the top of <code>infra.sh</code> (12 characters or more) and run <code>bash infra.sh --upgrade</code>. From then on the key inside each backup is sealed with it: someone who copies the backup share gets nothing they can open. The container keeps the passphrase (root only) for the daily backup. A restore asks for it, or takes it from <code>infra.sh</code> for a rebuild with <code>RESTORE="latest"</code>. Keep the passphrase somewhere apart from the backups, such as your password manager: without it a sealed backup cannot be restored. Backups made before you set it stay unsealed. Clearing the setting does not remove the container's copy; to stop sealing, delete <code>/etc/homelab-monitor-install/backup-passphrase</code> in the container.</p>
+  <h3>Updating from the app</h3>
+  <p>Settings, Updates (administrators) shows the version running now. <em>Check for updates</em> looks at the project's releases on GitHub and shows what is new. <em>Update to ...</em> asks for your password and authenticator code, then the box does the rest. It runs the same steps as the upgrade below: checks your data with the new version, backs up, replaces the app, waits for it to answer and puts the previous version back by itself if it does not. The page reconnects once the monitor has restarted, usually within a minute or two.</p>
+  <ul>
+    <li><strong>Only signed releases.</strong> A release is installed only when its signature matches the key built into your copy, and only when it is newer than what runs now.</li>
+    <li><strong>Your settings stay.</strong> The port, who may reach the monitor and the other choices made when it was installed are kept on the box and used by every update.</li>
+    <li><strong>Only root goes online.</strong> The outbound firewall lets root on the box reach GitHub for this; the monitor itself still cannot reach the internet.</li>
+    <li><strong>Undo for two days.</strong> Each update keeps its own backup and the previous version for two days. Two ways back are offered in the same card:
+      <ul>
+        <li><em>Back to the previous version, keep today's data.</em> Everything since the update stays; features new in the update are gone until you update again. This is only offered when the update did not change how the data is stored.</li>
+        <li><em>Back to the previous version with the data from before the update.</em> Anything changed since the update (history, devices, settings) is lost.</li>
+      </ul>
+      Either way the state at that moment is backed up first (backups, pre-rollback).</li>
+    <li><strong>First time:</strong> an install made before 0.8.0 needs one <code>bash infra.sh --upgrade</code> from the Proxmox host, which records its settings on the box. From then on Update works from the app.</li>
+  </ul>
+  <h3>Upgrading</h3>
+  <p>On the Proxmox host: <code>bash infra.sh --upgrade</code> (on a <code>--local</code> install: <code>sudo bash infra.sh --local --upgrade</code>). The container is the one with the Proxmox tag <code>homelab-monitor</code>; with several tagged it asks which. Only Proxmox's own container settings are read to find it, nothing inside other guests. Without a tagged container it stops and shows how to add the tag (a container made by an older <code>infra.sh</code> needs it once):</p>
+  <pre>ID=201; T=$(pct config $ID | awk '/^tags:/ {print $2}'); pct set $ID --tags "homelab-monitor${T:+;$T}"</pre>
+  <p>Use your container's ID (<code>pct list</code> shows them). An upgrade changes only the monitor inside the container: its CPU, memory, disk, network and start at boot stay as they are. It shows the same progress screen as an install (each step, a bar and the time) and ends on a summary of what its check found. The steps:</p>
+  <ol>
+    <li>Checks the container and your data with the new version first (it tries the update on a copy of your database). If something blocks it, it stops with nothing changed and says how to rebuild instead.</li>
+    <li>Installs anything the check found missing (a package, a folder).</li>
+    <li>Backs up.</li>
+    <li>Replaces the app (data, settings and passwords stay).</li>
+    <li>Waits for the new version to answer. If it does not, it puts the old version and data back by itself.</li>
+  </ol>
+  <p><code>bash infra.sh --check</code> runs only the check, if you want to look without upgrading.</p>
+  <p>Settings, System shows the version now running. A new middle number (0.3 to 0.4) brings new features and may update the database; a new last number (0.3.0 to 0.3.1) brings fixes. Your next login after an upgrade lists what changed.</p>
+  <h3>Restoring a backup into the same container</h3>
+  <p>When the monitor misbehaves and you want to start again from a backup without a new container: <em>Restore a backup</em> in the menu, or <code>bash infra.sh --restore</code> (<code>sudo bash infra.sh --local --restore</code> on a VM). It finds the container by its tag and lists every backup the container can see: its own backup folder (daily ones and those made before an upgrade or restore), the Syncthing folder, any mounted share and <code>/root</code>. Each line shows when it was made, the version that made it and its size, newest first. Pick one by its number, then type <em>RESTORE</em>. It then:</p>
+  <ol>
+    <li>Checks the backup with the new version first; one it cannot restore is refused with nothing changed.</li>
+    <li>Keeps a copy of what is there now (in the backup folder, under pre-restore).</li>
+    <li>Wipes the app and its data, puts a fresh copy of the app in and restores the backup.</li>
+    <li>Waits for the monitor to answer. If any of this fails, the copy from step 2 is put back.</li>
+  </ol>
+  <p>Before you type <em>RESTORE</em> it shows the site settings in the backup (shares and Syncthing) that will be applied afterwards; any that break the rules above are marked <em>Refused, not applied</em>. A backup whose key is sealed asks for the backup passphrase. Only backups with plain file names (letters, digits, dot, dash and underscore) are listed.</p>
+  <p>The container itself (CPU, memory, disk, network) is not changed. With no backup in any of those places it stops and says so: copy one into the container first, for example from the Proxmox host with <code>pct push 201 monitor-backup-&lt;date&gt;.tar.gz /var/lib/homelab-monitor/backups/monitor-backup-&lt;date&gt;.tar.gz</code>, or mount the share that holds them. Log in afterwards with the accounts from the backup.</p>
+  <h3>Rebuilding and restoring</h3>
+  <p>For a container that cannot be upgraded in place or a new host: set <code>RESTORE="latest"</code> and the backup source at the top of <code>infra.sh</code>, then <code>bash infra.sh --rebuild</code>. A rebuild finds the container by its tag too and makes the new one with the old one's ID, name, CPU, memory, disk and network card (address and MAC). Or restore by hand in the container with <code>/root/restore.sh</code>. A restore checks the backup first: one from a newer version or a damaged one is refused and your current data stays. An older backup is brought up to date; anything in it the new version no longer uses is kept, not deleted.</p>
+</section>
+
+<section id="trouble" data-title="Troubleshooting">
+  <h2>Troubleshooting</h2>
+  <dl>
+    <dt><code>env: 'bash\r': No such file or directory</code> when running infra.sh</dt>
+    <dd>The file was saved with Windows line endings (an editor or a text-mode copy). Run it as <code>bash infra.sh ...</code>: it fixes itself and carries on. Or once: <code>sed -i 's/\r$//' infra.sh</code>.</dd>
+    <dt>Proxmox connects but shows almost nothing</dt>
+    <dd>The token has no permission of its own. Add the API Token Permission (see <a href="#/guide/proxmox">Proxmox</a>); <em>Test connection</em> names what is missing.</dd>
+    <dt>"SNMP agent not responding (host answers ping)"</dt>
+    <dd>The community is wrong, SNMP is off or a firewall blocks UDP 161. If the device has no SNMP at all, set its template to <em>Ping only</em> in Edit device.</dd>
+    <dt>"SNMP agent only exposes basic system information"</dt>
+    <dd>The host's snmpd allows only the system group. On Linux hosts use <a href="#/guide/device">Fix SNMP</a>.</dd>
+    <dt>Fix SNMP: "could not log in over SSH"</dt>
+    <dd>Check the credential. Debian and Ubuntu refuse root password logins by default. <strong>Copy console commands</strong> (beside Preview changes) gives one line to paste on the host that lets the monitor in; or use an SSH key credential or a user with passwordless sudo.</dd>
+    <dt>Fix SNMP: "snmpd did not start"</dt>
+    <dd>The message includes snmpd's own log lines; the previous file was put back. Fix what they name or use <em>Copy as commands</em>.</dd>
+    <dt>A device page or graph looks out of date after an upgrade</dt>
+    <dd>Reload the page with Ctrl+F5 so the browser fetches the new files.</dd>
+  </dl>
+</section>

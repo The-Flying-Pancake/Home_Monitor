@@ -1,0 +1,12 @@
+{
+  "profile_id": "ping_only",
+  "name": "Ping only (no SNMP)",
+  "vendor": "Any",
+  "category": "ping",
+  "match_priority": -1,
+  "snmp": false,
+  "notes": "No SNMP. Every ping interval the monitor sends an ICMP echo: up or down, the response time, availability and the unreachable alert. For anything with an address that does not run SNMP: phones, TVs, cameras, smart plugs, consoles, other people's equipment.",
+  "signature_oids": [],
+  "tables": [],
+  "metrics": []
+}

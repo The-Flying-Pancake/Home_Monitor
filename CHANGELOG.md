@@ -1,0 +1,241 @@
+# Changelog
+
+Every change to Home Monitor, newest first. The app shows the same notes in shorter form under
+Guide, What's changed.
+
+## Version numbers
+
+`APP_VERSION` in `server.py` is shown in the app, written into infra.sh and recorded in every backup.
+
+- **Minor** (0.7.0 to 0.8.0): new features or a database change (an upgrade migrates the database).
+- **Patch** (0.7.0 to 0.7.1): fixes and small adjustments to existing features.
+- **Major** (1.0.0): once the project is settled enough to call it finished.
+
+Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 are listed by release number and date only.
+
+## Releases
+
+### 0.8.0: Release 26, Update from the app, demo mode (2026-11-08)
+
+- Settings, Updates checks the project's releases and installs a new version in place. A release is installed only when its signature matches the key built into your copy and it is newer than what runs now.
+- Every update backs up first and keeps that backup with the previous version for two days. If the new version does not start, the previous one is put back by itself.
+- For those two days the update can be undone: back to the previous version with today's data (when the data still suits it) or with the data from just before the update. The state at that moment is backed up first.
+- Updating keeps the settings the monitor was installed with, such as its port and who may reach it. Only root on the box can reach GitHub; the monitor itself stays offline. bash infra.sh --upgrade still works without internet access.
+- Demo mode (MONITOR_DEMO=1 with demo.py seed) fills the app with sixteen made-up devices and a week of believable history, for trying it out or testing without a real network.
+
+### 0.7.0: Release 25, Security hardening (2026-11-08)
+
+- Stronger protection all round, after a full security review of the app and of how it is installed. Nothing changes in day to day use; a few actions now ask a little more.
+- The Test buttons for Pi-hole, UniFi and Proxmox ask for the password again when the address or certificate changes, so a stored password is only ever sent to the place it was saved for. They also ask for your password first, like saving.
+- Users who may manage users can no longer make anyone an administrator, give permissions they do not have themselves, change an administrator or change their own rights. Workflow run logs need workflow rights and show only the devices you can see.
+- Workflows: saving one asks for your password and checks your device access; a scheduled run is skipped when the person who saved it no longer has the rights. Changing a device's address forgets its approved SSH host key; using a password credential in an action needs Manage credentials.
+- Find my chat now listens only while you search and shows the chat's name for you to confirm. Logins, password checks and 2FA codes are limited per account as well as per address, a code can be used only once even when sent twice at the same moment. Turning 2FA on or off logs out your other sessions.
+- Web checks no longer follow redirects or reach the monitor's own addresses. Browsers are told to stay on HTTPS once they have used it.
+- The container: only SSH and the web page can be reached from outside, from private addresses or the ones in ADMIN_NET; new SSH connections are limited per address. ROOT_SSH_KEY switches root to key logins only.
+- Backups can seal their key with a passphrase (BACKUP_PASSPHRASE), so a copy of the backup share opens nothing without it. Restore shows the shares and Syncthing settings a backup will apply and only lists backups with plain file names.
+- Shares and the Syncthing folder must sit below /mnt or /srv and are mounted so nothing on them can run as a program. The container checks this itself before mounting, whatever the database or a backup says.
+- New setting UNPRIVILEGED=1 makes the safer kind of container, where the Proxmox host copies files in from NFS shares. The installer checks the app it carries against a checksum, sets the root password without showing it to other programs and carries Syncthing's signing key instead of downloading it.
+
+### 0.6.0: Release 24, Restore in place, upgrade screens, phones (2026-11-08)
+
+- The installer menu has Restore a backup (also bash infra.sh --restore). It keeps the container, lists every backup it can see (the container's own folder, the Syncthing folder, mounted shares and /root) with date, version and size. It restores the one you pick: a copy of what is there now is kept first, the app and its data are wiped, a fresh copy of the app goes in and the backup is restored. No backups found: it stops and says where to put one.
+- If a restore fails after the wipe, the copy of what was there is put back. The container's CPU, memory, disk and network are never changed.
+- Upgrade and the upgrade check use the same progress screen as an install (steps, a bar and the time), then end on a framed summary with what the check found.
+- Phones: the menu is a drawer behind the menu button at the top left, pages fit the screen instead of zooming out, tables scroll sideways inside their panel, dashboard tiles and grids drop to one column and windows fill the screen.
+- Phones: fields use larger text, so the phone no longer zooms in when you tap one. The Devices list shows status, name, address and ping; the device's page has the rest.
+
+### 0.5.0: Release 23, Accurate groups, quicker all-clears, SSH in one paste (2026-11-08)
+
+- A grouped offline message lists the devices behind each one and counts them: Offline (6): switch-01 (+ nas-01, web-app), media-server (+ downloads), test.
+- Guest is stopped clears within a minute of Proxmox reporting the guest running. It used to wait out Resolve after as well.
+- Volume or disk filling up warns only from 80% full. A disk at 57% that grows quickly is no longer a warning.
+- Fix SNMP and Host actions: when SSH does not let the monitor in, Copy console commands gives one line to paste into the host's root shell. It installs SSH when missing, lets the monitor's address log in with a password or key (root too, from that address only) and restarts SSH. Then try again.
+- The installer: a new container gets a 20 GB disk. A first install asks for the container ID, its name and DHCP or a fixed address (with gateway), in a framed box with your settings as the answers Enter keeps.
+- Running bash infra.sh without options shows a menu (install, upgrade, check, rebuild, preview); the choice is confirmed with yes. --upgrade and the other options skip it.
+- Upgrade, check and rebuild find the monitor's container by its Proxmox tag homelab-monitor, set on new installs. Without the tag they stop and show the command that adds it. Upgrades never change the container's CPU, memory, disk or network; a rebuild keeps them too.
+
+### 0.4.0: Release 22, Several dashboards, tags you can see, a calmer Edit device (2026-11-08)
+
+- Several dashboards: + Add dashboard starts a blank one or one of 20 ready-made ones (Proxmox, Wi-Fi, Morning check, Wall screen and more). Switch between them from the list beside the title; each is saved for everyone.
+- Edit dashboard can rename the dashboard and each tile (Rename on the tile) and delete a dashboard.
+- New tiles: Offline now, Proxmox guests, Pi-hole, Disks filling up, Host actions, Workflow runs, Maintenance windows, New devices and a Note.
+- Tags on the Devices page: + tag shows how many tags a device has; hover over it to see them. Clicking it opens a tag manager: the applied tags (click to remove), the other tags (click to add) and a box for a new one. Adding or removing tags for several devices uses the same window.
+- Edit device is wider and split in two: the device (name, address, group, tags) and how it is watched (template, ping, SNMP as one optional part).
+- Automation: the steps on the left are grouped and coloured by what they do, the same colours as on the canvas. Templates are a second tab on the left; the right side shows what you picked.
+- Eight new workflow templates made of host actions: weekly tidy-up, disk filling up, security report, updates then restart outdated services, Docker tidy-up, disk health, Proxmox host check and clearing failed services.
+- Signed out, the login screen is the whole page: refreshing never shows the page behind it. You still return to where you were after logging in.
+- Going into Settings and back slides the menu instead of switching it at once.
+
+### 0.3.1: Release 21, Quieter nights and better grouping (2026-11-07)
+
+- Back online and resolved messages never ring in the silent window. They used to carry the outage's critical severity and rang.
+- Grouping waits until messages stop coming, so machines shut down one after another arrive as one message (at most four times Wait to group).
+- Grouped messages list Proxmox messages in their own section.
+- A problem on a device that is already offline is not sent: the offline message covers it. A Proxmox guest stopped on a machine you shut down no longer sends a second message.
+- Send silent test (Settings, Notifications) sends a message without a sound and shows the monitor's clock.
+- Device restarted leaves Active problems after a minute instead of 30.
+
+### 0.3.0: Release 20, Host actions for Linux machines (2026-11-07)
+
+- Host actions: 30 fixed maintenance jobs for Linux hosts, run once over SSH from the host's page or from one of its problems (Fix...).
+- A problem lists the actions that suit it first. Storage filling up starts with Disk space: what is using it.
+- Checks change nothing and run at one click. Clean-ups show what they would remove before they run.
+- Restarts ask for the host's name and can take a Proxmox snapshot first. Restarting the whole machine mutes its notifications until it is back.
+- Make this a workflow saves an action as a workflow on that host, to repeat on a schedule. The same jobs are in the workflow command templates.
+- Every run is kept with its output on the Automation page and in the audit log.
+
+### Release 19, A calmer inventory and fewer shutdown alerts (2026-11-07)
+
+- Edit and Forget in the Inventory work again (they failed with Endpoint not found). Known on a row marks a device known straight away, online or not.
+- Add a device puts in an address as known before it is ever seen.
+- A Wi-Fi network column shows the SSID each Wi-Fi device last joined.
+- Quiet networks: devices on a tenant's or guest SSID are kept but never announced or counted as new. One device can be made quiet too.
+- A device that is always weak on Wi-Fi can be left out of the weak-signal problem from its Edit window. It can also get a lower line of its own.
+- Shutting a machine down sends one offline message: its SNMP warning waits a minute and a half and is dropped once the device is offline.
+
+### Release 18, Install without a container (2026-11-05)
+
+- The installer can skip the Proxmox container: infra.sh --local installs the monitor on the machine it runs on, a VM for example. Upgrades work the same way with --local --upgrade.
+
+### Release 17, Fewer messages, quieter restarts, a better guide (2026-11-04)
+
+- Messages that come at once are grouped: restart four access points and you get one message listing them, not one for each device. Settings, Notifications, When.
+- A workflow step Suppress notifications keeps Telegram quiet for the devices it restarts until the run ends (plus a few minutes), without hiding the problems.
+- Send Telegram in a workflow can send quietly, without a sound.
+- The restart templates suppress notifications by default. New templates: snapshot, update and restart Proxmox guests; restart a service; free disk space; a health check; update Pi-hole; reconnect weak Wi-Fi.
+- More command templates: free disk space, restart a service, a quick health check, Pi-hole updates and listing Proxmox guests.
+- The guide has chapters, numbered topics and a proper search box. It fits the window.
+
+### Release 16, Smarter message texts (2026-11-04)
+
+- Every Telegram text understands conditions: {if down > 0} ... {else} ... {end}. Notifications, workflow messages and command replies alike.
+- Arithmetic with {= up / total * 100 | round:1} and filters such as round, default, plural, bar, truncate, sort, first and join.
+- Your own commands can be sorted by any of their placeholders (highest first if you like) and kept to at most so many lines.
+- Up to 95 commands of your own.
+- The message editors are wider and list these tricks to click in. Their preview uses the real engine.
+
+### Release 15, Your own Telegram commands (2026-11-04)
+
+- Settings, Notifications, Commands is now a command builder: the built-in commands with their replies and Add command for your own.
+- A command of your own shows what you choose: devices (picked one by one, by tag or by group), Wi-Fi networks, access points or devices, Proxmox guests, nodes or storage, Pi-hole, problems or storage forecasts.
+- Write a header, a line repeated for each item and a footer, with placeholders: dozens per source plus any figure a device records. The preview is the real reply, from your data now.
+- Filters such as only down, only running or only weak. A word after the command narrows the list: /wifi guest.
+- Any command can be switched off, the built-in ones too. Telegram's command menu (type /) lists exactly what is on.
+
+### Release 14, Ask the Telegram bot (2026-11-04)
+
+- Send your bot /status, /problems, /device NAME or /changes and it answers: what is down, what is wrong, one device's figures and the last 24 hours.
+- The commands only read. Only your own chat gets answers; any other is ignored and noted in the audit log.
+- Write the replies your way: Settings, Notifications, Commands has a text for each one, with placeholders and a preview of your own figures.
+- Switch it off with Answer commands in Settings, Notifications, Delivery.
+
+### Release 13, More from Proxmox; a tidier Inventory (2026-11-04)
+
+- The map places every monitored VM and container on the Proxmox node that runs it.
+- New alert rules: a guest that starts at boot but is not running, one that keeps restarting, memory or a container's disk nearly full.
+- Proxmox storage pools get forecasts: the node's Storage tab says when each one will be full.
+- Monitor buttons on the Proxmox page and on the Inventory open the Add window with the name and address filled in.
+- With a second token that may make changes: start, shut down and reboot guests from the Proxmox page. The workflow step Snapshot a Proxmox guest takes a snapshot before an update.
+- The Inventory shows each device once. Access points and other UniFi gear used to appear once for every network card and radio.
+
+### Release 12, Wi-Fi and Pi-hole pages; a map that knows (2026-11-04)
+
+- With UniFi connected, the map uses UniFi's own layout: which port each switch and access point is plugged into. Devices on Wi-Fi hang off the access point they are on.
+- A Wi-Fi page: every access point side by side and every Wi-Fi device in one list, weakest signal first.
+- Reconnect a device stuck on a far access point, from the Wi-Fi page or with the workflow step Reconnect weak Wi-Fi. At most once an hour per device; a never-reconnect list keeps printers and gadgets out of it.
+- A Pi-hole page: today's figures, where queries go and what is blocked most. Pause blocking for 5, 30 or 60 minutes; it comes back on by itself. A pause raises no alert.
+- UniFi accepts the site by its name (Home) or its id (default).
+
+### Release 11, Fewer surprises (2026-11-04)
+
+- One alert for one failure: when a switch goes down you get one message for it, listing the devices behind it, instead of one for each.
+- Maintenance windows: start one on a device page; Settings sets one for a group, a tag or everything. Problems still show but no messages are sent. The downtime counts as planned.
+- Forecasts: the Storage tab says when a volume or disk will be full at the rate it is growing; an alert rule warns two weeks ahead.
+- Website checks on https:// addresses warn 21 days before the site's certificate runs out.
+- A new Inventory page lists every device seen on the network, where it is plugged in and when it first appeared. A device never seen before is announced.
+- Pi-hole: queries, blocking and a real DNS check every minute, on the Pi-hole's own DNS tab. DNS that is down or slow opens a problem.
+- UniFi: signal, speed, roaming and experience for every Wi-Fi device, on each access point's Wireless tab.
+- An optional daily or weekly summary on Telegram (Settings, Notifications, When).
+
+### Release 10, Custom SNMP values that do something; your own Overview (2026-11-04)
+
+- Custom SNMP values have their own tab on each device, with a graph for each value and the SNMP browser built in.
+- A custom value can go on the Overview, open a problem at a threshold and start a workflow. Automation lists them by the names you gave them.
+- Choose which graphs a device's Overview shows (Choose graphs). Or press Add to overview on any graph in the Graphs tab.
+- Tags are easier to reach: + tag beside every device on the Devices page. The tag filter is always there.
+- Adding a dashboard tile asks which devices it covers: all of them, a group or a tag.
+- This window: after an upgrade, your next login shows what changed.
+
+### Release 9, HTTPS (2026-11-04)
+
+- The monitor can be served over HTTPS, so passwords cannot be read off the network: with a certificate it makes itself or with your own (Settings, HTTPS).
+- Old http:// links and bookmarks are sent on to https:// automatically.
+- Certificates are kept in backups. You are warned before your own certificate expires.
+
+### Release 8, A clearer map (2026-11-04)
+
+- The map is redrawn: each device is a card with its state, icon, address and kind. Lines run neatly from box to box with the switch ports marked on them.
+- A box you drop snaps into place. Everything connected below it moves along.
+- Zoom buttons, Fit and a key sit on the map itself.
+- The monitor is no longer drawn on the map; the side panel says where it connects.
+- On graphs with several lines, click a name under the graph to hide or show that line.
+
+### Release 7, Groups, tags and a guide (2026-11-04)
+
+- Make your own groups, rename any group and choose the order.
+- Tags label devices (office, critical) with a colour and a description. The Devices, Availability and Events pages filter by tag.
+- Alert rules per tag: for example everything tagged critical can alert sooner.
+- Dashboard tiles can show just one group or one tag.
+- A Guide page in the menu explains every part of the monitor, with search.
+
+### Release 6, Ping only devices, port scans and a clearer Add window (2026-11-04)
+
+- Add something that only answers ping, with no SNMP needed. Scans suggest this for hosts without SNMP.
+- Service scans check common ports, the ports you choose or all 65,535 (with a warning first). A running scan can be stopped.
+- The Add window starts by asking what you are adding: something to ping, a device with statistics or a service.
+- Setup can add any host as ping only. A new step looks for services on the devices you picked.
+
+### Release 5, Safer upgrades (2026-11-04)
+
+- An upgrade first checks your data with the new version and takes a backup. If the new version does not start, it puts everything back by itself.
+- Restoring a backup checks it against this version first.
+- An installer that was edited on Windows repairs itself instead of failing.
+
+### Release 4, Availability ranges and smoother graphs (2026-11-04)
+
+- Availability shows 24 hours, 7, 30 or 90 days, on its page and on each device.
+- Graph lines are smooth curves; busy graphs show an average with a faint band up to the peaks.
+- The setup guide only appears the first time and is no longer in the menu.
+- The readout when you hover over an enlarged graph is no longer hidden behind the window.
+
+### Release 3, Proxmox and Fix SNMP, fixed (2026-11-02)
+
+- Proxmox is switched on in Settings and gets its own page in the menu once it is connected.
+- Click a Proxmox node, VM or container to see its CPU, memory, network and disk graphs.
+- When a Proxmox token lacks permissions, the page says which ones instead of showing almost nothing.
+- Fix SNMP now works on hosts and containers where it failed before.
+- While you are in Settings its own menu replaces the main one, with Back to where you came from.
+- Tables and settings line up properly.
+
+### Release 2, Backups and quieter notifications (2026-11-02)
+
+- With Syncthing on, backups go straight into the synced folder, so your NAS holds them.
+- The audit log can be searched and filtered by category and time.
+- A quiet window for Telegram: messages still arrive, without a sound, between the times you choose. Serious problems still ring.
+- Notification settings are split into Delivery, When and Messages.
+
+### Release 1, Security, availability and checks for websites (2026-11-02)
+
+- Two-step login: each user can add an authenticator app, with recovery codes for a lost phone.
+- Sensitive actions ask for your password again; the most sensitive ones (credentials, users) also ask for your authenticator code.
+- Forgot your password? Reset it with your authenticator and a code sent to Telegram. From the container, /root/reset-admin.sh does it too.
+- A new Availability page shows uptime over 24 hours, 7, 30 and 90 days, with response times and incidents, like a status page.
+- Website checks: watch a page by its address, the answer it should give and text it must contain.
+- A Proxmox dashboard: nodes, VMs, containers, storage, backups and failed tasks, read only.
+- Graphs: drag across one to zoom in. Enlarge opens it in its own window.
+- Telegram messages wait and try again while the internet is down; a message editor with ready-made texts; newly added devices stay quiet at first.
+- Automation can send a Telegram message. Workflows can also start by themselves when something happens: a value crosses a line, a device goes offline, a service stops or a problem opens.
+- Custom SNMP values: poll values a device's template does not read, found by browsing what the device answers.
+- Fix SNMP rewrites a device's SNMP settings cleanly and shows you exactly what it will change first.
+- Adding devices: scan several networks at once and look for services on a range of ports.
+- Buttons that delete or change a lot wait a moment before they can be pressed.

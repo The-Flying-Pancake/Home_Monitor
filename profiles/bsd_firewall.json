@@ -1,0 +1,99 @@
+{
+  "profile_id": "bsd_firewall",
+  "name": "pfSense / OPNsense firewall",
+  "vendor": "Netgate / Deciso",
+  "category": "firewall",
+  "match_priority": 20,
+  "notes": "Written from the vendor's published MIB; not yet confirmed on real hardware.",
+  "signature_oids": [
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "pfsense"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "opnsense"
+    },
+    {
+      "oid": "1.3.6.1.4.1.12325.1.200.1.1.1.0",
+      "match_exists": true
+    }
+  ],
+  "tables": [
+    "interfaces",
+    "storage",
+    "arp"
+  ],
+  "metrics": [
+    {
+      "key": "uptime_seconds",
+      "oid": "1.3.6.1.2.1.1.3.0",
+      "type": "timeticks",
+      "unit": "seconds",
+      "history": "none"
+    },
+    {
+      "key": "cpu_usage_pct",
+      "walk": "1.3.6.1.2.1.25.3.3.1.2",
+      "aggregate": "avg",
+      "type": "integer",
+      "unit": "percent"
+    },
+    {
+      "key": "mem_hr_size_units",
+      "walk": "1.3.6.1.2.1.25.2.3.1.5",
+      "filter_walk": "1.3.6.1.2.1.25.2.3.1.2",
+      "filter_equals": "1.3.6.1.2.1.25.2.1.2",
+      "aggregate": "sum",
+      "type": "integer",
+      "history": "none"
+    },
+    {
+      "key": "mem_hr_used_units",
+      "walk": "1.3.6.1.2.1.25.2.3.1.6",
+      "filter_walk": "1.3.6.1.2.1.25.2.3.1.2",
+      "filter_equals": "1.3.6.1.2.1.25.2.1.2",
+      "aggregate": "sum",
+      "type": "integer",
+      "history": "none"
+    },
+    {
+      "key": "cpu_load_1m",
+      "oid": "1.3.6.1.4.1.2021.10.1.3.1",
+      "type": "string_float",
+      "unit": "load"
+    },
+    {
+      "key": "pf_states",
+      "oid": "1.3.6.1.4.1.12325.1.200.1.3.1.0",
+      "type": "integer",
+      "label": "Firewall states",
+      "unit": "count",
+      "group": "Firewall",
+      "kpi": true
+    },
+    {
+      "key": "pf_running",
+      "oid": "1.3.6.1.4.1.12325.1.200.1.1.1.0",
+      "type": "integer",
+      "label": "Packet filter",
+      "group": "Firewall",
+      "values": {
+        "1": "Running",
+        "2": "Stopped"
+      },
+      "history": "change",
+      "event": true
+    }
+  ],
+  "alerts": [
+    {
+      "key": "pf_running",
+      "in": [
+        2
+      ],
+      "severity": "critical",
+      "message": "Packet filter {value}"
+    }
+  ]
+}

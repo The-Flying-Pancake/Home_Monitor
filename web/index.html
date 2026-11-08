@@ -1,0 +1,1740 @@
+<!DOCTYPE html>
+<html lang="en" data-auth="pending">
+<head>
+  <meta charset="UTF-8">
+  <title>Network Monitor & Automation</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/workflows.css">
+  <script src="/theme.js"></script>
+</head>
+<body>
+
+  <div class="app-shell" id="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+      </span>
+      <span class="brand sidebar-text">Network Monitor</span>
+    </div>
+    <nav class="side-nav" aria-label="Main">
+      <a href="#/dashboard" id="nav-dashboard" class="nav-link active" title="Dashboard">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+        <span class="sidebar-text">Dashboard</span></a>
+      <a href="#/devices" id="nav-devices" class="nav-link" title="Devices">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1"/><rect x="3" y="13" width="18" height="7" rx="1"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
+        <span class="sidebar-text">Devices</span></a>
+      <a href="#/availability" id="nav-availability" class="nav-link" title="Availability">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"/></svg>
+        <span class="sidebar-text">Availability</span></a>
+      <a href="#/proxmox" id="nav-proxmox" class="nav-link hidden" title="Proxmox">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="6" rx="1"/><rect x="3" y="15" width="18" height="6" rx="1"/><path d="M7 9v6M17 9v6M7 6h.01M7 18h.01"/></svg>
+        <span class="sidebar-text">Proxmox</span></a>
+      <a href="#/map" id="nav-map" class="nav-link" title="Map">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5v4M12 11.5l-6 5.5M12 11.5l6 5.5"/></svg>
+        <span class="sidebar-text">Map</span></a>
+      <a href="#/wifi" id="nav-wifi" class="nav-link hidden" title="Wi-Fi">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 9a15 15 0 0 1 20 0M5 12.5a10.5 10.5 0 0 1 14 0M8.5 16a5.5 5.5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1.2"/></svg>
+        <span class="sidebar-text">Wi-Fi</span></a>
+      <a href="#/pihole" id="nav-pihole" class="nav-link hidden" title="Pi-hole">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6z"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>
+        <span class="sidebar-text">Pi-hole</span></a>
+      <a href="#/inventory" id="nav-inventory" class="nav-link hidden" title="Inventory">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="6" rx="1"/><rect x="4" y="14" width="16" height="6" rx="1"/><path d="M8 7h3M8 17h3"/></svg>
+        <span class="sidebar-text">Inventory</span></a>
+      <a href="#/events" id="nav-events" class="nav-link" title="Events">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg>
+        <span class="sidebar-text">Events</span></a>
+      <a href="#/automation" id="nav-automation" class="nav-link" title="Automation">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>
+        <span class="sidebar-text">Automation</span></a>
+      <a href="#/settings" id="nav-settings" class="nav-link" title="Settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+        <span class="sidebar-text">Settings</span></a>
+      <a href="#/audit" id="nav-audit" data-perm="audit.view" class="nav-link" title="Audit Log">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>
+        <span class="sidebar-text">Audit Log</span></a>
+      <a href="#/guide" id="nav-guide" class="nav-link" title="Guide">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M8 7h7M8 11h7"/></svg>
+        <span class="sidebar-text">Guide</span></a>
+    </nav>
+    <!-- Settings: its own menu replaces the main one while a settings page is open (.in-settings). -->
+    <div class="side-settings" id="side-settings">
+      <a href="#/dashboard" class="side-back" id="settings-back" title="Back to the app">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg>
+        <span class="sidebar-text">Back</span></a>
+      <div class="side-settings-title">Settings</div>
+      <nav class="settings-nav" id="settings-nav" aria-label="Settings"></nav>
+    </div>
+    <!-- First-run setup: replaces the menu until setup is complete (setup.js, .setup-locked). -->
+    <div class="side-setup" id="side-setup">
+      <div class="side-setup-title sidebar-text">First-run setup</div>
+      <ol class="side-setup-steps" id="setup-side-steps"></ol>
+    </div>
+    <button type="button" class="side-collapse" id="btn-sidebar-collapse" title="Collapse the menu" aria-label="Collapse the menu">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg>
+      <span class="sidebar-text">Collapse</span>
+    </button>
+  </aside>
+  <!-- Phones: the menu slides in over the page; tapping beside it closes it. -->
+  <div class="sidebar-scrim" id="sidebar-scrim" aria-hidden="true"></div>
+
+  <div class="app-main">
+  <header class="topbar" id="topbar">
+    <button type="button" class="icon-btn menu-btn" id="btn-menu" title="Menu" aria-label="Open the menu" aria-controls="sidebar" aria-expanded="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <span class="topbar-title" id="topbar-title"></span>
+    <span class="topbar-spacer"></span>
+    <div class="topbar-tools hidden" id="header-user">
+      <div class="bell-wrap">
+        <button type="button" class="icon-btn" id="btn-bell" title="Notifications" aria-label="Notifications" aria-haspopup="true" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>
+          <span class="bell-count hidden" id="bell-count"></span>
+        </button>
+        <div class="bell-panel hidden" id="bell-panel" role="dialog" aria-label="Notifications">
+          <div class="bell-head">
+            <strong>Notifications</strong>
+            <span class="topbar-spacer"></span>
+            <button type="button" class="btn btn-small" id="btn-bell-read">Mark all read</button>
+          </div>
+          <div class="bell-list" id="bell-list"></div>
+          <a href="#/events" class="bell-foot" id="bell-all">Open the event log</a>
+        </div>
+      </div>
+      <button type="button" class="icon-btn" id="btn-theme" title="Switch to light mode" aria-label="Switch theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-moon"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+      <div class="user-wrap">
+        <button type="button" class="user-btn" id="btn-user" aria-haspopup="true" aria-expanded="false">
+          <span class="user-avatar" id="header-avatar"></span>
+          <span id="header-username"></span>
+        </button>
+        <div class="user-menu hidden" id="user-menu">
+          <div class="dim user-role" id="header-role"></div>
+          <a href="#/settings/account" class="user-menu-item">Account and password</a>
+          <button type="button" class="user-menu-item" id="btn-logout">Log out</button>
+        </div>
+      </div>
+    </div>
+  </header>
+  <div class="app-content" id="app-content">
+
+  <!-- Login / first-run account setup. Shown over everything until a session exists. -->
+  <div id="auth-screen" class="auth-screen hidden">
+    <form id="auth-form" class="auth-card" autocomplete="on">
+      <div class="brand">Network Monitor & Automation</div>
+      <div class="auth-title" id="auth-title">Log in</div>
+      <div class="form-help hidden" id="auth-setup-help">No administrator account exists yet. Choose a username and a password of at least <span id="auth-min"></span> characters. Keep the password in your password manager. If it is ever lost, <code>/root/reset-admin.sh</code> on the container sets a new one.</div>
+      <div class="auth-fields" id="auth-fields">
+        <div class="form-group">
+          <label for="auth-username">Username</label>
+          <input type="text" id="auth-username" autocomplete="username" required>
+        </div>
+        <div class="form-group">
+          <label for="auth-password">Password</label>
+          <input type="password" id="auth-password" autocomplete="current-password" required>
+        </div>
+        <div class="form-group hidden" id="auth-confirm-group">
+          <label for="auth-password2">Repeat password</label>
+          <input type="password" id="auth-password2" autocomplete="new-password">
+        </div>
+        <div class="form-group hidden" id="auth-token-group">
+          <label for="auth-token">Setup code (shown by the installer)</label>
+          <input type="text" id="auth-token" autocomplete="off" spellcheck="false">
+          <div class="auth-warning">The installer shows the setup code only once. Lost it? Sign in to the container with <code>ssh root@&lt;this address&gt;</code> and run <code>/root/setup-code.sh</code> for a new one. That works only until the first account exists.</div>
+        </div>
+      </div>
+      <div class="form-group hidden" id="auth-code-group">
+        <label for="auth-code">Authenticator code</label>
+        <input type="text" id="auth-code" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" maxlength="10" placeholder="6 digits, or a recovery code">
+        <div class="form-help">Open your authenticator app and enter the code for Homelab Monitor.</div>
+      </div>
+      <div class="auth-error hidden" id="auth-error"></div>
+      <button type="submit" class="btn btn-primary" id="auth-submit">Log in</button>
+      <button type="button" class="link-btn hidden" id="auth-forgot">Forgot your password?</button>
+    </form>
+    <form id="recover-form" class="auth-card hidden" autocomplete="off">
+      <div class="brand">Network Monitor & Automation</div>
+      <div class="auth-title">Reset your password</div>
+      <div class="form-help" id="recover-help">Needs your authenticator app. A one-time code is then sent to the monitor's Telegram chat. No 2FA or no Telegram? Run <code>/root/reset-admin.sh</code> on the container instead.</div>
+      <div id="recover-step1">
+        <div class="form-group"><label for="recover-username">Username</label><input type="text" id="recover-username" autocomplete="username"></div>
+        <div class="form-group"><label for="recover-code">Authenticator code</label><input type="text" id="recover-code" inputmode="numeric" maxlength="10" autocomplete="one-time-code"></div>
+      </div>
+      <div id="recover-step2" class="hidden">
+        <div class="form-group"><label for="recover-tg">Code from Telegram</label><input type="text" id="recover-tg" inputmode="numeric" maxlength="10" autocomplete="off"></div>
+        <div class="form-group"><label for="recover-new">New password</label><input type="password" id="recover-new" autocomplete="new-password"></div>
+        <div class="form-group"><label for="recover-new2">Repeat new password</label><input type="password" id="recover-new2" autocomplete="new-password"></div>
+      </div>
+      <div class="auth-error hidden" id="recover-error"></div>
+      <button type="submit" class="btn btn-primary" id="recover-submit">Send the code</button>
+      <button type="button" class="link-btn" id="recover-back">Back to log in</button>
+    </form>
+  </div>
+
+  <!-- Dashboard -->
+  <main id="view-dashboard" class="view-panel">
+    <div class="setup-banner hidden" id="dash-setup-banner">
+      <div><strong>Setup is not finished.</strong> <span class="dim">The setup guide scans your network, adds devices and sets up backups and notifications.</span></div>
+      <a href="#/setup" class="btn btn-primary">Open setup</a>
+    </div>
+    <div class="section-header">
+      <div class="dash-switch">
+        <span class="section-title page-title" id="dash-title">Dashboard</span>
+        <select id="dash-pick" class="hidden" title="Switch to another dashboard" aria-label="Switch dashboard"></select>
+        <button id="dash-new" data-perm="dashboard.edit" class="btn" title="A blank dashboard or one of the ready-made ones">+ Add dashboard</button>
+      </div>
+      <div class="dash-toolbar">
+        <span class="dim hidden" id="dash-edit-hint">Drag a tile by its header to move it, or by its bottom-right corner to resize it.</span>
+        <select id="dash-columns" class="hidden" title="Grid width"></select>
+        <select id="dash-add" class="hidden"></select>
+        <button id="dash-rename" class="btn hidden" title="Rename this dashboard">Rename</button>
+        <button id="dash-reset" class="btn hidden">Reset to default</button>
+        <button id="dash-delete" class="btn btn-danger hidden" title="Delete this dashboard">Delete</button>
+        <button id="dash-edit" data-perm="dashboard.edit" class="btn">Edit dashboard</button>
+      </div>
+    </div>
+    <div class="dash-grid" id="dash-grid"></div>
+  </main>
+
+  <!-- Devices -->
+  <main id="view-devices" class="view-panel hidden">
+    <div class="stat-row" id="fleet-stats"></div>
+
+    <div id="problems-panel" class="panel hidden">
+      <div class="panel-header-bar" data-collapse="problems" role="button" tabindex="0" aria-expanded="true">Current problems</div>
+      <table id="tbl-problems" class="sortable">
+        <thead>
+          <tr><th data-type="num">Severity</th><th>Device</th><th>Problem</th></tr>
+        </thead>
+        <tbody id="problems-body"></tbody>
+      </table>
+    </div>
+
+    <div class="section-header">
+      <div class="detail-title">
+        <span class="section-title">Monitored devices</span>
+        <span class="chip hidden" id="device-filter-chip"></span>
+      </div>
+      <div class="detail-actions">
+        <span class="selection-bar hidden" id="device-selection">
+          <span class="dim" id="device-selection-count"></span>
+          <button id="btn-select-all" class="btn">Select all shown</button>
+          <button id="btn-select-clear" class="btn">Clear</button>
+          <button id="btn-tag-selected" data-perm="devices.manage" class="btn">Add tags</button>
+          <button id="btn-untag-selected" data-perm="devices.manage" class="btn">Remove tags</button>
+          <button id="btn-delete-selected" data-perm="devices.manage" class="btn btn-danger">Delete selected</button>
+        </span>
+        <select id="devices-filter-group" data-filter-group title="Show one group"><option value="">All groups</option></select>
+        <select id="devices-filter-tag" data-filter-tag class="hidden" title="Show one tag"><option value="">All tags</option></select>
+        <label class="checkbox-label inline"><input type="checkbox" id="devices-group" checked> Group them</label>
+        <button id="btn-poll-all" data-perm="devices.poll" class="btn" title="Check every device now: ping, and SNMP where it is used">Poll all</button>
+        <button id="btn-open-add" data-perm="devices.manage" class="btn btn-primary">+ Add Target</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <table id="tbl-devices" class="sortable">
+        <thead>
+          <tr>
+            <th data-type="num">Status</th>
+            <th>Device</th>
+            <th>Model</th>
+            <th data-type="ip">IP Address</th>
+            <th>Firmware</th>
+            <th data-type="num">Uptime</th>
+            <th data-type="num">Ping</th>
+            <th data-type="num">CPU</th>
+            <th data-type="num">Memory</th>
+            <th data-type="num">Ports Up</th>
+            <th data-type="num">Clients</th>
+            <th data-type="num">Last Seen</th>
+            <th class="no-sort">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="device-table-body">
+          <tr><td colspan="13" class="empty-cell">Loading devices...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <!-- Device Detail -->
+  <main id="view-device-detail" class="view-panel hidden">
+    <div class="section-header">
+      <div class="detail-title">
+        <a href="#/devices" class="btn btn-link-inline">&larr; Devices</a>
+        <span class="status-pill" id="detail-status"></span>
+        <span class="section-title" id="detail-header-name">Device Details</span>
+        <span class="dim" id="detail-header-sub"></span>
+      </div>
+      <div class="detail-actions">
+        <button id="btn-live" data-perm="devices.poll" class="live-pill" title="Live mode: polls this device every few seconds while the page is open. Live samples are kept in memory only.">LIVE</button>
+        <button id="btn-detail-poll" data-perm="devices.poll" class="btn btn-primary" title="Check this device now">Poll now</button>
+        <button id="btn-detail-hostact" data-perm="automation.run" class="btn hidden" title="Checks, clean-ups and restarts for this Linux host, run once over SSH">Host actions</button>
+        <button id="btn-detail-fixsnmp" data-perm="devices.manage" class="btn hidden" title="Widen this host's snmpd view so interfaces, CPU, memory and storage are visible">Fix SNMP</button>
+        <button id="btn-detail-maint" data-perm="problems.ack" class="btn" title="Planned work: keep this device's alerts quiet for a while">Maintenance</button>
+        <button id="btn-detail-alerts" data-perm="settings.alerts" class="btn" title="Thresholds, severities and Telegram choices for this device">Alert rules</button>
+        <button id="btn-detail-edit" data-perm="devices.manage" class="btn">Edit device</button>
+        <button id="btn-detail-delete" data-perm="devices.manage" class="btn btn-danger">Delete</button>
+      </div>
+    </div>
+
+    <div class="panel-note-bar maint-note hidden" id="detail-maint"></div>
+    <div id="detail-problems" class="problem-list hidden"></div>
+
+    <div class="tab-bar" id="detail-tabs">
+      <a data-tab="overview" class="tab active">Overview</a>
+      <a data-tab="ports" class="tab">Ports</a>
+      <a data-tab="neighbours" class="tab">Neighbours</a>
+      <a data-tab="wireless" class="tab">Wireless</a>
+      <a data-tab="storage" class="tab">Storage</a>
+      <a data-tab="health" class="tab">Health</a>
+      <a data-tab="processes" class="tab">Processes</a>
+      <a data-tab="software" class="tab">Software</a>
+      <a data-tab="graphs" class="tab">Graphs</a>
+      <a data-tab="dns" class="tab">DNS</a>
+      <a data-tab="snmp" class="tab" title="Your own SNMP values: read, graph and alert on them">Custom values</a>
+      <a data-tab="latest" class="tab">Latest Data</a>
+      <a data-tab="events" class="tab">Events</a>
+    </div>
+
+    <!-- Overview -->
+    <section class="tab-panel" data-panel="overview">
+      <div class="metrics-summary-row" id="detail-kpis"></div>
+      <div class="panel hidden" id="detail-availability"></div>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header-bar">System</div>
+          <table class="kv-table"><tbody id="detail-system"></tbody></table>
+        </div>
+        <div>
+          <div class="panel">
+            <div class="panel-header-bar">Ports</div>
+            <div class="port-summary" id="detail-port-summary"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header-bar">Recent Events</div>
+            <table><tbody id="detail-recent-events"></tbody></table>
+          </div>
+        </div>
+      </div>
+      <div class="overview-graphs-head">
+        <span class="section-subtitle">Graphs</span>
+        <button type="button" class="btn btn-small" id="btn-overview-graphs" data-perm="devices.manage">Choose graphs</button>
+      </div>
+      <div class="chart-grid" id="overview-charts"></div>
+    </section>
+
+    <!-- Ports -->
+    <section class="tab-panel hidden" data-panel="ports">
+      <div class="toolbar">
+        <label class="checkbox-label inline"><input type="checkbox" id="ports-all"> Show all interfaces (VLANs, bridges, radios, virtual)</label>
+        <input type="text" id="ports-filter" class="filter-input" placeholder="Filter ports...">
+        <span class="dim">Click a row for its traffic graph.</span>
+      </div>
+      <div class="panel">
+        <table id="tbl-ports" class="sortable">
+          <thead>
+            <tr>
+              <th data-type="num">#</th>
+              <th>Port</th>
+              <th>Description</th>
+              <th>Kind</th>
+              <th data-type="num">Status</th>
+              <th data-type="num">Speed</th>
+              <th data-type="num">In</th>
+              <th data-type="num">Out</th>
+              <th data-type="num">Util</th>
+              <th data-type="num">Total In</th>
+              <th data-type="num">Total Out</th>
+              <th data-type="num">Errors</th>
+              <th data-type="num">Discards</th>
+              <th data-type="num">MACs</th>
+              <th data-type="num">MTU</th>
+              <th>MAC Address</th>
+            </tr>
+          </thead>
+          <tbody id="ports-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Neighbours -->
+    <section class="tab-panel hidden" data-panel="neighbours">
+      <div class="toolbar">
+        <input type="text" id="neighbours-filter" class="filter-input" placeholder="Filter by MAC, IP, port or device...">
+        <span class="dim" id="neighbours-note"></span>
+      </div>
+      <div class="panel">
+        <table id="tbl-neighbours" class="sortable">
+          <thead>
+            <tr>
+              <th>MAC Address</th>
+              <th data-type="ip">IP Address</th>
+              <th>Known Device</th>
+              <th data-type="num">VLAN</th>
+              <th>Port / Interface</th>
+              <th>Also Seen On</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody id="neighbours-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Wireless -->
+    <section class="tab-panel hidden" data-panel="wireless">
+      <div class="panel hidden" id="wifi-clients-panel">
+        <div class="panel-header-bar panel-header-row"><span>Wi-Fi devices</span><span class="topbar-spacer"></span><span class="dim" id="wifi-clients-note"></span></div>
+        <table id="tbl-wifi-clients" class="sortable"><thead><tr><th>Device</th><th data-type="num">Signal</th><th>Band</th><th data-type="num">Channel</th>
+          <th data-type="num">Speed</th><th data-type="num">Retries</th><th data-type="num">Roams</th><th data-type="num">Experience</th><th data-type="num">Connected</th></tr></thead>
+          <tbody id="wifi-clients-body"></tbody></table>
+      </div>
+      <div class="panel">
+        <div class="panel-header-bar">Radios</div>
+        <table id="tbl-radios" class="sortable">
+          <thead>
+            <tr>
+              <th>Radio</th><th>Band</th><th data-type="num">Channel</th><th data-type="num">Tx Power</th>
+              <th data-type="num">Clients</th><th data-type="num">Utilisation</th><th data-type="num">Rx Busy</th>
+              <th data-type="num">Tx Busy</th><th data-type="num">Other BSS</th>
+              <th data-type="num">Rx Packets</th><th data-type="num">Tx Packets</th>
+            </tr>
+          </thead>
+          <tbody id="radios-body"></tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <div class="panel-header-bar">SSIDs</div>
+        <table id="tbl-ssids" class="sortable">
+          <thead>
+            <tr>
+              <th>SSID</th><th>Band</th><th>BSSID</th><th data-type="num">Channel</th><th data-type="num">Clients</th>
+              <th data-type="num">Rx Rate</th><th data-type="num">Tx Rate</th><th data-type="num">Rx Total</th>
+              <th data-type="num">Tx Total</th><th data-type="num">Tx Power</th><th>Interface</th>
+            </tr>
+          </thead>
+          <tbody id="ssids-body"></tbody>
+        </table>
+      </div>
+      <div class="panel" id="clients-panel">
+        <div class="panel-header-bar">Clients (approximate)</div>
+        <div class="panel-note-bar" id="clients-note"></div>
+        <table id="tbl-clients" class="sortable">
+          <thead>
+            <tr><th>MAC Address</th><th data-type="ip">IP Address</th><th>Known Device</th><th data-type="num">VLAN</th></tr>
+          </thead>
+          <tbody id="clients-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Storage -->
+    <section class="tab-panel hidden" data-panel="health">
+      <div class="panel">
+        <div class="panel-header-bar">Hardware and supplies</div>
+        <table id="tbl-health" class="sortable">
+          <thead>
+            <tr><th>Name</th><th>Type</th><th>Status</th><th data-type="num">Reading</th></tr>
+          </thead>
+          <tbody id="health-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="tab-panel hidden" data-panel="storage">
+      <div class="panel hidden" id="forecast-panel">
+        <div class="panel-header-bar">Filling up</div>
+        <table id="tbl-forecast"><thead><tr><th>Volume or disk</th><th data-type="num">Used now</th><th data-type="num">Growth a day</th><th data-type="num">Full in</th></tr></thead>
+          <tbody id="forecast-body"></tbody></table>
+        <div class="panel-note-bar">From the way each one grew over the last two weeks (hourly averages). Alert rule: <em>Volume or disk filling up</em>.</div>
+      </div>
+      <div class="panel" id="volumes-panel">
+        <div class="panel-header-bar">Volumes</div>
+        <table id="tbl-volumes" class="sortable">
+          <thead>
+            <tr><th>Volume</th><th>Filesystem</th><th>Status</th><th data-type="num">Size</th><th data-type="num">Used</th><th data-type="num">Free</th><th data-type="num">Used %</th></tr>
+          </thead>
+          <tbody id="volumes-body"></tbody>
+        </table>
+      </div>
+      <div class="panel" id="disks-panel">
+        <div class="panel-header-bar">Disks</div>
+        <table id="tbl-disks" class="sortable">
+          <thead>
+            <tr><th>Bay</th><th>Model</th><th data-type="num">Capacity</th><th data-type="num">Temperature</th><th>SMART</th></tr>
+          </thead>
+          <tbody id="disks-body"></tbody>
+        </table>
+      </div>
+      <div class="panel hidden" id="sensors-panel">
+        <div class="panel-header-bar">Temperatures (lm-sensors)</div>
+        <table id="tbl-sensors" class="sortable">
+          <thead>
+            <tr><th>Sensor</th><th data-type="num">Temperature</th></tr>
+          </thead>
+          <tbody id="sensors-body"></tbody>
+        </table>
+      </div>
+      <div class="panel hidden" id="diskio-panel">
+        <div class="panel-header-bar">Disk I/O</div>
+        <table id="tbl-diskio" class="sortable">
+          <thead>
+            <tr><th>Disk</th><th data-type="num">Read</th><th data-type="num">Write</th><th data-type="num">Read total</th><th data-type="num">Written total</th></tr>
+          </thead>
+          <tbody id="diskio-body"></tbody>
+        </table>
+      </div>
+      <div class="panel" id="hrstorage-panel">
+        <div class="panel-header-bar">Host storage (HOST-RESOURCES-MIB)</div>
+        <table id="tbl-storage" class="sortable">
+          <thead>
+            <tr><th>Description</th><th>Type</th><th data-type="num">Size</th><th data-type="num">Used</th><th data-type="num">Free</th><th data-type="num">Used %</th></tr>
+          </thead>
+          <tbody id="storage-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Graphs -->
+    <!-- Processes and services -->
+    <section class="tab-panel hidden" data-panel="processes">
+      <div class="toolbar">
+        <input type="text" id="processes-filter" class="filter-input" placeholder="Filter by name...">
+        <span class="dim">Tick Watch to raise a problem when it stops running.</span>
+      </div>
+      <div class="panel" id="watches-panel">
+        <div class="panel-header-bar">Watched</div>
+        <table id="tbl-watches" class="sortable">
+          <thead><tr><th class="no-sort watch-cell">Watch</th><th>Name</th><th>Type</th><th>Status</th></tr></thead>
+          <tbody id="watches-body"></tbody>
+        </table>
+      </div>
+      <div class="panel hidden" id="services-panel">
+        <div class="panel-header-bar">Windows services (started)</div>
+        <table id="tbl-services" class="sortable">
+          <thead><tr><th class="no-sort watch-cell">Watch</th><th>Service</th><th>State</th></tr></thead>
+          <tbody id="services-body"></tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <div class="panel-header-bar">Running processes</div>
+        <table id="tbl-processes" class="sortable">
+          <thead><tr><th class="no-sort watch-cell">Watch</th><th>Process</th><th data-type="num">Instances</th></tr></thead>
+          <tbody id="processes-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Installed software -->
+    <section class="tab-panel hidden" data-panel="software">
+      <div class="toolbar">
+        <input type="text" id="software-filter" class="filter-input" placeholder="Filter by name or version...">
+        <span class="dim" id="software-note"></span>
+      </div>
+      <div class="panel" id="software-changes-panel">
+        <div class="panel-header-bar">Recent changes</div>
+        <table id="tbl-software-changes">
+          <thead><tr><th>When</th><th>Change</th></tr></thead>
+          <tbody id="software-changes-body"></tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <div class="panel-header-bar">Installed</div>
+        <table id="tbl-software" class="sortable">
+          <thead><tr><th>Name</th><th>Version</th><th>Architecture</th></tr></thead>
+          <tbody id="software-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="tab-panel hidden" data-panel="graphs">
+      <div class="toolbar">
+        <span class="dim">Range:</span>
+        <div class="seg" id="graph-range">
+          <button class="btn" data-hours="1">1h</button>
+          <button class="btn" data-hours="6">6h</button>
+          <button class="btn active" data-hours="24">24h</button>
+          <button class="btn" data-hours="168">7d</button>
+          <button class="btn" data-hours="720">30d</button>
+        </div>
+        <label class="checkbox-label inline"><input type="checkbox" id="graph-compare"> Compare with the previous period (shown in grey underneath: the day before on 24h, the week before on 7d)</label>
+      </div>
+      <div class="chart-grid" id="graph-grid"></div>
+    </section>
+
+    <!-- Latest Data -->
+    <section class="tab-panel hidden" data-panel="dns">
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header-bar">Where queries go</div>
+          <table id="tbl-dns-up"><thead><tr><th>Upstream</th><th>Address</th><th data-type="num">Queries</th><th data-type="num">Answer time</th></tr></thead>
+            <tbody id="dns-up-body"></tbody></table>
+        </div>
+        <div class="panel">
+          <div class="panel-header-bar">Most blocked today</div>
+          <table id="tbl-dns-blocked"><thead><tr><th>Domain</th><th data-type="num">Blocked</th></tr></thead>
+            <tbody id="dns-blocked-body"></tbody></table>
+        </div>
+      </div>
+      <div class="chart-grid" id="dns-charts"></div>
+    </section>
+
+    <section class="tab-panel hidden" data-panel="snmp">
+      <div class="panel" id="custom-oids-panel">
+        <div class="panel-header-bar panel-header-row">
+          <span>Custom values</span>
+          <span class="topbar-spacer"></span>
+          <button type="button" class="btn btn-small" id="btn-coid-add" data-perm="devices.manage">+ Add by OID</button>
+        </div>
+        <div class="panel-note-bar" id="custom-oids-note"></div>
+        <div class="coid-grid" id="custom-oids-body"></div>
+      </div>
+      <div class="panel" id="snmp-walk-panel">
+        <div class="panel-header-bar panel-header-row">
+          <span>Browse what the device answers</span>
+          <span class="topbar-spacer"></span>
+          <button type="button" class="btn btn-small" id="btn-snmp-walk" data-perm="devices.manage">Browse</button>
+        </div>
+        <div class="panel-note-bar" id="snmp-walk-intro">Lists the values the device publishes over SNMP, starting with its vendor's own ones (where CPU, memory and temperatures usually are). Press <strong>Use</strong> on a row to poll it: it then gets a graph here, can go on the Overview, can open a problem at a threshold and can start a workflow.</div>
+        <div class="snmp-walk-inline hidden" id="snmp-walk-inline">
+          <form class="walk-bar" id="walk-form">
+            <input type="text" id="walk-oid" spellcheck="false" aria-label="Start at OID">
+            <button type="submit" class="btn btn-primary">Walk</button>
+            <input type="search" id="walk-filter" class="filter-input" placeholder="Filter by OID or value...">
+          </form>
+          <div class="form-help">1.3.6.1.4.1 and below are vendors' own values; 1.3.6.1.2.1 is the standard set every device shares. Up to 500 rows.</div>
+          <div class="walk-results" id="walk-results"><div class="dim">Press Walk to list what the device answers.</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel hidden" data-panel="latest">
+      <div class="panel">
+        <table id="tbl-latest" class="sortable">
+          <thead>
+            <tr><th>Metric</th><th data-type="num">Value</th><th data-type="num">Change</th><th data-type="num">Last Check</th><th data-type="num">Interval</th></tr>
+          </thead>
+          <tbody id="latest-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Events -->
+    <section class="tab-panel hidden" data-panel="events">
+      <div class="panel">
+        <table id="tbl-device-events" class="sortable">
+          <thead>
+            <tr><th data-type="num">Time</th><th data-type="num">Severity</th><th>Type</th><th>Message</th></tr>
+          </thead>
+          <tbody id="device-events-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Global Events -->
+  <main id="view-events" class="view-panel hidden">
+    <div class="section-header">
+      <span class="section-title page-title">Event Log</span>
+    </div>
+    <form class="filter-bar" id="events-filters" autocomplete="off">
+      <input type="search" id="ev-q" class="filter-input" placeholder="Search messages and device names...">
+      <select id="ev-device" title="Device"><option value="">All devices</option></select>
+      <select id="ev-severity" title="Severity">
+        <option value="">All severities</option><option value="critical">Critical</option><option value="high">High</option>
+        <option value="warning">Warning</option><option value="info">Info</option>
+      </select>
+      <select id="ev-type" title="Type"><option value="">All types</option></select>
+      <select id="ev-tag" data-filter-tag class="hidden" title="Devices with this tag"><option value="">All tags</option></select>
+      <select id="ev-range" title="Time range">
+        <option value="">Any time</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option>
+        <option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option><option value="custom">Between dates...</option>
+      </select>
+      <span class="ev-dates hidden" id="ev-dates">
+        <input type="date" id="ev-from" title="From"> <span class="dim">to</span> <input type="date" id="ev-to" title="To (inclusive)">
+      </span>
+      <button type="button" class="btn hidden" id="ev-clear">Clear filters</button>
+      <button type="button" id="btn-refresh-events" class="btn filter-bar-end">Refresh</button>
+    </form>
+    <div class="panel">
+      <table id="tbl-events">
+        <thead>
+          <tr><th>Time</th><th>Device</th><th>Severity</th><th>Type</th><th>Message</th></tr>
+        </thead>
+        <tbody id="events-body"></tbody>
+      </table>
+      <div class="pager" id="events-pager"></div>
+    </div>
+  </main>
+
+  <!-- Automation: credentials and workflows -->
+  <main id="view-automation" class="view-panel hidden">
+    <div class="section-header">
+      <span class="section-title">Credentials</span>
+      <button id="btn-add-credential" data-perm="credentials.manage" class="btn btn-primary">+ Add Credential</button>
+    </div>
+    <div class="panel">
+      <div class="panel-note-bar" id="vault-note"></div>
+      <table id="tbl-credentials" class="sortable">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Username</th><th data-type="num">Added</th><th class="no-sort">Actions</th></tr>
+        </thead>
+        <tbody id="credentials-body"></tbody>
+      </table>
+    </div>
+    <div class="section-header">
+      <span class="section-title">Workflows</span>
+      <button id="btn-add-workflow" data-perm="automation.edit" class="btn btn-primary">+ Add Workflow</button>
+    </div>
+    <div class="panel">
+      <div class="panel-note-bar" id="workflows-note">A workflow runs its steps one after another: SSH commands on one or more hosts, pauses, and waits until a host stops or starts answering ping or SNMP. Each step can branch to another step when it fails. Use it for updates and restart sequences where one device must be back before the next restarts. SSH connections are pinned to host keys you approve.</div>
+      <table id="tbl-workflows" class="sortable">
+        <thead>
+          <tr><th>Workflow</th><th data-type="num">Steps</th><th>Hosts</th><th>Schedule</th><th>Last run</th><th class="no-sort">Actions</th></tr>
+        </thead>
+        <tbody id="workflows-body"></tbody>
+      </table>
+    </div>
+    <div class="section-header" data-perm="automation.run">
+      <span class="section-title">Host actions</span>
+      <select id="ha-host-pick" class="ha-host-pick" aria-label="Run a host action on"></select>
+    </div>
+    <div class="panel" data-perm="automation.run">
+      <div class="panel-note-bar">Fixed maintenance jobs for Linux hosts, run once over SSH: checks that change nothing, clean-ups that show what they would remove first and restarts you confirm by typing the host's name. They also open from a host's page and from its problems (Fix...). Any of them can be saved as a workflow to repeat on a schedule.</div>
+      <table id="tbl-ha-runs" class="sortable">
+        <thead>
+          <tr><th data-type="num">Started</th><th>Host</th><th>Action</th><th>By</th><th>Status</th><th data-type="num">Duration</th></tr>
+        </thead>
+        <tbody id="ha-runs-body"></tbody>
+      </table>
+    </div>
+    <div class="section-header">
+      <span class="section-title">Workflow runs</span>
+      <span class="dim">Click a run to see each step.</span>
+    </div>
+    <div class="panel">
+      <table id="tbl-wf-runs" class="sortable">
+        <thead>
+          <tr><th data-type="num">Started</th><th>Workflow</th><th>Trigger</th><th>Status</th><th data-type="num">Duration</th></tr>
+        </thead>
+        <tbody id="wf-runs-body"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <!-- Modal: password confirmation -->
+  <div id="modal-confirm-password" class="modal-backdrop hidden">
+    <form class="modal" id="confirm-password-form">
+      <div class="modal-header">
+        <span id="confirm-title">Confirm it is you</span>
+        <button type="button" id="btn-close-confirm" class="btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-help" id="confirm-help">This action changes something sensitive. Enter your password to continue.</div>
+        <input type="text" autocomplete="username" id="confirm-username" class="hidden" tabindex="-1" aria-hidden="true">
+        <div class="form-group">
+          <label for="confirm-password">Password</label>
+          <input type="password" id="confirm-password" autocomplete="current-password">
+        </div>
+        <div class="form-group hidden" id="confirm-code-group">
+          <label for="confirm-code">Authenticator code</label>
+          <input type="text" id="confirm-code" inputmode="numeric" maxlength="10" autocomplete="one-time-code" placeholder="6 digits, or a recovery code">
+        </div>
+        <div class="form-help text-warn hidden" id="confirm-suggest">Tip: turn on two-factor authentication in Settings, Account. Then these steps also ask for a code from your phone.</div>
+        <div class="auth-error hidden" id="confirm-error"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn" id="btn-cancel-confirm">Cancel</button>
+        <button type="submit" class="btn btn-primary">Confirm</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="modal-fixsnmp" class="modal-backdrop hidden">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <span id="fixsnmp-title">Fix SNMP</span>
+        <button id="btn-close-fixsnmp" class="btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-help">Logs in over SSH and replaces /etc/snmp/snmpd.conf with a clean file: read-only SNMP for this monitor's address and the host itself, nothing else (old access lines, users and views are removed). snmpd is installed first when missing. You see the new file before anything is written. Applying keeps a timestamped backup, restarts snmpd and checks the result from here; if interfaces still do not answer, the backup is put back.</div>
+        <div id="fixsnmp-nocred" class="fixsnmp-nocred hidden">
+          <strong>No SSH credential is stored yet.</strong>
+          <p>Fix SNMP logs in to the host to change its settings. Add the host's root login (or a user with passwordless sudo) first; it is encrypted and used only for actions you start.</p>
+          <button type="button" class="btn btn-primary" id="btn-fixsnmp-addcred" data-perm="credentials.manage">Add a credential</button>
+        </div>
+        <div class="form-row" id="fixsnmp-form">
+          <div class="form-group">
+            <label for="fixsnmp-cred">Credential (root, or a user with passwordless sudo)</label>
+            <select id="fixsnmp-cred"></select>
+          </div>
+          <div class="form-group">
+            <label for="fixsnmp-port">SSH port</label>
+            <input type="number" id="fixsnmp-port" value="22" min="1" max="65535">
+          </div>
+        </div>
+        <div id="fixsnmp-hostkey" class="text-warn hidden">This host's SSH key is not approved yet. <button type="button" class="btn" id="btn-fixsnmp-hostkey">Review host key</button></div>
+        <ul id="fixsnmp-changes" class="fixsnmp-changes"></ul>
+        <div id="fixsnmp-file" class="hidden">
+          <div class="output-label">New /etc/snmp/snmpd.conf <span class="dim">(the community is hidden here; the real one is written)</span></div>
+          <pre id="fixsnmp-diff" class="fixsnmp-diff"></pre>
+        </div>
+        <div id="fixsnmp-script" class="hidden">
+          <div class="output-label">Commands to paste into the host's shell <span class="dim">(includes the real community; root or a user with sudo)</span></div>
+          <pre id="fixsnmp-script-text" class="fixsnmp-diff"></pre>
+        </div>
+        <div id="fixsnmp-result" class="hidden"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn hidden" id="btn-fixsnmp-sshsetup" title="SSH did not let the monitor in: one command to paste into the host's root shell that sets SSH up for it">Copy console commands</button>
+        <button class="btn hidden" id="btn-fixsnmp-copy" title="The same steps as a shell script you can paste into the host yourself">Copy as commands</button>
+        <span class="topbar-spacer"></span>
+        <button class="btn" id="btn-fixsnmp-preview">Preview changes</button>
+        <button class="btn btn-primary hidden" id="btn-fixsnmp-apply">Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-hostact" class="modal-backdrop hidden">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <span id="ha-title">Host actions</span>
+        <button id="btn-close-hostact" class="btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="ha-problem" class="ha-problem hidden"></div>
+        <div id="ha-nocred" class="fixsnmp-nocred hidden">
+          <strong>No SSH credential is stored yet.</strong>
+          <p>Host actions log in to the host over SSH. Add its root login (or a user with passwordless sudo) first; it is encrypted and used only for actions you start.</p>
+          <button type="button" class="btn btn-primary" id="btn-ha-addcred" data-perm="credentials.manage">Add a credential</button>
+        </div>
+        <div class="form-row" id="ha-form">
+          <div class="form-group">
+            <label for="ha-cred">Credential (root, or a user with passwordless sudo)</label>
+            <select id="ha-cred"></select>
+          </div>
+          <div class="form-group">
+            <label for="ha-port">SSH port</label>
+            <input type="number" id="ha-port" value="22" min="1" max="65535">
+          </div>
+        </div>
+        <div id="ha-hostkey" class="text-warn hidden">This host's SSH key is not approved yet. <button type="button" class="btn" id="btn-ha-hostkey">Review host key</button></div>
+        <div id="ha-list"></div>
+        <div id="ha-detail" class="hidden"></div>
+        <div id="ha-run" class="hidden"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn hidden" id="btn-ha-back">Back</button>
+        <span class="topbar-spacer"></span>
+        <button class="btn hidden" id="btn-ha-workflow" data-perm="automation.edit" title="Save this action as a workflow on this host, to run again or on a schedule">Make this a workflow</button>
+        <button class="btn hidden" id="btn-ha-sshsetup" title="SSH did not let the monitor in: one command to paste into the host's root shell that sets SSH up for it">Copy console commands</button>
+        <button class="btn hidden" id="btn-ha-preview">Preview</button>
+        <button class="btn btn-primary hidden" id="btn-ha-run">Run</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-workflow" class="modal-backdrop hidden">
+    <div class="modal wfb-modal">
+      <div class="modal-header wfb-header">
+        <span id="wf-title" class="wfb-title">Add Workflow</span>
+        <input type="text" id="wf-name" maxlength="80" placeholder="Workflow name, e.g. Sunday updates" aria-label="Workflow name">
+        <input type="text" id="wf-description" maxlength="500" placeholder="Description (optional)" aria-label="Description">
+        <span class="wfb-spacer"></span>
+        <button class="btn" id="btn-cancel-workflow">Cancel</button>
+        <button class="btn btn-primary" id="btn-save-workflow">Save workflow</button>
+        <button id="btn-close-workflow" class="btn" aria-label="Close">&times;</button>
+      </div>
+      <div class="wfb-error hidden" id="wf-error" role="alert"></div>
+      <div class="wfb-body">
+        <aside class="wfb-palette" id="wfb-palette"></aside>
+        <div class="wfb-canvas" id="wfb-canvas">
+          <div class="wfb-zoom" id="wfb-zoom">
+            <button type="button" class="btn" data-zoom="out" title="Zoom out">&minus;</button>
+            <button type="button" class="btn" data-zoom="in" title="Zoom in">+</button>
+            <button type="button" class="btn" data-zoom="fit" title="Show the whole workflow">Fit</button>
+            <button type="button" class="btn" data-zoom="arrange" title="Lay the steps out left to right">Arrange</button>
+          </div>
+        </div>
+        <aside class="wfb-panel" id="wfb-panel"></aside>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-wf-run" class="modal-backdrop hidden">
+    <div class="modal modal-wide wf-run-modal">
+      <div class="modal-header">
+        <span id="wf-run-title">Workflow run</span>
+        <button id="btn-close-wf-run" class="btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="wf-run-status"></div>
+        <div class="wf-run-split" id="wf-run-split">
+          <div class="wfb-canvas wfb-readonly hidden" id="wf-run-graph" title="Click a step to find it in the log"></div>
+          <div id="wf-run-log" class="wf-run-log"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-danger hidden" id="btn-wf-cancel">Cancel run</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: SSH host keys -->
+  <div id="modal-hostkeys" class="modal-backdrop hidden">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <span>Approve SSH Host Keys</span>
+        <button id="btn-close-hostkeys" class="btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="panel-note">Workflows and Fix SNMP only connect to hosts whose key you have approved. Compare each fingerprint with the host's own:
+          <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code> on that machine.</div>
+        <table><tbody id="hostkeys-body"></tbody></table>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-done-hostkeys" class="btn btn-primary">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Credential -->
+  <div id="modal-credential" class="modal-backdrop hidden">
+    <div class="modal modal-mid">
+      <div class="modal-header">
+        <span id="credential-title">Add Credential</span>
+        <button id="btn-close-credential" class="btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="cred-id">
+        <div class="form-row three">
+          <div class="form-group">
+            <label>Name</label>
+            <input type="text" id="cred-name" placeholder="e.g. pve-root">
+          </div>
+          <div class="form-group">
+            <label>Type</label>
+            <select id="cred-type">
+              <option value="password">Password</option>
+              <option value="ssh_key">SSH private key</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Username</label>
+            <input type="text" id="cred-username" placeholder="e.g. root">
+          </div>
+        </div>
+        <div class="form-group hidden" id="cred-key-source">
+          <label>Key</label>
+          <div class="cred-source">
+            <label class="check-label"><input type="radio" name="cred-key-mode" value="paste" checked> Paste an existing private key</label>
+            <label class="check-label" id="cred-generate-option"><input type="radio" name="cred-key-mode" value="generate"> Generate a new key pair here</label>
+          </div>
+        </div>
+        <div class="form-group" id="cred-secret-group">
+          <label id="cred-secret-label">Password</label>
+          <input type="password" id="cred-password" autocomplete="new-password">
+          <textarea id="cred-key" class="hidden" rows="7" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+          <div class="form-help" id="cred-secret-help">Encrypted with AES-256-GCM before it is stored. It is never shown again.</div>
+        </div>
+        <div class="form-group hidden" id="cred-passphrase-group">
+          <label for="cred-passphrase">Key passphrase (only if the key has one)</label>
+          <input type="password" id="cred-passphrase" autocomplete="new-password">
+          <div class="form-help">Encrypted like the key, and given to ssh through its password prompt helper, never on a command line.</div>
+        </div>
+        <div class="form-help hidden" id="cred-generate-help">An ed25519 key pair is made on the monitor. The private key goes straight into the encrypted vault and is never shown; you get the public key to add to each host's ~/.ssh/authorized_keys.</div>
+        <div class="form-group hidden" id="cred-public-group">
+          <label>Public key (add this to ~/.ssh/authorized_keys on each host)</label>
+          <textarea id="cred-public" rows="3" readonly spellcheck="false"></textarea>
+          <div class="cred-public-actions"><button type="button" class="btn" id="btn-copy-public">Copy</button><span class="dim" id="cred-public-fp"></span></div>
+        </div>
+        <div id="cred-error" class="form-error hidden"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-cancel-credential" class="btn">Cancel</button>
+        <button id="btn-save-credential" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings -->
+  <main id="view-settings" class="view-panel hidden">
+    <div class="section-header">
+      <span class="section-title page-title">Settings</span>
+      <div class="detail-actions">
+        <span class="dim" id="settings-dirty"></span>
+        <button id="btn-discard-settings" class="btn hidden">Discard changes</button>
+        <button id="btn-save-settings" class="btn btn-primary hidden">Save changes</button>
+      </div>
+    </div>
+    <div class="settings-layout">
+      <div class="settings-main">
+        <div id="settings-sections"></div>
+        <section class="settings-card hidden" id="settings-groups" data-card="groups">
+          <div class="settings-card-head"><h3>Groups and tags</h3><p>How devices are sorted (groups) and labelled (tags). Groups decide where a device is listed; tags filter lists and dashboard tiles and can carry their own alert rules.</p></div>
+          <div id="taxonomy-settings"></div>
+        </section>
+        <section class="settings-card hidden" id="settings-maintenance" data-card="maintenance">
+          <div class="settings-card-head"><h3>Maintenance windows</h3><p>Planned work: for the time you set, problems on the devices covered are still shown but no messages are sent, and downtime counts as planned (it does not lower availability). A device page has its own Maintenance button.</p></div>
+          <form class="maint-form" id="maint-form" autocomplete="off" data-perm="problems.ack">
+            <div class="form-row three">
+              <div class="form-group"><label for="maint-scope">Covers</label>
+                <select id="maint-scope"><option value="all">Every device</option><option value="device">One device</option><option value="group">One group</option><option value="tag">One tag</option></select></div>
+              <div class="form-group hidden" id="maint-target-wrap"><label for="maint-target">Which</label><select id="maint-target"></select></div>
+              <div class="form-group"><label for="maint-when">Starts</label>
+                <select id="maint-when"><option value="now">Now</option><option value="at">At a set time</option></select></div>
+            </div>
+            <div class="form-row three">
+              <div class="form-group hidden" id="maint-start-wrap"><label for="maint-start">Start</label><input type="datetime-local" id="maint-start"></div>
+              <div class="form-group"><label for="maint-minutes">Lasts</label>
+                <select id="maint-minutes"><option value="30">30 minutes</option><option value="60" selected>1 hour</option><option value="120">2 hours</option><option value="240">4 hours</option><option value="480">8 hours</option><option value="1440">1 day</option><option value="4320">3 days</option></select></div>
+              <div class="form-group"><label for="maint-note">Note (optional)</label><input type="text" id="maint-note" maxlength="200" placeholder="Firmware update on the Flat switch"></div>
+            </div>
+            <div class="form-help" id="maint-msg"></div>
+            <div class="pve-actions"><button type="submit" class="btn btn-primary">Add window</button></div>
+          </form>
+          <table class="maint-table"><thead><tr><th>Covers</th><th>From</th><th>Until</th><th>Note</th><th>State</th><th></th></tr></thead><tbody id="maint-body"></tbody></table>
+        </section>
+        <section class="settings-card hidden" id="settings-pihole" data-card="pihole">
+          <div class="settings-card-head"><h3>Pi-hole</h3><p>Queries, blocking and blocklists from Pi-hole's own web API, and a real DNS lookup timed every minute, so "DNS is down" or "DNS is slow" becomes a problem you are told about. Read only; everything stays on your network.</p></div>
+          <div class="setting-row">
+            <div><label for="ph-enabled">Pi-hole</label></div>
+            <div class="setting-input"><select id="ph-enabled"><option value="off">off</option><option value="on">on</option></select></div>
+            <div class="setting-help" id="ph-enabled-help"></div>
+          </div>
+          <form class="pve-config hidden" id="ph-config" autocomplete="off">
+            <div class="pve-config-body">
+              <ol class="pve-steps">
+                <li>Make sure the Pi-hole is a monitored device (Devices, Add, <strong>Ping</strong> is enough). Its figures appear on that device's page, on a new <strong>DNS</strong> tab.</li>
+                <li><strong>Pi-hole 6</strong> (the version is at the bottom of its web page): in the Pi-hole web interface open <strong>Settings, Web interface / API</strong>, switch the page to <strong>Expert</strong>, press <strong>Configure app password</strong>, copy the password it shows and <strong>Enable new app password</strong>. Pi-hole shows it once.<br><strong>Pi-hole 5</strong>: <strong>Settings, API / Web interface, Show API token</strong>, and copy the token.</li>
+                <li>Below: the Pi-hole's address (<code>http://</code> and its IP, for example <code>http://192.168.1.100</code>) and the app password or token. Press <strong>Test connection</strong>, then <strong>Save</strong>.</li>
+                <li>Using <code>https://</code>? Pi-hole has its own certificate: press <strong>Fetch fingerprint</strong> and compare it with the one your browser shows for the Pi-hole page.</li>
+              </ol>
+              <div class="form-row">
+                <div class="form-group"><label for="ph-url">Address</label><input type="text" id="ph-url" placeholder="http://192.168.1.100" spellcheck="false"></div>
+                <div class="form-group"><label for="ph-secret">App password or API token</label><input type="password" id="ph-secret" autocomplete="new-password" spellcheck="false"></div>
+              </div>
+              <div class="form-row">
+                <div class="form-group"><label for="ph-device">Show the figures on</label><select id="ph-device"></select></div>
+                <div class="form-group"><label for="ph-test-name">Name for the DNS test</label><input type="text" id="ph-test-name" placeholder="example.com" spellcheck="false">
+                  <div class="form-help">Looked up through the Pi-hole every minute.</div></div>
+              </div>
+              <div class="form-group"><label for="ph-fp">Certificate fingerprint (https:// only)</label>
+                <div class="pve-fp-row"><input type="text" id="ph-fp" placeholder="Empty for http:// or a trusted certificate" spellcheck="false">
+                  <button type="button" class="btn" id="btn-ph-fetchfp">Fetch fingerprint</button></div></div>
+              <div class="form-help" id="ph-msg"></div>
+              <div class="pve-actions">
+                <button type="button" class="btn" id="btn-ph-test">Test connection</button>
+                <button type="submit" class="btn btn-primary">Save</button>
+                <span class="topbar-spacer"></span>
+                <button type="button" class="btn btn-danger hidden" id="btn-ph-disconnect">Disconnect</button>
+              </div>
+            </div>
+          </form>
+        </section>
+        <section class="settings-card hidden" id="settings-unifi" data-card="unifi">
+          <div class="settings-card-head"><h3>UniFi</h3><p>What each Wi-Fi device experiences: signal, access point, band, speed, retries, roaming and UniFi's experience score, from the UniFi Network application on your gateway. It also names the devices in the Inventory. Read only; everything stays on your network.</p></div>
+          <div class="setting-row">
+            <div><label for="uf-enabled">UniFi</label></div>
+            <div class="setting-input"><select id="uf-enabled"><option value="off">off</option><option value="on">on</option></select></div>
+            <div class="setting-help" id="uf-enabled-help"></div>
+          </div>
+          <form class="pve-config hidden" id="uf-config" autocomplete="off">
+            <div class="pve-config-body">
+              <ol class="pve-steps">
+                <li>In UniFi (open your gateway's address in a browser) go to <strong>Settings, Admins &amp; Users</strong> (on some versions <strong>Control Plane, Admins</strong>) and press <strong>Create New Admin</strong>.</li>
+                <li>Tick <strong>Restrict to local access only</strong> (a local account, not a UI.com one, and no two-step login: the monitor cannot type a code). Username: <code>monitor</code>, a long password. For the role choose <strong>View Only</strong> for the Network application. Create it.</li>
+                <li>Below: the gateway's address with <code>https://</code> (for example <code>https://192.168.1.1</code>), the username and the password. Site: leave <code>default</code>; the name UniFi shows for it (such as Home) works too.</li>
+                <li>The gateway uses its own certificate. Press <strong>Fetch fingerprint</strong> and compare it with the one your browser shows for the UniFi page (padlock, certificate, SHA-256); when they match, press <strong>Test connection</strong>, then <strong>Save</strong>.</li>
+                <li>The Wi-Fi devices appear on each access point's <strong>Wireless</strong> tab. The weak-signal line is in Alert rules, <em>Wi-Fi devices on weak signal</em>.</li>
+              </ol>
+              <div class="form-row three">
+                <div class="form-group"><label for="uf-url">Gateway address</label><input type="text" id="uf-url" placeholder="https://192.168.1.1" spellcheck="false"></div>
+                <div class="form-group"><label for="uf-user">Username</label><input type="text" id="uf-user" placeholder="monitor" spellcheck="false" autocomplete="off"></div>
+                <div class="form-group"><label for="uf-site">Site</label><input type="text" id="uf-site" placeholder="default" spellcheck="false"></div>
+              </div>
+              <div class="form-group"><label for="uf-secret">Password</label><input type="password" id="uf-secret" autocomplete="new-password" spellcheck="false"></div>
+              <div class="form-group"><label for="uf-fp">Certificate fingerprint (SHA-256)</label>
+                <div class="pve-fp-row"><input type="text" id="uf-fp" placeholder="Empty: the certificate must be trusted by a public CA" spellcheck="false">
+                  <button type="button" class="btn" id="btn-uf-fetchfp">Fetch fingerprint</button></div></div>
+              <div class="form-group"><label for="uf-never">Never reconnect</label>
+                <div class="pve-fp-row"><input type="text" id="uf-never" placeholder="printer, 10:22:33:44:55:66" spellcheck="false">
+                  <button type="button" class="btn" id="btn-uf-never">Save list</button></div>
+                <div class="form-help">Names or MAC addresses the Wi-Fi page and the workflow step leave alone (printers and gadgets often handle a reconnect badly). Reconnecting needs an account that may make changes.</div></div>
+              <div class="form-help" id="uf-msg"></div>
+              <div class="pve-actions">
+                <button type="button" class="btn" id="btn-uf-test">Test connection</button>
+                <button type="submit" class="btn btn-primary">Save</button>
+                <span class="topbar-spacer"></span>
+                <button type="button" class="btn btn-danger hidden" id="btn-uf-disconnect">Disconnect</button>
+              </div>
+            </div>
+          </form>
+        </section>
+        <section class="settings-card hidden" id="settings-https" data-card="https">
+          <div class="settings-card-head"><h3>HTTPS</h3><p>How browsers connect to the monitor. With HTTPS the connection is encrypted, so passwords and stored secrets cannot be read off the network. Old http:// addresses and bookmarks are sent on to https:// automatically.</p></div>
+          <div class="setting-row">
+            <div><label for="tls-mode">Connection</label></div>
+            <div class="setting-input"><select id="tls-mode">
+              <option value="self-signed">HTTPS, certificate made here</option>
+              <option value="own">HTTPS, your own certificate</option>
+              <option value="off">HTTP, not encrypted</option>
+            </select></div>
+            <div class="setting-help" id="tls-mode-help"></div>
+          </div>
+          <div class="tls-current hidden" id="tls-current"></div>
+          <form class="tls-form hidden" id="tls-self" data-tls="self-signed" autocomplete="off">
+            <p class="form-help">The monitor makes and renews this certificate itself. Browsers warn about it once, because no public authority signed it: check that the fingerprint matches the one shown here, then continue, or download it and add it to your computer's trusted certificates so the warning goes away.</p>
+            <div class="form-group"><label for="tls-names">Extra names (optional)</label>
+              <input type="text" id="tls-names" placeholder="monitor.home.example.com, 192.168.1.174" spellcheck="false">
+              <div class="form-help" id="tls-names-help"></div></div>
+            <div class="pve-actions"><button type="submit" class="btn btn-primary" id="btn-tls-self">Use this</button></div>
+          </form>
+          <form class="tls-form hidden" id="tls-own" data-tls="own" autocomplete="off">
+            <p class="form-help">A certificate from your own certificate authority, or one you got elsewhere, for the name you open the monitor by. PEM text: the server certificate first, then any intermediates; the key without a passphrase. The key is stored encrypted and never shown again.</p>
+            <div class="form-group"><label for="tls-cert">Certificate</label>
+              <textarea id="tls-cert" rows="5" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+              <label class="btn tls-file">Choose file<input type="file" accept=".pem,.crt,.cer,.txt" data-into="tls-cert" class="visually-hidden"></label></div>
+            <div class="form-group"><label for="tls-key">Private key</label>
+              <textarea id="tls-key" rows="5" spellcheck="false" placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+              <label class="btn tls-file">Choose file<input type="file" accept=".pem,.key,.txt" data-into="tls-key" class="visually-hidden"></label></div>
+            <div class="pve-actions"><button type="submit" class="btn btn-primary" id="btn-tls-own">Check and use</button></div>
+          </form>
+          <form class="tls-form hidden" id="tls-off" data-tls="off">
+            <p class="form-help">Plain HTTP: anyone on the network can read what passes, including passwords as you log in. Only for a network you fully trust.</p>
+            <div class="pve-actions"><button type="submit" class="btn btn-danger" id="btn-tls-off">Switch to HTTP</button></div>
+          </form>
+          <div class="form-help" id="tls-msg"></div>
+        </section>
+        <section class="settings-card hidden" id="settings-proxmox" data-card="proxmox">
+          <div class="settings-card-head"><h3>Proxmox</h3><p>A dashboard of your Proxmox host: nodes, VMs and containers with CPU, memory, network and disk history, storage, backups and failed tasks. Read only. Switched on, it gets its own page in the menu.</p></div>
+          <div class="setting-row">
+            <div><label for="pve-enabled">Proxmox dashboard</label></div>
+            <div class="setting-input"><select id="pve-enabled"><option value="off">off</option><option value="on">on</option></select></div>
+            <div class="setting-help" id="pve-enabled-help">Connects with a read-only API token. Nothing is fetched while it is off.</div>
+          </div>
+          <form class="pve-config hidden" id="pve-config" autocomplete="off">
+            <div class="pve-config-body">
+              <ol class="pve-steps">
+                <li>In the Proxmox web interface: <strong>Datacenter, Permissions, API Tokens, Add</strong>. User: <code>root@pam</code> (or a user of its own), Token ID: <code>monitor</code>, keep <strong>Privilege Separation</strong> ticked, Add. Copy the secret: Proxmox shows it once.</li>
+                <li>Give the token read access. In the left menu click <strong>Permissions</strong> itself (the padlock line, not Users, API Tokens or Roles under it), then <strong>Add</strong>, and from the small list choose <strong>API Token Permission</strong>. Path <code>/</code>, API Token <code>root@pam!monitor</code>, Role <strong>PVEAuditor</strong> (read only), Propagate ticked, Add. The list then shows a line <code>/</code>, <code>root@pam!monitor</code>, <code>PVEAuditor</code>. Or in the Proxmox host's shell: <code>pveum acl modify / --tokens 'root@pam!monitor' --roles PVEAuditor</code></li>
+                <li>Below: the address (<code>https://</code> and the host's IP, port 8006), the token ID as <code>root@pam!monitor</code> and the secret.</li>
+                <li>Proxmox uses its own certificate. Press <strong>Fetch fingerprint</strong> and compare it with <strong>the node, System, Certificates, pve-ssl.pem, Fingerprint</strong>; when they match, save. The monitor then trusts that certificate and no other.</li>
+              </ol>
+              <div class="form-row">
+                <div class="form-group"><label for="pve-url">Address</label><input type="text" id="pve-url" placeholder="https://192.168.1.250:8006" spellcheck="false"></div>
+                <div class="form-group"><label for="pve-token">Token ID</label><input type="text" id="pve-token" placeholder="root@pam!monitor" spellcheck="false"></div>
+              </div>
+              <div class="form-group"><label for="pve-secret">Token secret</label><input type="password" id="pve-secret" autocomplete="new-password" spellcheck="false"></div>
+              <div class="form-group"><label for="pve-fp">Certificate fingerprint (SHA-256)</label>
+                <div class="pve-fp-row"><input type="text" id="pve-fp" placeholder="Empty: the certificate must be trusted by a public CA" spellcheck="false">
+                  <button type="button" class="btn" id="btn-pve-fetchfp">Fetch fingerprint</button></div></div>
+              <details class="pve-action-token" id="pve-action-box">
+                <summary>Actions (optional): start, shut down, reboot and snapshots</summary>
+                <p class="form-help">The token above only reads. For the buttons on the Proxmox page and the workflow step <em>Snapshot a Proxmox guest</em>, make a second token that may do just that. In the Proxmox host's shell:</p>
+                <pre class="pve-cmds">pveum role add MonitorActions -privs "VM.Audit VM.PowerMgmt VM.Snapshot"
+pveum user token add root@pam monitor-actions --privsep 1
+pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions</pre>
+                <p class="form-help">The second command prints the secret once. Enter the token ID as <code>root@pam!monitor-actions</code> and that secret below.</p>
+                <div class="form-row">
+                  <div class="form-group"><label for="pve-act-token">Action token ID</label><input type="text" id="pve-act-token" placeholder="root@pam!monitor-actions" spellcheck="false"></div>
+                  <div class="form-group"><label for="pve-act-secret">Action token secret</label><input type="password" id="pve-act-secret" autocomplete="new-password" spellcheck="false"></div>
+                </div>
+                <div class="pve-actions"><button type="button" class="btn" id="btn-pve-act-save">Save action token</button>
+                  <button type="button" class="btn btn-danger hidden" id="btn-pve-act-remove">Remove</button></div>
+              </details>
+              <div class="form-help" id="pve-config-msg"></div>
+              <div class="pve-actions">
+                <button type="button" class="btn" id="btn-pve-test">Test connection</button>
+                <button type="submit" class="btn btn-primary">Save</button>
+                <span class="topbar-spacer"></span>
+                <button type="button" class="btn btn-danger hidden" id="btn-pve-disconnect">Disconnect</button>
+              </div>
+            </div>
+          </form>
+        </section>
+        <section class="settings-card hidden" id="settings-account" data-card="account">
+          <div class="settings-card-head"><h3>Account</h3><p>Your sign-in details. Each person who uses the monitor should have their own user (Settings, Users).</p></div>
+          <div class="account-who" id="account-who"></div>
+          <div class="account-2fa" id="account-2fa"></div>
+          <form id="password-form" class="account-form">
+            <input type="text" autocomplete="username" id="password-username" class="hidden" tabindex="-1" aria-hidden="true">
+            <h4>Change password</h4>
+            <div class="form-row three">
+              <div class="form-group">
+                <label for="password-current">Current password</label>
+                <input type="password" id="password-current" autocomplete="current-password">
+              </div>
+              <div class="form-group">
+                <label for="password-new">New password</label>
+                <input type="password" id="password-new" autocomplete="new-password">
+              </div>
+              <div class="form-group">
+                <label for="password-new2">Repeat new password</label>
+                <input type="password" id="password-new2" autocomplete="new-password">
+              </div>
+            </div>
+            <div class="form-help">Changing your password logs you out of every other browser.</div>
+            <button type="submit" class="btn btn-primary">Change password</button>
+          </form>
+        </section>
+        <section class="settings-card hidden" id="settings-users" data-card="users">
+          <div class="settings-card-head settings-card-head-row">
+            <div><h3>Users</h3><p>Who can sign in, what they may change and which devices they see. Changes apply at their next click.</p></div>
+            <button type="button" class="btn btn-primary" id="btn-add-user">+ Add user</button>
+          </div>
+          <div id="users-body"></div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <!-- First-run setup: the only way in on a fresh install, gone once it is applied -->
+  <main id="view-setup" class="view-panel hidden">
+    <div class="section-header">
+      <span class="section-title page-title">Setup</span>
+      <span class="setup-mode" id="setup-mode"></span>
+    </div>
+    <div class="setup-layout">
+      <ol class="setup-steps panel" id="setup-steps"></ol>
+      <div class="panel setup-card">
+        <div id="setup-body" class="setup-body"></div>
+        <div class="setup-nav">
+          <button type="button" class="btn hidden" id="setup-restart">Start over</button>
+          <span class="spacer"></span>
+          <button type="button" class="btn hidden" id="setup-back">Back</button>
+          <button type="button" class="btn btn-primary" id="setup-next">Start</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Availability (status page) -->
+  <main id="view-availability" class="view-panel hidden">
+    <div class="section-header">
+      <span class="section-title page-title">Availability</span>
+      <div class="dash-toolbar">
+        <span class="chip hidden" id="avail-filter-chip"></span>
+        <span id="avail-range"></span>
+        <select id="avail-filter-group" data-filter-group title="Show one group"><option value="">All groups</option></select>
+        <select id="avail-filter-tag" data-filter-tag class="hidden" title="Show one tag"><option value="">All tags</option></select>
+        <input type="search" id="avail-search" class="filter-input" placeholder="Search devices...">
+      </div>
+    </div>
+    <div class="stat-row avail-summary" id="avail-summary"></div>
+    <div id="avail-body"></div>
+    <div class="form-help">Every check the monitor runs counts: a ping for devices, the port or web page for service checks. Grey means no checks ran (for example while the monitor was stopped), so it counts neither as up nor as down.</div>
+  </main>
+
+  <!-- Proxmox -->
+  <main id="view-wifi" class="view-panel hidden">
+    <div class="section-header">
+      <span class="section-title page-title">Wi-Fi</span>
+      <div class="detail-actions"><span class="dim" id="wifi-when"></span><button type="button" class="btn" id="btn-wifi-refresh">Refresh</button></div>
+    </div>
+    <div class="wifi-aps" id="wifi-aps"></div>
+    <form class="filter-bar" id="wifi-filters" autocomplete="off">
+      <input type="search" id="wifi-q" class="filter-input" placeholder="Search names, addresses, makers...">
+      <select id="wifi-ap" title="Access point"><option value="">All access points</option></select>
+      <select id="wifi-band" title="Band"><option value="">All bands</option><option>2.4 GHz</option><option>5 GHz</option><option>6 GHz</option></select>
+      <label class="checkbox-label inline"><input type="checkbox" id="wifi-weak-only"> Weak signal only</label>
+      <span class="dim filter-bar-end" id="wifi-count"></span>
+    </form>
+    <div class="panel">
+      <table id="tbl-wifi" class="sortable">
+        <thead><tr><th>Device</th><th>Access point</th><th data-type="num">Signal</th><th>Band</th><th data-type="num">Speed</th>
+          <th data-type="num">Retries</th><th data-type="num">Roams</th><th data-type="num">Experience</th><th data-type="num">Connected</th><th></th></tr></thead>
+        <tbody id="wifi-body"></tbody>
+      </table>
+      <div class="panel-note-bar">Reconnect drops a device so it joins again, ideally to a nearer access point; the device decides where. At most once an hour per device; the never-reconnect list is in Settings, UniFi.</div>
+    </div>
+  </main>
+
+  <main id="view-pihole" class="view-panel hidden">
+    <div class="section-header">
+      <span class="section-title page-title">Pi-hole</span>
+      <div class="detail-actions" data-perm="devices.manage" id="ph-actions">
+        <span class="dim" id="ph-state"></span>
+        <button type="button" class="btn" data-ph-pause="5">Pause 5 min</button>
+        <button type="button" class="btn" data-ph-pause="30">Pause 30 min</button>
+        <button type="button" class="btn" data-ph-pause="60">Pause 1 h</button>
+        <button type="button" class="btn btn-primary hidden" id="btn-ph-resume">Resume blocking</button>
+      </div>
+    </div>
+    <div class="metrics-summary-row" id="ph-kpis"></div>
+    <div class="grid-2">
+      <div class="panel">
+        <div class="panel-header-bar">Where queries go</div>
+        <table><thead><tr><th>Upstream</th><th>Address</th><th data-type="num">Queries</th><th data-type="num">Answer time</th></tr></thead>
+          <tbody id="ph-up-body"></tbody></table>
+      </div>
+      <div class="panel">
+        <div class="panel-header-bar">Most blocked today</div>
+        <table><thead><tr><th>Domain</th><th data-type="num">Blocked</th></tr></thead><tbody id="ph-blocked-body"></tbody></table>
+      </div>
+    </div>
+    <div class="chart-grid" id="ph-charts"></div>
+  </main>
+
+  <main id="view-inventory" class="view-panel hidden">
+    <div class="section-header">
+      <span class="section-title page-title">Inventory</span>
+      <div class="detail-actions">
+        <button type="button" class="btn" id="btn-inv-quiet-nets" data-perm="devices.manage" title="Wi-Fi networks whose devices are kept but never announced, such as a tenant's">Quiet networks</button>
+        <button type="button" class="btn" id="btn-inv-add" data-perm="devices.manage" title="Add a device by its MAC address, as known, even while it is offline">Add a device</button>
+        <button type="button" class="btn hidden" id="btn-inv-known" data-perm="devices.manage">Mark all new as known</button>
+      </div>
+    </div>
+    <div class="panel-note-bar hidden" id="inv-learning"></div>
+    <form class="filter-bar" id="inv-filters" autocomplete="off">
+      <input type="search" id="inv-q" class="filter-input" placeholder="Search names, addresses, makers, notes...">
+      <select id="inv-show" title="Show">
+        <option value="">Everything</option><option value="new">New only</option><option value="unmonitored">Not monitored</option>
+        <option value="wifi">On Wi-Fi</option><option value="cable">On a cable</option><option value="gone">Not seen for 30 days</option>
+        <option value="quiet">Quiet only</option><option value="all">Everything, quiet too</option>
+      </select>
+      <span class="dim filter-bar-end" id="inv-count"></span>
+    </form>
+    <div class="panel">
+      <table id="tbl-inventory" class="sortable">
+        <thead><tr><th>Name</th><th>MAC address</th><th>IP address</th><th>Connected</th><th>Wi-Fi network</th><th>Maker</th><th data-type="num">First seen</th><th data-type="num">Last seen</th><th></th></tr></thead>
+        <tbody id="inventory-body"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <main id="view-guide" class="view-panel hidden">
+    <div class="section-header">
+      <span class="section-title page-title">Guide</span>
+    </div>
+    <div class="guide-layout">
+      <nav class="guide-toc" aria-label="Guide contents">
+        <div class="guide-search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></svg>
+          <input type="text" id="guide-search" placeholder="Search the guide" autocomplete="off" spellcheck="false" aria-label="Search the guide">
+        </div>
+        <div class="guide-count dim" id="guide-count"></div>
+        <a href="#" id="guide-changes" class="btn guide-changes">What's changed</a>
+        <div id="guide-toc"></div>
+      </nav>
+      <div class="guide-main">
+        <div class="panel-note-bar hidden" id="guide-none">Nothing in the guide matches that.</div>
+        <div class="guide-body" id="guide-body"><div class="dim">Loading...</div></div>
+      </div>
+    </div>
+  </main>
+
+  <main id="view-proxmox" class="view-panel hidden">
+    <div class="section-header">
+      <span class="section-title page-title">Proxmox</span>
+      <div class="dash-toolbar">
+        <span class="dim" id="pve-updated"></span>
+        <button type="button" class="btn" id="btn-pve-refresh">Refresh</button>
+      </div>
+    </div>
+    <div id="pve-body"></div>
+  </main>
+
+  <!-- Network map -->
+  <main id="view-map" class="view-panel hidden">
+    <div class="section-header">
+      <span class="section-title page-title">Network Map</span>
+      <div class="dash-toolbar">
+        <span class="dim" id="map-hint">Drag to arrange. Click a device to see what depends on it.</span>
+        <form id="map-add-form" class="map-add map-edit-only hidden">
+          <input type="text" id="map-add-label" class="filter-input" placeholder="New object, e.g. ISP modem" maxlength="64">
+          <select id="map-add-kind"></select>
+          <button type="submit" class="btn">Add</button>
+        </form>
+        <button id="map-link" class="btn map-edit-only hidden" title="Click two nodes to connect them">Link</button>
+        <button id="map-layout" class="btn map-edit-only hidden">Arrange as tree</button>
+        <button id="map-edit" data-perm="map.edit" class="btn">Edit</button>
+      </div>
+    </div>
+    <div class="map-layout">
+      <div class="panel map-canvas">
+        <svg id="map-svg" class="map-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div class="map-controls" aria-label="Zoom">
+          <button type="button" class="btn" id="map-zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
+          <button type="button" class="btn" id="map-zoom-out" title="Zoom out" aria-label="Zoom out">&minus;</button>
+          <button type="button" class="btn" id="map-fit" title="Zoom to show the whole map">Fit</button>
+        </div>
+        <div class="map-legend" aria-label="Legend">
+          <span><i class="map-key state-up"></i>Up</span><span><i class="map-key state-warn"></i>Problem</span>
+          <span><i class="map-key state-down"></i>Down</span><span><i class="map-key state-object"></i>Not monitored</span>
+          <span><i class="map-line"></i>Cable</span><span><i class="map-line virtual"></i>Virtual or service</span><span><i class="map-line wifi"></i>Wi-Fi</span><span><i class="map-line manual"></i>Drawn by you</span>
+        </div>
+      </div>
+      <div class="panel map-info" id="map-info"></div>
+    </div>
+    <div class="form-help">Links come from the switches' MAC address tables and the gateway's ARP table, refreshed every poll. In Edit mode: add things the monitor cannot see (an unmanaged switch, the ISP modem), draw links with Link, click an inferred link to hide it, Arrange as tree to reset positions.</div>
+  </main>
+
+  <!-- Audit Log -->
+  <main id="view-audit" class="view-panel hidden">
+    <div class="section-header">
+      <span class="section-title page-title">System Audit Log</span>
+    </div>
+    <form class="filter-bar" id="audit-filters" autocomplete="off">
+      <input type="search" id="au-q" class="filter-input" placeholder="Search messages and details...">
+      <select id="au-category" title="Category"><option value="">All categories</option></select>
+      <select id="au-range" title="Time range">
+        <option value="">Any time</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option>
+        <option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option><option value="custom">Between dates...</option>
+      </select>
+      <span class="ev-dates hidden" id="au-dates">
+        <input type="date" id="au-from" title="From"> <span class="dim">to</span> <input type="date" id="au-to" title="To (inclusive)">
+      </span>
+      <button type="button" class="btn hidden" id="au-clear">Clear filters</button>
+      <button type="button" id="btn-refresh-audit" class="btn filter-bar-end">Refresh</button>
+    </form>
+    <div class="panel">
+      <table id="tbl-audit">
+        <thead>
+          <tr><th>Time</th><th>Category</th><th>Message</th><th>Details</th></tr>
+        </thead>
+        <tbody id="audit-table-body"></tbody>
+      </table>
+      <div class="pager" id="audit-pager"></div>
+    </div>
+  </main>
+
+  <!-- Modal: Add Target -->
+  <div id="modal-add-device" class="modal-backdrop hidden">
+    <div class="modal modal-wide add-device-modal">
+      <div class="modal-header">
+        <span>Add to monitoring</span>
+        <button id="btn-close-modal" class="btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="panel-note-bar hidden" id="add-from-inv"></div>
+        <!-- What: three kinds of target. How: one address, or a scan that finds them. -->
+        <div class="add-kinds" id="add-kind" role="radiogroup" aria-label="What to monitor">
+          <button type="button" class="add-kind-card" data-kind="ping" role="radio" aria-checked="false">
+            <strong>Ping</strong><span>Up or down, response time and availability. Anything with an address; nothing to set up on it.</span></button>
+          <button type="button" class="add-kind-card active" data-kind="device" role="radio" aria-checked="true">
+            <strong>Device statistics (SNMP)</strong><span>Interfaces, traffic, CPU, memory, storage and more, plus ping. The device must run SNMP.</span></button>
+          <button type="button" class="add-kind-card" data-kind="service" role="radio" aria-checked="false">
+            <strong>Service</strong><span>A TCP port (SSH, a database, anything) or a web page over HTTP or HTTPS.</span></button>
+        </div>
+        <div class="add-how-row">
+          <div class="seg kind-seg" id="add-how" role="radiogroup" aria-label="How">
+            <button type="button" class="btn active" data-how="single" role="radio" aria-checked="true">One address</button>
+            <button type="button" class="btn" data-how="scan" role="radio" aria-checked="false">Scan the network</button>
+          </div>
+          <span class="dim" id="add-how-help"></span>
+        </div>
+
+        <div class="add-scan hidden" id="add-scan">
+          <div class="form-group">
+            <label for="scan-subnets">Subnets to scan</label>
+            <textarea id="scan-subnets" rows="2" spellcheck="false" placeholder="192.168.1.0/24"></textarea>
+            <div class="form-help">One per line or separated by commas. Private ranges only, up to 1024 addresses in total.</div>
+          </div>
+          <div class="form-group service-only hidden">
+            <label>Ports to look for</label>
+            <div class="seg kind-seg" id="scan-port-mode" role="radiogroup" aria-label="Ports">
+              <button type="button" class="btn active" data-port-mode="common" role="radio" aria-checked="true">Common services</button>
+              <button type="button" class="btn" data-port-mode="custom" role="radio" aria-checked="false">Choose ports</button>
+              <button type="button" class="btn" data-port-mode="all" role="radio" aria-checked="false">All 65,535 ports</button>
+            </div>
+            <div class="form-help" id="scan-port-help"></div>
+            <input type="text" id="scan-ports" class="hidden" placeholder="22,80,443,8000-8100" spellcheck="false">
+            <div class="panel-note-bar warn hidden" id="scan-port-warn"><strong>This takes a while.</strong> Every port of every host that is up is tried: about a minute per host on a quiet network, longer for hosts with a firewall. A /24 with 30 hosts can take half an hour or more. Open ports appear as they are found, and you can stop at any time and keep what was found.</div>
+          </div>
+          <div class="form-group snmp-only">
+            <label for="scan-community">SNMP community (empty uses the default)</label>
+            <input type="password" id="scan-community" autocomplete="off">
+          </div>
+          <div class="scan-progress hidden" id="scan-progress">
+            <div class="setup-progress"><div id="scan-bar"></div></div>
+            <span class="dim" id="scan-status"></span>
+            <button type="button" class="btn btn-small hidden" id="btn-scan-stop">Stop</button>
+          </div>
+          <div class="scan-results hidden" id="scan-results"></div>
+        </div>
+
+        <div class="form-group service-only hidden single-field">
+          <label for="input-check-kind">Check</label>
+          <select id="input-check-kind" data-check-kind>
+            <option value="tcp">TCP port: the port accepts a connection</option>
+            <option value="http">Web page: HTTP or HTTPS answers as expected</option>
+          </select>
+        </div>
+        <div class="web-check hidden" id="add-web-check">
+          <div class="form-group">
+            <label for="input-web-url">Address of the page <span class="required-mark">*</span></label>
+            <input type="text" id="input-web-url" placeholder="https://192.168.1.20:8443/health" spellcheck="false">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="input-web-status">Expected status</label>
+              <input type="text" id="input-web-status" placeholder="200-399">
+            </div>
+            <div class="form-group">
+              <label for="input-web-keyword">Text the page must contain (optional)</label>
+              <input type="text" id="input-web-keyword" maxlength="200">
+            </div>
+          </div>
+          <label class="checkbox-label"><input type="checkbox" id="input-web-insecure"> Accept a self-signed certificate (internal services)</label>
+        </div>
+
+        <div class="form-row form-row-addr tcp-field">
+          <div class="form-group">
+            <label for="input-ip"><span class="device-or-ping">IP address</span><span class="service-only hidden">IP address or hostname</span> <span class="required-mark">*</span></label>
+            <input type="text" id="input-ip" placeholder="e.g. 192.168.1.3" required>
+            <div id="add-ip-error" class="form-error hidden"></div>
+          </div>
+          <div class="form-group service-only hidden">
+            <label for="input-service-port">Port <span class="required-mark">*</span></label>
+            <input type="number" id="input-service-port" min="1" max="65535" placeholder="e.g. 443">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="input-hostname">Name</label>
+          <input type="text" id="input-hostname" placeholder="e.g. ap-living-room">
+        </div>
+
+        <div class="form-row snmp-only">
+          <div class="form-group">
+            <label for="input-community">SNMP community</label>
+            <input type="password" id="input-community" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="input-port">SNMP port</label>
+            <input type="number" id="input-port" value="161">
+          </div>
+        </div>
+
+        <div class="form-group snmp-only">
+          <label for="select-profile">Template</label>
+          <select id="select-profile" class="profile-select"></select>
+          <div class="form-help">Test &amp; auto-detect picks it from what the device reports.</div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group snmp-only">
+            <label for="input-poll">SNMP poll every (seconds)</label>
+            <input type="number" id="input-poll" placeholder="Default">
+          </div>
+          <div class="form-group">
+            <label for="input-ping"><span class="device-or-ping">Ping every (seconds)</span><span class="service-only hidden">Check every (seconds)</span></label>
+            <input type="number" id="input-ping" placeholder="Default">
+          </div>
+        </div>
+
+        <div id="probe-results-box" class="probe-box hidden"></div>
+
+        <label class="checkbox-label">
+          <input type="checkbox" id="check-allow-unverified">
+          Add it even if it does not answer yet (set up in advance)
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-cancel-modal" class="btn">Cancel</button>
+        <button type="button" id="btn-probe" class="btn single-only">Test &amp; auto-detect</button>
+        <button id="btn-submit-device" class="btn btn-primary single-only">Add</button>
+        <button type="button" id="btn-scan-start" class="btn btn-primary scan-only hidden">Scan</button>
+        <button type="button" id="btn-scan-add" class="btn btn-primary scan-only hidden" disabled>Add selected</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Target -->
+  <div id="modal-edit-device" class="modal-backdrop hidden">
+    <div class="modal modal-wide modal-edit-device">
+      <div class="modal-header">
+        <span>Edit device</span>
+        <button id="btn-close-edit-modal" class="btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="edit-device-id">
+        <div class="edit-cols">
+          <section class="edit-col" aria-labelledby="edit-sec-what">
+            <h4 class="edit-sec" id="edit-sec-what">The device</h4>
+            <div class="form-group">
+              <label for="edit-hostname">Name</label>
+              <input type="text" id="edit-hostname">
+            </div>
+            <div class="form-group service-only hidden">
+              <label for="edit-check-kind">Check</label>
+              <select id="edit-check-kind" data-check-kind>
+                <option value="tcp">TCP port: the port accepts a connection</option>
+                <option value="http">Web page: HTTP or HTTPS answers as expected</option>
+              </select>
+            </div>
+            <div class="web-check hidden" id="edit-web-check">
+              <div class="form-group">
+                <label for="edit-web-url">Address of the page <span class="required-mark">*</span></label>
+                <input type="text" id="edit-web-url" spellcheck="false">
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="edit-web-status">Expected status</label>
+                  <input type="text" id="edit-web-status" placeholder="200-399">
+                </div>
+                <div class="form-group">
+                  <label for="edit-web-keyword">Text the page must contain</label>
+                  <input type="text" id="edit-web-keyword" maxlength="200" placeholder="Optional">
+                </div>
+              </div>
+              <label class="checkbox-label"><input type="checkbox" id="edit-web-insecure"> Accept a self-signed certificate (internal services)</label>
+            </div>
+            <div class="form-row form-row-addr tcp-field">
+              <div class="form-group">
+                <label for="edit-ip"><span class="device-or-ping">IP address</span><span class="service-only hidden">IP address or hostname</span> <span class="required-mark">*</span></label>
+                <input type="text" id="edit-ip" required>
+                <div id="edit-ip-error" class="form-error hidden"></div>
+              </div>
+              <div class="form-group service-only hidden">
+                <label for="edit-service-port">Port <span class="required-mark">*</span></label>
+                <input type="number" id="edit-service-port" min="1" max="65535">
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="edit-group">Group</label>
+              <select id="edit-group"></select>
+              <div class="form-help">Where it is listed. Automatic follows the template.</div>
+            </div>
+            <div class="form-group">
+              <label>Tags</label>
+              <input type="hidden" id="edit-tags">
+              <div class="edit-tags-row"><span id="edit-tags-chips" class="edit-tags-chips"></span><button type="button" class="btn btn-small" id="btn-edit-tags">Change tags</button></div>
+            </div>
+          </section>
+          <section class="edit-col" aria-labelledby="edit-sec-how">
+            <h4 class="edit-sec" id="edit-sec-how">How it is watched</h4>
+            <div class="form-group device-or-ping">
+              <label for="edit-profile">Template</label>
+              <select id="edit-profile" class="profile-select"></select>
+              <div class="form-help">What the monitor reads from it. A ping-only template just checks that it answers.</div>
+            </div>
+            <div class="form-group">
+              <label for="edit-ping"><span class="device-or-ping">Ping every (seconds)</span><span class="service-only hidden">Check every (seconds)</span></label>
+              <input type="number" id="edit-ping" placeholder="Default">
+            </div>
+            <div class="edit-sub snmp-only">
+              <div class="edit-sub-head">SNMP <span class="dim">ports, load, storage and Wi-Fi from devices that offer it</span></div>
+              <div class="form-row three">
+                <div class="form-group">
+                  <label for="edit-community">Community</label>
+                  <input type="password" id="edit-community" autocomplete="off">
+                </div>
+                <div class="form-group">
+                  <label for="edit-port">Port</label>
+                  <input type="number" id="edit-port">
+                </div>
+                <div class="form-group">
+                  <label for="edit-poll">Read every (s)</label>
+                  <input type="number" id="edit-poll" placeholder="Default">
+                </div>
+              </div>
+            </div>
+            <div class="form-help device-or-ping">SSH for host actions and workflows uses a stored credential (Automation, Credentials). Problems and their limits are under Alert rules.</div>
+          </section>
+        </div>
+        <details class="edit-more" id="edit-more">
+          <summary>Place on the map and details</summary>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="edit-upstream">Connected to (uplink)</label>
+              <select id="edit-upstream"></select>
+              <div class="form-help" id="edit-upstream-help">Set this when the map guesses wrong or cannot tell. It then wins over the guess.</div>
+            </div>
+            <div class="form-group hidden" id="edit-upstream-port-group">
+              <label for="edit-upstream-port">Port on the uplink device (optional)</label>
+              <input type="text" id="edit-upstream-port" maxlength="32" placeholder="e.g. Port 7">
+            </div>
+          </div>
+          <div class="form-help">Details shown in the app instead of what the device reports (leave empty to use the device's own):</div>
+          <div class="form-row three" id="edit-overrides"></div>
+        </details>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-cancel-edit-modal" class="btn">Cancel</button>
+        <button id="btn-save-edit-device" class="btn btn-primary">Save changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Configure graph widget -->
+  <div id="modal-widget" class="modal-backdrop hidden">
+    <div class="modal modal-mid">
+      <div class="modal-header">
+        <span>Configure Graph Tile</span>
+        <button id="btn-close-widget" class="btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Device</label>
+            <select id="widget-device"></select>
+          </div>
+          <div class="form-group">
+            <label>Graph</label>
+            <select id="widget-graph"></select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Time range</label>
+          <select id="widget-hours">
+            <option value="1">1 hour</option>
+            <option value="6">6 hours</option>
+            <option value="24">24 hours</option>
+            <option value="168">7 days</option>
+            <option value="720">30 days</option>
+          </select>
+        </div>
+        <label class="checkbox-label"><input type="checkbox" id="widget-compare"> Show the previous period underneath (grey)</label>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-cancel-widget" class="btn">Cancel</button>
+        <button id="btn-save-widget" class="btn btn-primary">Apply</button>
+      </div>
+    </div>
+  </div>
+
+  </div><!-- app-content -->
+  </div><!-- app-main -->
+  </div><!-- app-shell -->
+
+  <button type="button" class="to-top hidden" id="btn-to-top" title="Back to top" aria-label="Back to top">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+  </button>
+  <div id="chart-tooltip" class="chart-tooltip hidden"></div>
+  <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+
+  <script src="/app.js"></script>
+  <script src="/map.js"></script>
+  <script src="/wftemplates.js"></script>
+  <script src="/telegram.js"></script>
+  <script src="/botcmds.js"></script>
+  <script src="/workflows.js"></script>
+  <script src="/hostactions.js"></script>
+  <script src="/setup.js"></script>
+  <script src="/alerts.js"></script>
+  <script src="/charts.js"></script>
+  <script src="/availability.js"></script>
+  <script src="/proxmox.js"></script>
+  <script src="/shell.js"></script>
+  <script src="/users.js"></script>
+  <script src="/security.js"></script>
+  <script src="/snmp.js"></script>
+  <script src="/adddevice.js"></script>
+  <script src="/backups.js"></script>
+  <script src="/updates.js"></script>
+  <script src="/taxonomy.js"></script>
+  <script src="/tls.js"></script>
+  <script src="/changes.js"></script>
+  <script src="/lan.js"></script>
+  <script src="/inventory.js"></script>
+  <script src="/guide.js"></script>
+</body>
+</html>

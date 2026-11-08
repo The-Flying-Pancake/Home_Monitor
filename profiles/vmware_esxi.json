@@ -1,0 +1,59 @@
+{
+  "profile_id": "vmware_esxi",
+  "name": "VMware ESXi host",
+  "vendor": "VMware",
+  "category": "server",
+  "match_priority": 20,
+  "notes": "Written from the vendor's published MIB; not yet confirmed on real hardware.",
+  "signature_oids": [
+    {
+      "oid": "1.3.6.1.2.1.1.2.0",
+      "match_prefix": "1.3.6.1.4.1.6876"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "vmware esxi"
+    }
+  ],
+  "tables": [
+    "interfaces",
+    "storage"
+  ],
+  "inventory_regex": {
+    "firmware": "ESXi (\\S+ build-\\d+)"
+  },
+  "metrics": [
+    {
+      "key": "uptime_seconds",
+      "oid": "1.3.6.1.2.1.1.3.0",
+      "type": "timeticks",
+      "unit": "seconds",
+      "history": "none"
+    },
+    {
+      "key": "cpu_usage_pct",
+      "walk": "1.3.6.1.2.1.25.3.3.1.2",
+      "aggregate": "avg",
+      "type": "integer",
+      "unit": "percent"
+    },
+    {
+      "key": "mem_hr_size_units",
+      "walk": "1.3.6.1.2.1.25.2.3.1.5",
+      "filter_walk": "1.3.6.1.2.1.25.2.3.1.2",
+      "filter_equals": "1.3.6.1.2.1.25.2.1.2",
+      "aggregate": "sum",
+      "type": "integer",
+      "history": "none"
+    },
+    {
+      "key": "mem_hr_used_units",
+      "walk": "1.3.6.1.2.1.25.2.3.1.6",
+      "filter_walk": "1.3.6.1.2.1.25.2.3.1.2",
+      "filter_equals": "1.3.6.1.2.1.25.2.1.2",
+      "aggregate": "sum",
+      "type": "integer",
+      "history": "none"
+    }
+  ]
+}

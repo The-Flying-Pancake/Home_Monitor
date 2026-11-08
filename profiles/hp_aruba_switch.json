@@ -1,0 +1,55 @@
+{
+  "profile_id": "hp_aruba_switch",
+  "name": "HPE Aruba / ProCurve switch",
+  "vendor": "HPE Aruba",
+  "category": "switch",
+  "match_priority": 20,
+  "notes": "Written from the vendor's published MIB; not yet confirmed on real hardware.",
+  "signature_oids": [
+    {
+      "oid": "1.3.6.1.2.1.1.2.0",
+      "match_prefix": "1.3.6.1.4.1.11.2.3.7.11"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "procurve"
+    }
+  ],
+  "tables": [
+    "interfaces",
+    "fdb",
+    "arp"
+  ],
+  "metrics": [
+    {
+      "key": "uptime_seconds",
+      "oid": "1.3.6.1.2.1.1.3.0",
+      "type": "timeticks",
+      "unit": "seconds",
+      "history": "none"
+    },
+    {
+      "key": "cpu_usage_pct",
+      "oid": "1.3.6.1.4.1.11.2.14.11.5.1.9.6.1.0",
+      "type": "integer",
+      "label": "CPU usage",
+      "unit": "percent"
+    },
+    {
+      "key": "mem_total_bytes",
+      "oid": "1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.5.1",
+      "type": "integer",
+      "label": "Memory total",
+      "unit": "bytes",
+      "history": "none"
+    },
+    {
+      "key": "mem_free_bytes",
+      "oid": "1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.6.1",
+      "type": "integer",
+      "label": "Memory free",
+      "unit": "bytes",
+      "history": "none"
+    }
+  ]
+}

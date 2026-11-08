@@ -1,0 +1,92 @@
+{
+  "profile_id": "unifi_switch",
+  "name": "UniFi Managed Switch (USW 24 PoE / USW Lite 8)",
+  "vendor": "Ubiquiti",
+  "category": "switch",
+  "match_priority": 20,
+  "signature_oids": [
+    {
+      "oid": "1.3.6.1.2.1.1.5.0",
+      "match_contains": "USW"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "USW"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "Linux UBNT"
+    }
+  ],
+  "tables": [
+    "interfaces",
+    "fdb"
+  ],
+  "inventory_regex": {
+    "model": {
+      "from": "sys_name",
+      "pattern": "(USW-[A-Za-z0-9-]+)"
+    }
+  },
+  "metrics": [
+    {
+      "key": "uptime_seconds",
+      "oid": "1.3.6.1.2.1.1.3.0",
+      "type": "timeticks",
+      "unit": "seconds",
+      "history": "none"
+    },
+    {
+      "key": "cpu_load_1m",
+      "oid": "1.3.6.1.4.1.2021.10.1.3.1",
+      "type": "string_float",
+      "unit": "load",
+      "history": "none"
+    },
+    {
+      "key": "cpu_usage_pct",
+      "walk": "1.3.6.1.2.1.25.3.3.1.2",
+      "aggregate": "avg",
+      "type": "integer",
+      "unit": "percent"
+    },
+    {
+      "key": "mem_total_kb",
+      "oid": "1.3.6.1.4.1.2021.4.5.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "change"
+    },
+    {
+      "key": "mem_avail_kb",
+      "oid": "1.3.6.1.4.1.2021.4.6.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "none"
+    },
+    {
+      "key": "ports_up",
+      "walk": "1.3.6.1.2.1.2.2.1.8",
+      "filter_walk": "1.3.6.1.2.1.2.2.1.8",
+      "filter_equals": "1",
+      "aggregate": "count",
+      "type": "integer",
+      "unit": "ports",
+      "history": "change"
+    },
+    {
+      "key": "mem_buffer_kb",
+      "oid": "1.3.6.1.4.1.2021.4.14.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "none"
+    },
+    {
+      "key": "mem_cached_kb",
+      "oid": "1.3.6.1.4.1.2021.4.15.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "none"
+    }
+  ]
+}

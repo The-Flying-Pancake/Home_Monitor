@@ -1,0 +1,173 @@
+{
+  "profile_id": "apc_ups",
+  "name": "APC UPS (Network Management Card)",
+  "vendor": "APC / Schneider",
+  "category": "power",
+  "match_priority": 25,
+  "notes": "Written from the vendor's published MIB; not yet confirmed on real hardware.",
+  "signature_oids": [
+    {
+      "oid": "1.3.6.1.4.1.318.1.1.1.1.1.1.0",
+      "match_exists": true
+    }
+  ],
+  "tables": [
+    "interfaces"
+  ],
+  "inventory_oids": {
+    "model": "1.3.6.1.4.1.318.1.1.1.1.1.1.0",
+    "firmware": "1.3.6.1.4.1.318.1.1.1.1.2.1.0",
+    "serial": "1.3.6.1.4.1.318.1.1.1.1.2.3.0",
+    "battery_replaced": "1.3.6.1.4.1.318.1.1.1.2.1.3.0"
+  },
+  "metrics": [
+    {
+      "key": "uptime_seconds",
+      "oid": "1.3.6.1.2.1.1.3.0",
+      "type": "timeticks",
+      "unit": "seconds",
+      "history": "none"
+    },
+    {
+      "key": "ups_charge_pct",
+      "oid": "1.3.6.1.4.1.318.1.1.1.2.2.1.0",
+      "type": "integer",
+      "label": "Battery charge",
+      "unit": "percent",
+      "group": "Power",
+      "kpi": true
+    },
+    {
+      "key": "ups_runtime_s",
+      "oid": "1.3.6.1.4.1.318.1.1.1.2.2.3.0",
+      "type": "timeticks",
+      "label": "Runtime remaining",
+      "unit": "seconds",
+      "group": "Power",
+      "kpi": true
+    },
+    {
+      "key": "ups_load_pct",
+      "oid": "1.3.6.1.4.1.318.1.1.1.4.2.3.0",
+      "type": "integer",
+      "label": "Output load",
+      "unit": "percent",
+      "group": "Power",
+      "kpi": true
+    },
+    {
+      "key": "ups_battery_temp_c",
+      "oid": "1.3.6.1.4.1.318.1.1.1.2.2.2.0",
+      "type": "integer",
+      "label": "Battery temperature",
+      "unit": "celsius",
+      "group": "Power"
+    },
+    {
+      "key": "ups_input_volts",
+      "oid": "1.3.6.1.4.1.318.1.1.1.3.2.1.0",
+      "type": "integer",
+      "label": "Input voltage",
+      "unit": "volts",
+      "group": "Power"
+    },
+    {
+      "key": "ups_output_status",
+      "oid": "1.3.6.1.4.1.318.1.1.1.4.1.1.0",
+      "type": "integer",
+      "label": "Output status",
+      "group": "Power",
+      "values": {
+        "1": "Unknown",
+        "2": "Online",
+        "3": "On battery",
+        "4": "Boosting",
+        "5": "Timed sleep",
+        "6": "Software bypass",
+        "7": "Off",
+        "8": "Rebooting",
+        "9": "Switched bypass",
+        "10": "Hardware failure bypass",
+        "11": "Sleeping",
+        "12": "Trimming"
+      },
+      "history": "change",
+      "event": true
+    },
+    {
+      "key": "ups_battery_replace",
+      "oid": "1.3.6.1.4.1.318.1.1.1.2.2.4.0",
+      "type": "integer",
+      "label": "Battery replacement",
+      "group": "Power",
+      "values": {
+        "1": "Not needed",
+        "2": "Replace battery"
+      },
+      "history": "change",
+      "event": true
+    },
+    {
+      "key": "ups_self_test",
+      "oid": "1.3.6.1.4.1.318.1.1.1.7.2.3.0",
+      "type": "integer",
+      "label": "Last self test",
+      "group": "Power",
+      "values": {
+        "1": "Passed",
+        "2": "Failed",
+        "3": "Invalid",
+        "4": "In progress"
+      },
+      "history": "change",
+      "event": true
+    }
+  ],
+  "alerts": [
+    {
+      "key": "ups_output_status",
+      "in": [
+        3
+      ],
+      "severity": "critical",
+      "message": "UPS running on battery"
+    },
+    {
+      "key": "ups_output_status",
+      "in": [
+        7,
+        10
+      ],
+      "severity": "critical",
+      "message": "UPS output {value}"
+    },
+    {
+      "key": "ups_battery_replace",
+      "in": [
+        2
+      ],
+      "severity": "warning",
+      "message": "UPS battery needs replacing"
+    },
+    {
+      "key": "ups_self_test",
+      "in": [
+        2
+      ],
+      "severity": "warning",
+      "message": "UPS self test failed"
+    },
+    {
+      "key": "ups_charge_pct",
+      "below": 50,
+      "severity": "warning",
+      "message": "UPS battery at {value}%"
+    },
+    {
+      "key": "ups_load_pct",
+      "above": 80,
+      "severity": "warning",
+      "message": "UPS load at {value}%"
+    }
+  ]
+}

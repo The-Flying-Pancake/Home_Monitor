@@ -1,0 +1,143 @@
+{
+  "profile_id": "truenas",
+  "name": "TrueNAS (SCALE / CORE)",
+  "vendor": "iXsystems",
+  "category": "nas",
+  "match_priority": 30,
+  "notes": "Written from the vendor's published MIB; not yet confirmed on real hardware.",
+  "signature_oids": [
+    {
+      "oid": "1.3.6.1.4.1.50536.1.1.1.2.1",
+      "match_exists": true
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "truenas"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "freenas"
+    }
+  ],
+  "tables": [
+    "interfaces",
+    "storage",
+    "sensors",
+    "diskio"
+  ],
+  "metrics": [
+    {
+      "key": "uptime_seconds",
+      "oid": "1.3.6.1.2.1.25.1.1.0",
+      "type": "timeticks",
+      "unit": "seconds",
+      "history": "none"
+    },
+    {
+      "key": "cpu_idle_pct",
+      "oid": "1.3.6.1.4.1.2021.11.11.0",
+      "type": "integer",
+      "unit": "percent",
+      "history": "none"
+    },
+    {
+      "key": "cpu_load_1m",
+      "oid": "1.3.6.1.4.1.2021.10.1.3.1",
+      "type": "string_float",
+      "unit": "load"
+    },
+    {
+      "key": "cpu_load_5m",
+      "oid": "1.3.6.1.4.1.2021.10.1.3.2",
+      "type": "string_float",
+      "unit": "load",
+      "history": "none"
+    },
+    {
+      "key": "cpu_load_15m",
+      "oid": "1.3.6.1.4.1.2021.10.1.3.3",
+      "type": "string_float",
+      "unit": "load",
+      "history": "none"
+    },
+    {
+      "key": "mem_total_kb",
+      "oid": "1.3.6.1.4.1.2021.4.5.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "change"
+    },
+    {
+      "key": "mem_avail_kb",
+      "oid": "1.3.6.1.4.1.2021.4.6.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "none"
+    },
+    {
+      "key": "mem_buffer_kb",
+      "oid": "1.3.6.1.4.1.2021.4.14.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "none"
+    },
+    {
+      "key": "mem_cached_kb",
+      "oid": "1.3.6.1.4.1.2021.4.15.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "none"
+    }
+  ],
+  "table_defs": [
+    {
+      "table": "volumes",
+      "walk": "1.3.6.1.4.1.50536.1.1.1",
+      "columns": {
+        "descr": 2,
+        "status": {
+          "col": 3,
+          "map": {
+            "0": "Online",
+            "1": "Degraded",
+            "2": "Faulted",
+            "3": "Offline",
+            "4": "Unavailable",
+            "5": "Removed"
+          }
+        }
+      },
+      "fixed": {
+        "filesystem": "ZFS"
+      },
+      "ok": {
+        "field": "status",
+        "bad": [
+          "Degraded",
+          "Faulted",
+          "Offline",
+          "Unavailable",
+          "Removed"
+        ]
+      },
+      "severity": "critical"
+    },
+    {
+      "table": "disks",
+      "walk": "1.3.6.1.4.1.50536.3.1.1",
+      "columns": {
+        "name": 2,
+        "temp_c": {
+          "col": 3,
+          "scale": 0.001
+        }
+      },
+      "metrics": [
+        {
+          "field": "temp_c",
+          "key": "disk.{index}.temp_c"
+        }
+      ]
+    }
+  ]
+}

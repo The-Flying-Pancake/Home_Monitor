@@ -1,0 +1,78 @@
+{
+  "profile_id": "qnap_nas",
+  "name": "QNAP Turbo NAS (TS-431K / TS-431P / TS-x41)",
+  "vendor": "QNAP",
+  "category": "nas",
+  "match_priority": 20,
+  "signature_oids": [
+    {
+      "oid": "1.3.6.1.2.1.1.2.0",
+      "match_prefix": "1.3.6.1.4.1.24681"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.2.0",
+      "match_prefix": "1.3.6.1.4.1.55062"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "qnap"
+    }
+  ],
+  "tables": [
+    "interfaces",
+    "storage",
+    "qnap_disks",
+    "qnap_volumes"
+  ],
+  "inventory_regex": {
+    "model": "Linux (TS-\\S+)",
+    "firmware": "Linux TS-\\S+ (\\S+)"
+  },
+  "metrics": [
+    {
+      "key": "uptime_seconds",
+      "oid": "1.3.6.1.2.1.1.3.0",
+      "type": "timeticks",
+      "unit": "seconds",
+      "history": "none"
+    },
+    {
+      "key": "cpu_usage_pct",
+      "oid": "1.3.6.1.4.1.24681.1.2.1.0",
+      "type": "string_pct",
+      "unit": "percent"
+    },
+    {
+      "key": "cpu_temp_c",
+      "oid": "1.3.6.1.4.1.24681.1.2.5.0",
+      "type": "string_temp",
+      "unit": "celsius"
+    },
+    {
+      "key": "system_temp_c",
+      "oid": "1.3.6.1.4.1.24681.1.2.6.0",
+      "type": "string_temp",
+      "unit": "celsius"
+    },
+    {
+      "key": "fan_rpm",
+      "oid": "1.3.6.1.4.1.24681.1.2.15.1.3.1",
+      "type": "string_int",
+      "unit": "rpm"
+    },
+    {
+      "key": "mem_total_mb",
+      "oid": "1.3.6.1.4.1.24681.1.2.2.0",
+      "type": "string_mb",
+      "unit": "MB",
+      "history": "change"
+    },
+    {
+      "key": "mem_free_mb",
+      "oid": "1.3.6.1.4.1.24681.1.2.3.0",
+      "type": "string_mb",
+      "unit": "MB",
+      "history": "none"
+    }
+  ]
+}

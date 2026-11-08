@@ -1,0 +1,69 @@
+{
+  "profile_id": "managed_switch",
+  "name": "Managed switch (TP-Link, Netgear, Zyxel, D-Link, EdgeSwitch, MikroTik SwOS)",
+  "vendor": "Various",
+  "category": "switch",
+  "match_priority": 18,
+  "notes": "Written from the vendor's published MIB; not yet confirmed on real hardware.",
+  "signature_oids": [
+    {
+      "oid": "1.3.6.1.2.1.1.2.0",
+      "match_prefix": "1.3.6.1.4.1.11863"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.2.0",
+      "match_prefix": "1.3.6.1.4.1.4526"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.2.0",
+      "match_prefix": "1.3.6.1.4.1.890"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.2.0",
+      "match_prefix": "1.3.6.1.4.1.171"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.2.0",
+      "match_prefix": "1.3.6.1.4.1.4413"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "jetstream"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "edgeswitch"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "swos"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "prosafe"
+    }
+  ],
+  "tables": [
+    "interfaces",
+    "fdb"
+  ],
+  "metrics": [
+    {
+      "key": "uptime_seconds",
+      "oid": "1.3.6.1.2.1.1.3.0",
+      "type": "timeticks",
+      "unit": "seconds",
+      "history": "none"
+    },
+    {
+      "key": "ports_up",
+      "walk": "1.3.6.1.2.1.2.2.1.8",
+      "filter_walk": "1.3.6.1.2.1.2.2.1.8",
+      "filter_equals": "1",
+      "aggregate": "count",
+      "type": "integer",
+      "unit": "ports",
+      "history": "change"
+    }
+  ]
+}

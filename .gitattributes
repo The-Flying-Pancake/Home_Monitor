@@ -1,0 +1,3 @@
+# Linux line endings everywhere: the installer and its scripts run on Linux.
+* text=auto eol=lf
+*.png binary

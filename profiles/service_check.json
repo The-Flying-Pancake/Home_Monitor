@@ -1,0 +1,12 @@
+{
+  "profile_id": "service_check",
+  "name": "Network service (port check)",
+  "vendor": "Any",
+  "category": "service",
+  "match_priority": -1,
+  "snmp": false,
+  "notes": "No SNMP. Every ping interval the monitor pings the address (reachability and latency) and opens a TCP connection to the service port. Up means the port accepts the connection; a host that answers ping with the port closed is degraded. For internal web services, databases, SSH, DNS over TCP and similar.",
+  "signature_oids": [],
+  "tables": [],
+  "metrics": []
+}

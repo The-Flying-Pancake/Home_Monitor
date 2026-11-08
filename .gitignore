@@ -1,0 +1,14 @@
+# Data, keys and builds stay out of the repository.
+monitor.db*
+vault.json
+*.key
+demo-data/
+backups/
+infra.sh
+dist/
+*.log
+__pycache__/
+*.pyc
+tests/results/
+.vscode/
+.idea/

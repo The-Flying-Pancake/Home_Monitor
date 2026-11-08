@@ -1,0 +1,91 @@
+{
+  "profile_id": "linux_host",
+  "name": "Linux / Proxmox VE Host (Debian / Ubuntu)",
+  "vendor": "Generic Linux",
+  "category": "server",
+  "match_priority": 1,
+  "signature_oids": [
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "Linux"
+    }
+  ],
+  "tables": [
+    "interfaces",
+    "storage",
+    "sensors",
+    "diskio",
+    "processes",
+    "software"
+  ],
+  "metrics": [
+    {
+      "key": "uptime_seconds",
+      "oid": "1.3.6.1.2.1.25.1.1.0",
+      "type": "timeticks",
+      "unit": "seconds",
+      "history": "none"
+    },
+    {
+      "key": "cpu_idle_pct",
+      "oid": "1.3.6.1.4.1.2021.11.11.0",
+      "type": "integer",
+      "unit": "percent",
+      "history": "none"
+    },
+    {
+      "key": "cpu_load_1m",
+      "oid": "1.3.6.1.4.1.2021.10.1.3.1",
+      "type": "string_float",
+      "unit": "load"
+    },
+    {
+      "key": "cpu_load_5m",
+      "oid": "1.3.6.1.4.1.2021.10.1.3.2",
+      "type": "string_float",
+      "unit": "load",
+      "history": "none"
+    },
+    {
+      "key": "cpu_load_15m",
+      "oid": "1.3.6.1.4.1.2021.10.1.3.3",
+      "type": "string_float",
+      "unit": "load",
+      "history": "none"
+    },
+    {
+      "key": "mem_total_kb",
+      "oid": "1.3.6.1.4.1.2021.4.5.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "change"
+    },
+    {
+      "key": "mem_avail_kb",
+      "oid": "1.3.6.1.4.1.2021.4.6.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "none"
+    },
+    {
+      "key": "mem_buffer_kb",
+      "oid": "1.3.6.1.4.1.2021.4.14.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "none"
+    },
+    {
+      "key": "mem_cached_kb",
+      "oid": "1.3.6.1.4.1.2021.4.15.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "none"
+    },
+    {
+      "key": "tcp_established",
+      "oid": "1.3.6.1.2.1.6.9.0",
+      "type": "integer",
+      "unit": "connections"
+    }
+  ]
+}

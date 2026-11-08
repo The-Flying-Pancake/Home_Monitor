@@ -1,0 +1,185 @@
+{
+  "profile_id": "unifi_ap",
+  "name": "UniFi Access Point (AC Pro / AC LR / Nano HD)",
+  "vendor": "Ubiquiti",
+  "category": "wireless_ap",
+  "match_priority": 20,
+  "signature_oids": [
+    {
+      "oid": "1.3.6.1.2.1.1.2.0",
+      "match_prefix": "1.3.6.1.4.1.41112"
+    },
+    {
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "match_contains": "UAP"
+    }
+  ],
+  "tables": [
+    "interfaces",
+    "wireless"
+  ],
+  "inventory_oids": {
+    "model": "1.3.6.1.4.1.41112.1.6.3.3.0",
+    "firmware": "1.3.6.1.4.1.41112.1.6.3.6.0"
+  },
+  "metrics": [
+    {
+      "key": "uptime_seconds",
+      "oid": "1.3.6.1.2.1.1.3.0",
+      "type": "timeticks",
+      "unit": "seconds",
+      "history": "none"
+    },
+    {
+      "key": "cpu_load_1m",
+      "oid": "1.3.6.1.4.1.2021.10.1.3.1",
+      "type": "string_float",
+      "unit": "load",
+      "history": "none"
+    },
+    {
+      "key": "cpu_usage_pct",
+      "walk": "1.3.6.1.2.1.25.3.3.1.2",
+      "aggregate": "avg",
+      "type": "integer",
+      "unit": "percent"
+    },
+    {
+      "key": "clients_total",
+      "walk": "1.3.6.1.4.1.41112.1.6.1.2.1.8",
+      "aggregate": "sum",
+      "type": "gauge",
+      "unit": "clients"
+    },
+    {
+      "key": "clients_2g",
+      "walk": "1.3.6.1.4.1.41112.1.6.1.2.1.8",
+      "filter_walk": "1.3.6.1.4.1.41112.1.6.1.2.1.9",
+      "filter_equals": "ng",
+      "aggregate": "sum",
+      "type": "gauge",
+      "unit": "clients"
+    },
+    {
+      "key": "clients_5g",
+      "walk": "1.3.6.1.4.1.41112.1.6.1.2.1.8",
+      "filter_walk": "1.3.6.1.4.1.41112.1.6.1.2.1.9",
+      "filter_equals": "na",
+      "aggregate": "sum",
+      "type": "gauge",
+      "unit": "clients"
+    },
+    {
+      "key": "radio_2g_channel",
+      "walk": "1.3.6.1.4.1.41112.1.6.1.2.1.4",
+      "filter_walk": "1.3.6.1.4.1.41112.1.6.1.2.1.9",
+      "filter_equals": "ng",
+      "aggregate": "first",
+      "type": "integer",
+      "unit": "channel",
+      "history": "change",
+      "event": true,
+      "label": "2.4 GHz channel"
+    },
+    {
+      "key": "radio_5g_channel",
+      "walk": "1.3.6.1.4.1.41112.1.6.1.2.1.4",
+      "filter_walk": "1.3.6.1.4.1.41112.1.6.1.2.1.9",
+      "filter_equals": "na",
+      "aggregate": "first",
+      "type": "integer",
+      "unit": "channel",
+      "history": "change",
+      "event": true,
+      "label": "5 GHz channel"
+    },
+    {
+      "key": "radio_2g_tx_power_dbm",
+      "walk": "1.3.6.1.4.1.41112.1.6.1.2.1.21",
+      "filter_walk": "1.3.6.1.4.1.41112.1.6.1.2.1.9",
+      "filter_equals": "ng",
+      "aggregate": "first",
+      "type": "integer",
+      "unit": "dBm",
+      "history": "change",
+      "event": true,
+      "label": "2.4 GHz Tx power",
+      "unit_label": "dBm"
+    },
+    {
+      "key": "radio_5g_tx_power_dbm",
+      "walk": "1.3.6.1.4.1.41112.1.6.1.2.1.21",
+      "filter_walk": "1.3.6.1.4.1.41112.1.6.1.2.1.9",
+      "filter_equals": "na",
+      "aggregate": "first",
+      "type": "integer",
+      "unit": "dBm",
+      "history": "change",
+      "event": true,
+      "label": "5 GHz Tx power",
+      "unit_label": "dBm"
+    },
+    {
+      "key": "radio_2g_util_pct",
+      "walk": "1.3.6.1.4.1.41112.1.6.1.1.1.6",
+      "filter_walk": "1.3.6.1.4.1.41112.1.6.1.1.1.3",
+      "filter_equals": "ng",
+      "aggregate": "first",
+      "type": "integer",
+      "unit": "percent"
+    },
+    {
+      "key": "radio_5g_util_pct",
+      "walk": "1.3.6.1.4.1.41112.1.6.1.1.1.6",
+      "filter_walk": "1.3.6.1.4.1.41112.1.6.1.1.1.3",
+      "filter_equals": "na",
+      "aggregate": "first",
+      "type": "integer",
+      "unit": "percent"
+    },
+    {
+      "key": "uplink_in_octets",
+      "if_name": "eth0",
+      "column": "1.3.6.1.2.1.31.1.1.1.6",
+      "type": "counter64",
+      "unit": "bytes",
+      "history": "none"
+    },
+    {
+      "key": "uplink_out_octets",
+      "if_name": "eth0",
+      "column": "1.3.6.1.2.1.31.1.1.1.10",
+      "type": "counter64",
+      "unit": "bytes",
+      "history": "none"
+    },
+    {
+      "key": "mem_total_kb",
+      "oid": "1.3.6.1.4.1.2021.4.5.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "change"
+    },
+    {
+      "key": "mem_avail_kb",
+      "oid": "1.3.6.1.4.1.2021.4.6.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "none"
+    },
+    {
+      "key": "mem_buffer_kb",
+      "oid": "1.3.6.1.4.1.2021.4.14.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "none"
+    },
+    {
+      "key": "mem_cached_kb",
+      "oid": "1.3.6.1.4.1.2021.4.15.0",
+      "type": "gauge_kb",
+      "unit": "KB",
+      "history": "none"
+    }
+  ]
+}
