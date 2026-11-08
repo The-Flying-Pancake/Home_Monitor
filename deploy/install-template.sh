@@ -12,6 +12,7 @@
 #   ./home_monitor.sh --rebuild   destroy the container and install again with its own settings
 #   ./home_monitor.sh --preview   show what the installer looks like; changes nothing
 #   ./home_monitor.sh --demo      a new install filled with made-up devices to look around (removable)
+#   ./home_monitor.sh --report    a problem report to paste into a GitHub issue (changes nothing)
 # No Proxmox, or inside a VM: sudo ./home_monitor.sh --local installs on the machine itself (Ubuntu
 # 22.04+ or Debian 12+); use --local --upgrade or --local --check later. No container is made.
 # Upgrade, check, restore and rebuild find the container by its Proxmox tag homelab-monitor.
@@ -130,11 +131,12 @@ for arg in "$@"; do
     --check) MODE="check" ;;
     --restore) MODE="restore" ;;
     --demo) DEMO="yes" ;;
+    --report) MODE="report" ;;
     # Used by Update in the web page (updatectl.py, as root on the box): upgrade the machine this runs
     # on, with the settings recorded there at install time instead of the ones in this file.
     --update-here) MODE="upgrade"; RUN_HERE=1 ;;
     -h|--help) sed -n '2,/^# App version/p' "$0"; exit 0 ;;
-    *) echo "Unknown option $arg (use --local, --rebuild, --upgrade, --check, --restore, --preview, --demo or --help)" >&2; exit 1 ;;
+    *) echo "Unknown option $arg (use --local, --rebuild, --upgrade, --check, --restore, --preview, --demo, --report or --help)" >&2; exit 1 ;;
   esac
 done
 if [[ -n "$RUN_HERE" ]]; then
@@ -484,13 +486,15 @@ if [[ "$HM_ARGS" -eq 0 && -t 0 && -t 1 && -z "${HM_FAKE_HOST-}" && -z "${HM_NO_A
           "check|Check whether an upgrade would work (changes nothing)"
           "restore|Restore a backup: wipe the app, keep the container"
           "rebuild|Rebuild: destroy its container, install it again"
-          "preview|Preview the install screens (changes nothing)")
+          "preview|Preview the install screens (changes nothing)"
+          "report|Make a problem report to paste on GitHub (changes nothing)")
   else
     ON="this machine"; TARGET="local"
     OPTS=("install|Install the monitor on this machine"
           "upgrade|Upgrade the monitor on this machine"
           "check|Check whether an upgrade would work (changes nothing)"
-          "restore|Restore a backup: wipe the app, then put a backup back")
+          "restore|Restore a backup: wipe the app, then put a backup back"
+          "report|Make a problem report to paste on GitHub (changes nothing)")
   fi
   printf '  %s+----------------------------------------------------------------+%s\n' "$D" "$R"
   printf '  %s|%s %-62s %s|%s\n' "$D" "$R" "What would you like to do on ${ON}?" "$D" "$R"
@@ -605,7 +609,7 @@ push_app() {
 }
 
 # ------------------------------------------------------------------ upgrade
-if [[ "$MODE" == "upgrade" || "$MODE" == "check" || "$MODE" == "restore" ]]; then
+if [[ "$MODE" == "upgrade" || "$MODE" == "check" || "$MODE" == "restore" || "$MODE" == "report" ]]; then
   if [[ "$TARGET" == "local" || -n "$RUN_HERE" ]]; then
     [[ $EUID -eq 0 || -n "${HM_FAKE_HOST-}" ]] || die "Run as root: sudo bash $(basename "$0") --local --${MODE}"
     pct status "${CTID}" >/dev/null 2>&1 || die "The monitor is not installed on this machine; run bash $(basename "$0") --local to install it."
@@ -615,6 +619,28 @@ if [[ "$MODE" == "upgrade" || "$MODE" == "check" || "$MODE" == "restore" ]]; the
     pct status "${CTID}" >/dev/null 2>&1 || die "CT ${CTID} has the tag ${HM_TAG} but Proxmox does not know it (pct status)."
   fi
   # The rest happens after the helper files below are written (see "run the upgrade").
+fi
+
+# ------------------------------------------------------------------ problem report (changes nothing)
+# The report.py of this build is copied in (the installed app may be older than the report), run as
+# root so it can add the service's state and log, then removed. It masks addresses, names and secrets
+# itself. The result is printed and kept beside this file for pasting into a GitHub issue.
+if [[ "$MODE" == "report" ]]; then
+  REPORT_PY="$(mktemp)"
+  tar -xzf "$PAYLOAD" -O report.py > "$REPORT_PY" 2>/dev/null && [[ -s "$REPORT_PY" ]] || die "This file has no report.py (an older build)."
+  pct push "${CTID}" "$REPORT_PY" /root/.hm-report.py
+  rm -f "$REPORT_PY"
+  OUT="$(pwd)/home-monitor-report-$(date +%Y%m%d-%H%M%S).txt"
+  {
+    echo "Made by home_monitor.sh ${VERSION} --report on $([[ "$TARGET" == local ]] && echo "the monitor machine (--local)" || echo "the Proxmox host ($(pveversion 2>/dev/null | head -n 1 | cut -d/ -f1-2))")."
+    echo "Container: $([[ "$TARGET" == local ]] && echo none || pct status "${CTID}" 2>/dev/null)"
+    echo
+    pct exec "${CTID}" -- python3 /root/.hm-report.py --db "${DATA_DIR}/monitor.db" --app "${APP_DIR}" --install "${INSTALL_DIR}" --journal \
+      || echo "The report could not be made inside ${WHERE} (is python3 there?)."
+  } | tee "$OUT"
+  pct exec "${CTID}" -- rm -f /root/.hm-report.py >/dev/null 2>&1 || true
+  printf '\n  %sSaved as %s%s\n  Paste it into a new issue: %s\n\n' "$B" "$OUT" "$R" "https://github.com/The-Flying-Pancake/Home_Monitor/issues/new?template=problem.yml"
+  exit 0
 fi
 
 # ------------------------------------------------------------------ install / rebuild

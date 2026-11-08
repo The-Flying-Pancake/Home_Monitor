@@ -231,6 +231,12 @@ RELEASES: List[Dict[str, Any]] = [
         "New installs can start with demo data: sixteen made-up devices with a week of history, to look around before pointing the monitor at your network. Their readings are invented on the monitor, so nothing is sent to them.",
         "Settings, Demo data appears only on a monitor with demo data. Remove the demo data deletes exactly what it added and keeps your account, settings and your own devices. With nothing left the setup guide opens to find your network.",
     ]},
+    {"id": 29, "date": "2026-11-08", "title": "Report a problem", "items": [
+        "Settings, System, Report a problem makes a short report to attach to an issue on the project's GitHub page: the version, how the monitor was installed, device counts, recent updates and recent warnings.",
+        "Addresses, device and user names and anything that looks like a password are masked. Stored passwords are never read. You see the whole report first and copy it yourself: the monitor sends nothing.",
+        "When the web page will not open, ./home_monitor.sh --report on the Proxmox host makes the same report with the end of the service log. It changes nothing.",
+        "After an update, Settings, Updates no longer says you skipped the version you just installed.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 

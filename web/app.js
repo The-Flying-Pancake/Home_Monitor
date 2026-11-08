@@ -3418,8 +3418,51 @@ function systemPanel(sys) {
     ["Last scheduler tick", formatAgo(sys.scheduler.last_tick)],
     ["Credential vault", sys.vault.enabled ? `AES-256-GCM, ${sys.vault.encrypted_items} encrypted item(s), key from ${sys.vault.source}` : `Unavailable${sys.vault.error ? `: ${sys.vault.error}` : ""}`],
   ];
+  const admin = currentUser && currentUser.role === "admin";
   return `<table class="storage-table"><tbody>${rows.map(r =>
-    `<tr><td>${escapeHtml(r[0])}</td><td>${escapeHtml(r[1])}</td></tr>`).join("")}</tbody></table>`;
+    `<tr><td>${escapeHtml(r[0])}</td><td>${escapeHtml(r[1])}</td></tr>`).join("")}</tbody></table>
+    ${admin ? `<div class="report-panel">
+      <h4>Report a problem</h4>
+      <p class="form-help">Something not working as it should? Make a report and attach it to a new issue on the project's GitHub page. It lists the version, how the monitor was installed, device counts, recent updates and recent warnings. Addresses, names and passwords are masked, you see all of it first and the monitor sends nothing by itself.</p>
+      <button type="button" class="btn btn-small" id="btn-make-report">Make a report</button>
+      <div id="report-out"></div>
+    </div>` : ""}`;
+}
+
+async function makeProblemReport(btn) {
+  btn.disabled = true;
+  const out = document.getElementById("report-out");
+  try {
+    const r = await api("/api/support/report");
+    out.innerHTML = `<pre class="update-log report-text"></pre>
+      <div class="report-actions">
+        <button type="button" class="btn btn-small" data-report="copy">Copy</button>
+        <button type="button" class="btn btn-small" data-report="save">Save as a file</button>
+        <a class="btn btn-small btn-primary" target="_blank" rel="noopener noreferrer"></a>
+      </div>
+      <p class="form-help">On GitHub: describe what happened and what you expected, then paste the report into the box for it.</p>`;
+    out.querySelector(".report-text").textContent = r.report;
+    const link = out.querySelector("a");
+    link.href = r.issue_url;
+    link.textContent = "Open a new issue on GitHub";
+    out.onclick = async ev => {
+      const what = ev.target.closest("[data-report]")?.dataset.report;
+      if (what === "copy") {
+        try { await navigator.clipboard.writeText(r.report); showToast("Copied", "success"); } catch (e) { showToast("Could not copy: select the text instead", "error"); }
+      }
+      if (what === "save") {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([r.report], { type: "text/plain" }));
+        a.download = `home-monitor-report-${new Date().toISOString().slice(0, 10)}.txt`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      }
+    };
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /** Validates against the schema in the browser so errors show before saving. */
@@ -3475,6 +3518,8 @@ function initSettingsAndAudit() {
     if (t) { notifyTabActive = t.dataset.ntabGo; applyNotifyTab(); }
     const demoBtn = ev.target.closest("#btn-demo-remove");
     if (demoBtn) removeDemoData(demoBtn);
+    const reportBtn = ev.target.closest("#btn-make-report");
+    if (reportBtn) makeProblemReport(reportBtn);
   });
   sections.addEventListener("keydown", ev => {
     const t = ev.target.closest && ev.target.closest("[data-ntab-go]");

@@ -66,6 +66,7 @@ import sitecheck
 import snmpfix
 import topology
 import workflows
+import report
 from vault import VAULT, VaultError
 
 WEB_DIR = os.path.join(BASE_DIR, "web")
@@ -876,6 +877,12 @@ def update_status() -> Dict[str, Any]:
         return out
 
     check, last = result("update-check"), result("update")
+    if check and check.get("ok"):
+        # A check saved before an update said "newer" about the version that now runs: judge it again.
+        check["newer"] = _vt(check.get("latest")) > _vt(APP_VERSION)
+        check["current"] = APP_VERSION
+        if not check["newer"]:
+            check.pop("changes", None)
     pending_check = _request_time(data_dir, "update-check") > ((check or {}).get("time") or 0)
     pending_work = max(_request_time(data_dir, k) for k in ("update-install", "rollback-code", "rollback-all")) \
         > ((last or {}).get("time") or 0)
@@ -987,6 +994,37 @@ def auto_update_check(now: Optional[float] = None) -> bool:
         return False
     request_root_action("update-check")
     return True
+
+
+class _RecentLog(logging.Handler):
+    """The monitor's last warnings and errors since it started, for Report a problem (in memory only)."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        import collections
+        self.lines = collections.deque(maxlen=60)
+        self.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.lines.append(self.format(record).splitlines()[0][:400])
+        except Exception:  # noqa: BLE001 (a log line must never break the app)
+            pass
+
+
+RECENT_LOG = _RecentLog()
+
+
+def problem_report() -> Dict[str, Any]:
+    """Settings, System, Report a problem: what report.py gathers plus what only the running app knows."""
+    stats = scheduler.stats()
+    jobs = ", ".join(f"{k} {v}" for k, v in (stats.get("jobs_in_flight") or {}).items()) or "idle"
+    extra = {"uptime": f"{int((time.time() - STARTED_AT) // 3600)}h {int((time.time() - STARTED_AT) % 3600 // 60)}m",
+             "poller": f"{jobs}; last tick {int(time.time() - float(stats.get('last_tick') or 0))}s ago",
+             "vault": "unlocked" if VAULT.enabled else "locked or unavailable",
+             "log": list(RECENT_LOG.lines)}
+    text = report.build(database.DB_FILE, BASE_DIR, os.path.dirname(UPDATE_HISTORY), journal=False, extra=extra)
+    return {"report": text, "issue_url": report.ISSUE_URL}
 
 
 def _auto_update_loop() -> None:
@@ -3461,6 +3499,13 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, {"schema": list(SETTINGS.values())})
             return
 
+        if path == "/api/support/report":
+            if not self.user.is_admin:
+                raise RequestError(403, "Only administrators can make a problem report")
+            database.add_audit("system", "Problem report made", f"By {self.user.username}")
+            self._send_json(200, problem_report())
+            return
+
         if path == "/api/updates/summary":
             # The red number on Settings: administrators only (they are the ones who can update).
             if not self.user.is_admin:
@@ -5781,7 +5826,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "0.10.0"
+APP_VERSION = "0.11.0"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:
@@ -5946,6 +5991,7 @@ def start_server() -> None:
     tls.load()
     threading.Thread(target=scheduler.run_forever, daemon=True, name="scheduler").start()
     threading.Thread(target=_auto_update_loop, daemon=True, name="update-check").start()
+    logging.getLogger().addHandler(RECENT_LOG)
 
     httpd = ThreadingServer((LISTEN_HOST, LISTEN_PORT), ApiRequestHandler)
     print(f"Server listening on {'https' if tls.SERVER.context else 'http'}://{LISTEN_HOST}:{LISTEN_PORT}")

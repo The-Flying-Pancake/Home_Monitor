@@ -2099,6 +2099,12 @@ html:not([data-auth="in"]) .modal-backdrop:not(.dialog-backdrop), html:not([data
 /* Settings, Updates */
 .update-rollback { margin: 8px 16px 0; padding: 12px; border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; gap: 6px; }
 .update-rollback-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Settings, System, Report a problem. */
+.report-panel { margin: 16px 16px 4px; padding-top: 12px; border-top: 1px solid var(--border); }
+.report-panel h4 { margin: 0 0 6px; color: var(--text-bright); }
+.report-panel .report-text { margin-top: 10px; max-height: 420px; }
+.report-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
 /* Settings, Demo data (shown only on an install with demo data). */
 .demo-panel { padding: 4px 16px 16px; }
 .demo-panel p { margin: 8px 0; line-height: 1.5; }

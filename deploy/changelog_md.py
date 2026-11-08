@@ -14,7 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import changelog  # noqa: E402
 
-VERSIONS = {28: "0.10.0", 27: "0.9.0", 26: "0.8.0", 25: "0.7.0", 24: "0.6.0", 23: "0.5.0", 22: "0.4.0", 21: "0.3.1", 20: "0.3.0"}
+VERSIONS = {29: "0.11.0", 28: "0.10.0", 27: "0.9.0", 26: "0.8.0", 25: "0.7.0", 24: "0.6.0", 23: "0.5.0", 22: "0.4.0", 21: "0.3.1", 20: "0.3.0"}
 
 HEADER = '''# Changelog
 

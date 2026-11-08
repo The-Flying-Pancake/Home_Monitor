@@ -151,7 +151,7 @@ function updateHeroHtml(u, busy) {
       </div>` : ""}
     </div>`;
   }
-  if (check && check.newer) {
+  if (check && check.newer && u.skipped && u.skipped === check.latest) {
     return `<div class="update-hero">
       <div class="update-hero-text"><h4>You skipped ${escapeHtml(check.latest)}</h4>
         <p class="form-help">It stays here without the red number. A newer version than this brings the number back.</p></div>

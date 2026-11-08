@@ -122,6 +122,10 @@ Plaintext community residue in a free database page (secure_delete plus one-time
 
 After a run, update section 3 (date, counts, notable details) and add any defects found.
 
+## 4b. Report a problem
+
+`test_report.py`: the report holds the version, devices by template and the update history; device names, addresses, account names and secrets in it are masked (whole words only, clock times kept); the route is for administrators. `test_deploy.py`: `--report` on a fake Proxmox host copies this build's `report.py` in, runs it with the journal, removes it and saves the output, changing nothing else.
+
 ## 5. Demo mode
 
 Demo mode runs the app on made-up devices: for trying it without a network (the installer's "start with demo data", or `--demo`), for testing and for screenshots. While it is on, the poller answers for every device whose address is in a documentation range (192.0.2.0/24, 198.51.100.0/24 and 203.0.113.0/24) from `demo.py` instead of the network. Devices with any other address are polled as usual.

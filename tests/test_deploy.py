@@ -276,6 +276,30 @@ esac
         r, calls = self.run_fake()
         self.assertNotIn("demo.py seed", calls)
 
+    def test_report_from_the_host(self):
+        """--report finds the tagged container, copies this build's report.py in, runs it as root with the
+        journal, removes it again and saves the output beside the file; nothing else is changed."""
+        bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("bash not available")
+        env, calls_path, script = self.fake_host()
+        self.tag_ct(201)
+        open(os.path.join(self.tmp, "ct-created"), "w").close()      # the stub's pct status: running
+        r = subprocess.run([bash, script, "--report"], capture_output=True, env=env, timeout=120, cwd=self.tmp)
+        out = r.stdout.decode(errors="replace") + r.stderr.decode(errors="replace")
+        self.assertEqual(r.returncode, 0, out)
+        calls = read(calls_path)
+        self.assertIn("pct push 201", calls)
+        self.assertIn("/root/.hm-report.py", calls)
+        run = next(l for l in calls.splitlines() if "hm-report.py --db" in l)
+        self.assertIn("--journal", run)
+        self.assertIn("rm -f /root/.hm-report.py", calls)
+        self.assertNotIn("pct create", calls)
+        self.assertNotIn("systemctl stop", calls)
+        self.assertIn("issues/new", out)
+        saved = [n for n in os.listdir(self.tmp) if n.startswith("home-monitor-report-")]
+        self.assertEqual(len(saved), 1)
+
     def test_fake_install_with_chosen_storage_and_restore(self):
         r, calls = self.run_fake({"DISK_STORAGE": '"data"', "RESTORE": '"latest"',
                                   "BACKUP_NFS": '"192.0.2.10:/Backups/Monitor"', "IP_ADDRESS": '"192.168.1.60/24"',

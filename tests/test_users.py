@@ -277,6 +277,24 @@ class UserApiTests(unittest.TestCase):
             os.remove(result)
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_check_saved_before_an_update_is_judged_again(self):
+        """After updating to the version a check found, that check no longer says newer (it showed
+        "You skipped" on the owner's box after 0.9.0 to 0.10.0)."""
+        import json
+        import os
+        result = os.path.join(os.path.dirname(os.path.abspath(database.DB_FILE)), "update-check.result.json")
+        with open(result, "w", encoding="utf-8") as f:
+            json.dump({"ok": True, "newer": True, "latest": server.APP_VERSION, "current": "0.0.1", "time": int(time.time()),
+                       "changes": [{"version": server.APP_VERSION, "notes": "x"}]}, f)
+        try:
+            u = request("GET", "/api/system")[1]["update"]
+            self.assertFalse(u["check"]["newer"])
+            self.assertEqual(u["check"]["current"], server.APP_VERSION)
+            self.assertNotIn("changes", u["check"])
+            self.assertEqual(u["waiting"], 0)
+        finally:
+            os.remove(result)
+
     def test_demo_routes(self):
         """Settings, Demo data: hidden (off) on a monitor without demo data; removing is for administrators."""
         self.assertEqual(request("GET", "/api/system")[1]["demo"], {"on": False, "devices": 0})

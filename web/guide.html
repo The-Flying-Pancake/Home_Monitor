@@ -474,6 +474,9 @@ chmod +x home_monitor.sh
 
 <section id="trouble" data-title="Troubleshooting">
   <h2>Troubleshooting</h2>
+  <h3>Reporting a problem</h3>
+  <p>Something not working as it should? <strong>Settings, System, Report a problem</strong> (administrators) makes a short report: the version, how the monitor was installed, the system, device counts by template and status, a few settings that are on or off, storage and backups, recent updates and the warnings the monitor logged since it started. Addresses, device and user names, email and web addresses and anything that looks like a password are masked, and stored passwords are never read. You see it all first: <em>Copy</em> or <em>Save as a file</em>, then <em>Open a new issue on GitHub</em> and paste it below what happened. The monitor sends nothing by itself.</p>
+  <p>When the web page will not open, run <code>./home_monitor.sh --report</code> on the Proxmox host (<code>sudo ./home_monitor.sh --local --report</code> on a machine of its own), or choose it in the menu. It changes nothing, adds whether the service is running and the end of its log, prints the report and saves it as <code>home-monitor-report-&lt;date&gt;.txt</code> beside the file.</p>
   <dl>
     <dt><code>env: 'bash\r': No such file or directory</code> when running home_monitor.sh</dt>
     <dd>The file was saved with Windows line endings (an editor or a text-mode copy). Run it as <code>bash home_monitor.sh ...</code>: it fixes itself and carries on. Or once: <code>sed -i 's/\r$//' home_monitor.sh</code>.</dd>

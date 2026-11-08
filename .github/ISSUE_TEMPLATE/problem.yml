@@ -1,0 +1,35 @@
+name: Report a problem
+description: Something in Home Monitor is not working as it should.
+labels: ["problem"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to report this. A report from your monitor helps a lot: in the app,
+        **Settings, System, Report a problem**, or when the web page will not open, `./home_monitor.sh --report`
+        on the Proxmox host. Addresses, names and passwords in it are already masked; please read it before
+        pasting all the same.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you saw and when it started. Screenshots are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: The report from your monitor
+      description: Paste the whole report here.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Settings, System shows it (for example 0.11.0). The report has it too.

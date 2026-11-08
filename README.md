@@ -128,7 +128,15 @@ The web interface uses HTTPS by default, sessions are HttpOnly and SameSite, sen
 for your password again and the service runs as its own unprivileged user in a systemd sandbox.
 The whole design was reviewed before the first public release.
 
-Found a problem? Please report it privately: see [SECURITY.md](SECURITY.md).
+Found a security problem? Please report it privately: see [SECURITY.md](SECURITY.md).
+
+## 🐞 Something not working?
+
+Please [open an issue](../../issues/new?template=problem.yml) and say what happened. A report from your
+monitor makes it much easier to help: in the app, **Settings, System, Report a problem**, then *Copy*
+and paste it into the issue. If the web page will not open, run `./home_monitor.sh --report` on the
+Proxmox host instead (it changes nothing). Addresses, names and passwords in the report are masked,
+and you see all of it before it goes anywhere.
 
 ## 🧪 Development
 

@@ -15,6 +15,13 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 0.11.0: Release 29, Report a problem (2026-11-08)
+
+- Settings, System, Report a problem makes a short report to attach to an issue on the project's GitHub page: the version, how the monitor was installed, device counts, recent updates and recent warnings.
+- Addresses, device and user names and anything that looks like a password are masked. Stored passwords are never read. You see the whole report first and copy it yourself: the monitor sends nothing.
+- When the web page will not open, ./home_monitor.sh --report on the Proxmox host makes the same report with the end of the service log. It changes nothing.
+- After an update, Settings, Updates no longer says you skipped the version you just installed.
+
 ### 0.10.0: Release 28, A new name for the installer, demo data to look around (2026-11-08)
 
 - The installer is now called home_monitor.sh (it was infra.sh). It is the same file: installs made with the old name upgrade as before. Each release carries both names so every installed copy can update.

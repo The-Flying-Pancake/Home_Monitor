@@ -77,7 +77,10 @@ def main() -> None:
         raise SystemExit(f"No release key at {KEY} (set HM_RELEASE_KEY)")
     version = app_version()
     shutil.rmtree(DIST, ignore_errors=True)
-    os.makedirs(DIST)
+    # A file sync tool or Explorer can hold the emptied folder for a moment: reuse it, but never with old files in it.
+    os.makedirs(DIST, exist_ok=True)
+    if os.listdir(DIST):
+        raise SystemExit(f"Could not empty {DIST} (a file in it is open?): close it and run this again")
     out = os.path.join(DIST, "home_monitor.sh")
     subprocess.run([sys.executable, os.path.join(ROOT, "deploy", "build.py"), "--reset-settings"], check=True, cwd=ROOT,
                    env=dict(os.environ, HM_BUILD_OUT=out))

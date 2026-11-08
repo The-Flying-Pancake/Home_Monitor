@@ -36,7 +36,7 @@ MODULES = ["server.py", "poller.py", "database.py", "vault.py", "ssh_runner.py",
            "workflows.py", "snmpfix.py", "notify.py", "discovery.py", "setup.py", "alerts.py", "schedule.py", "rbac.py",
            "availability.py", "proxmox.py", "customoids.py", "totp.py", "compat.py", "taxonomy.py", "tls.py", "changelog.py", "maintenance.py", "forecast.py",
            "inventory.py", "hostactions.py", "lanhttp.py", "pihole.py", "unifi.py", "digest.py", "telebot.py", "botcmds.py", "tpl.py", "sitecheck.py",
-           "demo.py"]
+           "demo.py", "report.py"]
 WEB = ["index.html", "app.js", "map.js", "workflows.js", "wftemplates.js", "hostactions.js", "telegram.js", "workflows.css", "setup.js", "alerts.js", "theme.js", "shell.js", "users.js", "security.js","adddevice.js", "backups.js", "updates.js", "snmp.js",
        "charts.js", "availability.js", "proxmox.js", "taxonomy.js", "tls.js", "changes.js", "lan.js", "inventory.js", "botcmds.js", "guide.js", "guide.html", "style.css"]
 
@@ -72,8 +72,23 @@ def payload() -> bytes:
     return buf.getvalue()
 
 
+def find_bash() -> str:
+    """A real bash. On Windows, Git Bash first: the bash.exe in System32 is WSL's stub, which fails
+    when no Linux is installed (and PowerShell finds it before Git Bash)."""
+    if os.name == "nt":
+        for base in (os.environ.get("ProgramFiles", r"C:\Program Files"), os.environ.get("ProgramFiles(x86)", ""),
+                     os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")):
+            cand = os.path.join(base, "Git", "bin", "bash.exe") if base else ""
+            if cand and os.path.exists(cand):
+                return cand
+        found = shutil.which("bash") or ""
+        windir = os.environ.get("WINDIR", r"C:\Windows").lower()
+        return "" if found.lower().startswith(windir) or "windowsapps" in found.lower() else found
+    return shutil.which("bash") or ""
+
+
 def bash_check(path: str) -> None:
-    bash = shutil.which("bash")
+    bash = find_bash()
     if not bash:
         print("bash not found: syntax check skipped")
         return
