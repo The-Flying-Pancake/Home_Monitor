@@ -144,6 +144,7 @@ READ_PERMISSIONS = [
 # checked per key in the settings handler (SECRET_SETTING_TIER).
 TIER_ROUTES = [
     ("POST", r"/api/updates/install", 3),
+    ("POST", r"/api/demo/remove", 2),             # deletes the demo devices and their history
     ("POST", r"/api/updates/rollback", 3),
     ("POST", r"/api/credentials(?:/.*)?", 3),
     ("PUT", r"/api/credentials/\d+", 3),

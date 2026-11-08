@@ -19,11 +19,11 @@ import updatectl  # noqa: E402
 REPO_DL = f"https://github.com/{updatectl.REPO}/releases/download/v9.9.9/"
 
 
-def release_json(version="9.9.9", installer=REPO_DL + "infra.sh", sig=REPO_DL + "infra.sh.sig"):
+def release_json(version="9.9.9", installer=REPO_DL + "home_monitor.sh", sig=REPO_DL + "home_monitor.sh.sig"):
     return json.dumps({"tag_name": f"v{version}", "name": f"Home Monitor {version}", "published_at": "2026-11-09T10:00:00Z",
                        "body": "New things", "html_url": "https://github.com/x/y/releases/tag/v" + version,
-                       "assets": [{"name": "infra.sh", "browser_download_url": installer},
-                                  {"name": "infra.sh.sig", "browser_download_url": sig}]}).encode()
+                       "assets": [{"name": "home_monitor.sh", "browser_download_url": installer},
+                                  {"name": "home_monitor.sh.sig", "browser_download_url": sig}]}).encode()
 
 
 class UpdateTests(unittest.TestCase):
@@ -65,13 +65,13 @@ class UpdateTests(unittest.TestCase):
 
     def fake_release(self, version="9.9.9", installer_version=None, tamper=False):
         """GitHub as the box would see it: the release page, the installer and its signature."""
-        inst = os.path.join(self.tmp, "dl", "infra.sh")
+        inst = os.path.join(self.tmp, "dl", "home_monitor.sh")
         self.write(inst, f'#!/usr/bin/env bash\nVERSION="{installer_version or version}"\necho upgrading\n__PAYLOAD_BEGIN__\nxx\n__PAYLOAD_END__\n')
         sig = self.sign(inst)
         body = open(inst, "rb").read()
         if tamper:
             body = body.replace(b"echo upgrading", b"echo pwned!!!!")
-        files = {REPO_DL + "infra.sh": body, REPO_DL + "infra.sh.sig": open(sig, "rb").read()}
+        files = {REPO_DL + "home_monitor.sh": body, REPO_DL + "home_monitor.sh.sig": open(sig, "rb").read()}
 
         def fetch(url, limit, accept="application/octet-stream"):
             if url == updatectl.API:
@@ -87,12 +87,20 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual((rel["version"], rel["notes"]), ("9.9.9", "New things"))
         # Links that leave this project's releases are refused before anything is downloaded.
         with self.assertRaises(updatectl.UpdateError):
-            updatectl.latest_release(lambda *a, **k: release_json(installer="https://evil.example/infra.sh"))
+            updatectl.latest_release(lambda *a, **k: release_json(installer="https://evil.example/home_monitor.sh"))
         with self.assertRaises(updatectl.UpdateError):
             updatectl.latest_release(lambda *a, **k: json.dumps({"tag_name": "v9.9.9", "assets": []}).encode())
+        # A release from before the rename (infra.sh only) is still understood; the new name wins when both are there.
+        old = json.loads(release_json(installer=REPO_DL + "infra.sh", sig=REPO_DL + "infra.sh.sig"))
+        for a in old["assets"]:
+            a["name"] = a["name"].replace("home_monitor.sh", "infra.sh")
+        self.assertTrue(updatectl.latest_release(lambda *a, **k: json.dumps(old).encode())["installer"].endswith("/infra.sh"))
+        both = json.loads(release_json())
+        both["assets"] += old["assets"]
+        self.assertTrue(updatectl.latest_release(lambda *a, **k: json.dumps(both).encode())["installer"].endswith("/home_monitor.sh"))
 
     def test_signature_is_checked_against_the_installed_key(self):
-        f = os.path.join(self.tmp, "infra.sh")
+        f = os.path.join(self.tmp, "home_monitor.sh")
         self.write(f, "hello\n")
         sig = self.sign(f)
         updatectl.verify_signature(f, sig)
@@ -112,7 +120,7 @@ class UpdateTests(unittest.TestCase):
 
         def fake_runner(cmd, **kw):
             calls.append(cmd)
-            # infra.sh --update-here makes the pre-update backup; the fake does the same.
+            # home_monitor.sh --update-here makes the pre-update backup; the fake does the same.
             folder = os.path.join(self.data, "backups", "pre-update")
             os.makedirs(folder, exist_ok=True)
             open(os.path.join(folder, "monitor-backup-20261109-100000.tar.gz"), "w").close()
@@ -123,7 +131,7 @@ class UpdateTests(unittest.TestCase):
         self.fake_release()
         with self.assertRaises(updatectl.UpdateError) as e:
             self.run_install()
-        self.assertIn("infra.sh --upgrade once", str(e.exception))
+        self.assertIn("home_monitor.sh --upgrade once", str(e.exception))
 
     def test_install_checks_then_upgrades_in_place(self):
         self.write(os.path.join(self.inst, "settings.env"), 'PORT="8080"\n')
@@ -194,6 +202,78 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("pre-rollback", calls[0])                       # the state now is backed up first
         self.assertFalse(any("restore" in c for c in calls))           # today's data stays
         self.assertFalse(updatectl.rollback_options(self.data)["all"])  # done once
+
+    def test_notes_cover_every_version_in_between(self):
+        rows = [{"tag_name": f"v{v}", "name": v, "body": f"notes {v}", "published_at": "2026"} for v in
+                ("1.2.0", "1.1.0", "1.0.1", "1.0.0", "0.9.0")] + [{"tag_name": "v1.3.0", "draft": True}, {"tag_name": "nonsense"}]
+        got = updatectl.notes_between("1.0.0", "1.2.0", lambda *a, **k: json.dumps(rows).encode())
+        self.assertEqual([r["version"] for r in got], ["1.2.0", "1.1.0", "1.0.1"])
+        self.assertEqual(updatectl.notes_between("1.0.0", "1.2.0", lambda *a, **k: (_ for _ in ()).throw(OSError())), [])
+
+    def test_progress_follows_the_installer(self):
+        p = updatectl.Progress(self.data, "0.8.0", "9.9.9")
+        p.step("download")
+        p.step("verify")
+        for line in ("  ... ready\n", "noise\n", "  ... check\n", "  ... repair (skipped)\n", "  ... backup\n", "  ... evil/../x\n"):
+            p.line(line)
+        s = json.load(open(os.path.join(self.data, "update-progress.json")))
+        self.assertEqual((s["current"], s["state"]), ("backup", "running"))
+        self.assertEqual([s["steps"][k] for k in ("download", "verify", "ready", "check", "repair", "backup", "health")],
+                         ["ok", "ok", "ok", "ok", "skip", "run", "pending"])
+        p.finish(False, "It did not start")
+        s = json.load(open(os.path.join(self.data, "update-progress.json")))
+        self.assertEqual((s["steps"]["backup"], s["state"], s["error"]), ("fail", "failed", "It did not start"))
+
+    def test_history_records_updates_with_their_log(self):
+        self.write(os.path.join(self.inst, "settings.env"), 'PORT="8080"\n')
+        self.fake_release()
+
+        def runner(cmd, on_line=None, env=None, **kw):
+            self.write(env["HM_LOG_FILE"], "\x1b[32mok\x1b[0m\nBACKUP_PASSPHRASE=hunter2hunter2\ntelegram_token: 123:abc\n")
+            for l in ("  ... ready\n", "  ... health\n"):
+                on_line(l)
+            folder = os.path.join(self.data, "backups", "pre-update")
+            os.makedirs(folder, exist_ok=True)
+            open(os.path.join(folder, "monitor-backup-20261109-100000.tar.gz"), "w").close()
+            return subprocess.CompletedProcess(cmd, 0, "Upgraded\n", "")
+        self.run_install(runner=runner)
+        rows = updatectl.read_history()
+        self.assertEqual([(r["kind"], r["from"], r["to"], r["ok"], r["log"]) for r in rows], [("update", "0.8.0", "9.9.9", True, True)])
+        log = open(os.path.join(self.inst, "update-logs", f"{rows[0]['id']}.log"), encoding="utf-8").read()
+        self.assertIn("ok\n", log)
+        self.assertNotIn("\x1b", log)
+        self.assertNotIn("hunter2", log)
+        self.assertNotIn("123:abc", log)
+        self.assertEqual(json.load(open(os.path.join(self.data, "update-progress.json")))["state"], "ok")
+
+    def test_history_records_a_failed_update_and_keeps_the_last_ones(self):
+        self.write(os.path.join(self.inst, "settings.env"), 'PORT="8080"\n')
+        self.fake_release()
+        with self.assertRaises(updatectl.UpdateError):
+            def runner(cmd, on_line=None, **kw):
+                on_line("  ... health\n")
+                return subprocess.CompletedProcess(cmd, 1, "  ... health\nfailed\n", "")
+            self.run_install(runner=runner)
+        row = updatectl.read_history()[0]
+        self.assertFalse(row["ok"])
+        self.assertIn("previous version was put back", row["error"])
+        self.assertEqual(json.load(open(os.path.join(self.data, "update-progress.json")))["steps"]["health"], "fail")
+        for i in range(updatectl.HISTORY_KEEP + 3):
+            updatectl.record({"kind": "upgrade", "ok": True}, f"log {i}")
+        rows = updatectl.read_history()
+        self.assertEqual(len(rows), updatectl.HISTORY_KEEP)
+        self.assertEqual(len(rows), len({r["id"] for r in rows}))
+        self.assertEqual(sorted(os.listdir(os.path.join(self.inst, "update-logs"))), sorted(f"{r['id']}.log" for r in rows))
+
+    def test_record_from_the_host(self):
+        log = os.path.join(self.tmp, "host.log")
+        self.write(log, "===== health =====\ncurl: (7) Failed to connect\n")
+        ns = argparse.Namespace(kind="upgrade", source="host", version_from="0.6.0", to="0.9.0", ok="0", why="health", log=log)
+        row = updatectl.record_cmd(ns)
+        self.assertEqual((row["from"], row["to"], row["ok"], row["source"]), ("0.6.0", "0.9.0", False, "host"))
+        self.assertIn("did not start", row["error"])
+        with self.assertRaises(updatectl.UpdateError):
+            updatectl.record_cmd(argparse.Namespace(**dict(vars(ns), version_from="1; rm -rf /")))
 
     def test_requests_run_only_what_was_asked(self):
         self.fake_release()

@@ -19,7 +19,7 @@ Steps:
      tables nothing reads). They are kept, never deleted: a later build may use them again.
 
 Exit codes: 0 can run (same or older), 3 newer, 4 damaged or not a monitor database, 5 the trial
-migration failed, 6 too old. --json prints the report as JSON for infra.sh and restore.
+migration failed, 6 too old. --json prints the report as JSON for home_monitor.sh and restore.
 """
 
 import argparse
@@ -79,7 +79,7 @@ def inspect(db: str) -> Dict[str, Any]:
     if version > database.SCHEMA_VERSION:
         return dict(report, verdict="newer", message=(
             f"Written by a newer build (schema {version}; this build knows up to {database.SCHEMA_VERSION}). "
-            "Use the newer infra.sh, or a backup made before that upgrade."))
+            "Use the newer home_monitor.sh, or a backup made before that upgrade."))
     if version < database.MIN_SCHEMA_VERSION:
         return dict(report, verdict="too_old", message=(
             f"Schema {version} is older than this build can migrate (from {database.MIN_SCHEMA_VERSION}). "

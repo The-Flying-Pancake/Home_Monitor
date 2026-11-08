@@ -211,12 +211,25 @@ RELEASES: List[Dict[str, Any]] = [
         "Shares and the Syncthing folder must sit below /mnt or /srv and are mounted so nothing on them can run as a program. The container checks this itself before mounting, whatever the database or a backup says.",
         "New setting UNPRIVILEGED=1 makes the safer kind of container, where the Proxmox host copies files in from NFS shares. The installer checks the app it carries against a checksum, sets the root password without showing it to other programs and carries Syncthing's signing key instead of downloading it.",
     ]},
-    {"id": 26, "date": "2026-11-08", "title": "Update from the app, demo mode", "items": [
+    {"id": 26, "date": "2026-11-08", "title": "Update from the app", "items": [
         "Settings, Updates checks the project's releases and installs a new version in place. A release is installed only when its signature matches the key built into your copy and it is newer than what runs now.",
         "Every update backs up first and keeps that backup with the previous version for two days. If the new version does not start, the previous one is put back by itself.",
         "For those two days the update can be undone: back to the previous version with today's data (when the data still suits it) or with the data from just before the update. The state at that moment is backed up first.",
         "Updating keeps the settings the monitor was installed with, such as its port and who may reach it. Only root on the box can reach GitHub; the monitor itself stays offline. bash infra.sh --upgrade still works without internet access.",
-        "Demo mode (MONITOR_DEMO=1 with demo.py seed) fills the app with sixteen made-up devices and a week of believable history, for trying it out or testing without a real network.",
+    ]},
+    {"id": 27, "date": "2026-11-08", "title": "Friendlier updates and a fixed upgrade", "items": [
+        "Upgrading to 0.8.0 could fail and put the previous version back: the new version was missing a file it needs to start. 0.9.0 has everything it needs. The tests now check that every part of the app is packed into infra.sh.",
+        "The upgrade also stopped early on installs made before 0.8.0 because a folder was created too late. Its data check could crash instead of reporting what it found. Both are fixed. When the new version cannot put the old data back after a failed upgrade, the previous version now does it.",
+        "The monitor looks for a new version once a day by itself. When one is out, a red number appears on Settings in the menu and on Updates. Check for updates every day can be turned off in the Updates card.",
+        "The Updates card shows what is new in every version between yours and the newest, so nothing is missed. Skip this version hides the red number until a newer version comes out.",
+        "Updating shows its progress step by step, waits while the monitor restarts and reconnects by itself. It ends with the new version running or with what went wrong while the previous version runs again.",
+        "Update history lists every update, upgrade and undo with its result. View log shows the full log of each one in the page, with Copy and Save as a file. Upgrades run from the Proxmox host are listed too. Passwords and tokens in a log are masked.",
+    ]},
+    {"id": 28, "date": "2026-11-08", "title": "A new name for the installer, demo data to look around", "items": [
+        "The installer is now called home_monitor.sh (it was infra.sh). It is the same file: installs made with the old name upgrade as before. Each release carries both names so every installed copy can update.",
+        "Getting started is easier: open the Proxmox shell, download home_monitor.sh with one curl line, make it runnable with chmod +x and run it. The project page walks through it step by step, on Proxmox or on a spare computer.",
+        "New installs can start with demo data: sixteen made-up devices with a week of history, to look around before pointing the monitor at your network. Their readings are invented on the monitor, so nothing is sent to them.",
+        "Settings, Demo data appears only on a monitor with demo data. Remove the demo data deletes exactly what it added and keeps your account, settings and your own devices. With nothing left the setup guide opens to find your network.",
     ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)

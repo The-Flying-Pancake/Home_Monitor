@@ -72,6 +72,20 @@ def run(b, code):
     return b.eval("{" + code + "}")
 
 
+def shot(b, name, selector):
+    """HM_SHOTS=1: a picture of one element in tests/results (for reviewing a screen by eye)."""
+    if not os.environ.get("HM_SHOTS"):
+        return
+    import base64
+    b.eval(f"document.querySelector({json.dumps(selector)}).scrollIntoView(); true")
+    time.sleep(0.8)
+    r = rect(b, selector)
+    data = b.send("Page.captureScreenshot", {"format": "png", "clip": {"x": r["x"], "y": r["y"], "width": r["w"], "height": r["h"], "scale": 1}})
+    os.makedirs(os.path.join(_env.ROOT, "tests", "results"), exist_ok=True)
+    with open(os.path.join(_env.ROOT, "tests", "results", f"shot_{name}.png"), "wb") as f:
+        f.write(base64.b64decode(data["data"]))
+
+
 def goto(b, hash_):
     b.eval(f"window.location.hash = {json.dumps(hash_)}; true")
     time.sleep(0.6)
@@ -421,6 +435,88 @@ def t_settings_sidebar(b):
     b.wait_for(f"{visible}('nav-dashboard')")
     assert not b.eval(f"{visible}('settings-nav')"), "settings menu left behind"
     return "menu swapped in Settings and back on leaving"
+
+
+@check("Updates: red number on Settings while a version waits, skip hides it; new version card, live progress and result")
+def t_updates(b):
+    result = os.path.join(_env.TMP, "data", "update-check.result.json")
+    with open(result, "w", encoding="utf-8") as f:
+        json.dump({"ok": True, "newer": True, "latest": "98.0.0", "current": "0.0.1", "time": int(time.time()),
+                   "published": "2026-12-01T00:00:00Z", "changes": [
+                       {"version": "98.0.0", "notes": "### Better\n- **One** thing\n- `two` <script>x</script>"},
+                       {"version": "97.0.0", "notes": "- Older"}]}, f)
+    try:
+        goto(b, "#/dashboard")
+        run(b, "refreshUpdateBadge(); true")
+        b.wait_for("!document.getElementById('nav-settings-badge').classList.contains('hidden')")
+        goto(b, "#/settings/updates")
+        b.wait_for("!!document.querySelector('#settings-nav a[data-section=updates] .nav-badge')")
+        # The card as an installed monitor shows it (this test server is a development copy).
+        base = ("{installed: true, current: '0.0.1', repository: 'https://example.com/r', rollback: {}, skipped: '', "
+                "waiting: 1, pending: {check: false, work: false}, check: {ok: true, newer: true, latest: '98.0.0', "
+                "published: '2026-12-01', time: Math.floor(Date.now() / 1000), changes: [{version: '98.0.0', "
+                "notes: '### Better\\n- **One** thing\\n- <script>x</script>'}, {version: '97.0.0', notes: '- Older'}]}}")
+        hero = run(b, f"const d = document.createElement('div'); d.id = 'upd-test'; d.className = 'settings-card'; "
+                      f"d.innerHTML = updatesSection({base}); document.getElementById('settings-sections').appendChild(d); "
+                      "[!!d.querySelector('[data-update-action=install]'), !!d.querySelector('[data-update-action=skip]'), "
+                      "d.querySelectorAll('.update-change').length, d.querySelectorAll('.update-notes-body li').length, "
+                      "!!d.querySelector('.update-notes-body strong'), !!d.querySelector('.update-notes-body script')]")
+        assert hero == [True, True, 2, 3, True, False], hero
+        shot(b, "update_available", "#upd-test")
+        prog = run(b, f"const s = Object.assign({base}, {{pending: {{check: false, work: true}}, progress: {{state: 'running', "
+                      "to: '98.0.0', current: 'backup', steps: {download: 'ok', verify: 'ok', ready: 'ok', copy: 'ok', check: 'ok', "
+                      "repair: 'skip', backup: 'run'}}}); const d = document.getElementById('upd-test'); d.innerHTML = updatesSection(s); "
+                      "[d.querySelectorAll('.ustep-ok').length, d.querySelectorAll('.ustep-run').length, "
+                      "d.querySelector('.update-pct').textContent, d.querySelector('.update-bar span').getBoundingClientRect().width > 50, "
+                      "!!d.querySelector('[data-update-action=install]')]")
+        assert prog == [5, 1, "72%", True, False], prog
+        shot(b, "update_progress", "#upd-test")
+        res = run(b, f"const s = Object.assign({base}, {{progress: {{state: 'failed', to: '98.0.0', finished: 5, error: 'It did not start', "
+                     "steps: {health: 'fail'}}}); const d = document.getElementById('upd-test'); d.innerHTML = updatesSection(s); "
+                     "[!!d.querySelector('.update-result.failed'), d.querySelector('.update-error').textContent, "
+                     "!!d.querySelector('[data-update-action=dismiss]')]")
+        assert res == [True, "It did not start", True], res
+        shot(b, "update_failed", "#upd-test")
+        shot(b, "update_nav", "#settings-nav")
+        run(b, "document.getElementById('upd-test').remove(); true")
+        # Skipping that version takes the number away until a newer one is out.
+        api("/api/updates/skip", {"version": "98.0.0"})
+        run(b, "refreshUpdateBadge(); true")
+        b.wait_for("document.getElementById('nav-settings-badge').classList.contains('hidden')")
+        api("/api/updates/unskip", {})
+    finally:
+        os.remove(result)
+    run(b, "refreshUpdateBadge(); true")
+    b.wait_for("document.getElementById('nav-settings-badge').classList.contains('hidden')")
+    goto(b, "#/dashboard")          # leave Settings, so the next check loads it fresh
+    return "number shown and skipped; card, progress at 72% and failure drawn"
+
+
+@check("Settings, Demo data: only while there is demo data; Remove turns it off and the entry goes")
+def t_demo_card(b):
+    import sqlite3
+
+    def setting(key, value=None):
+        with sqlite3.connect(os.environ["MONITOR_DB_PATH"]) as conn:
+            if value is not None:
+                conn.execute("INSERT INTO settings (key, value, description, updated_at) VALUES (?, ?, '', 0) "
+                             "ON CONFLICT (key) DO UPDATE SET value = excluded.value;", (key, value))
+            row = conn.execute("SELECT value FROM settings WHERE key = ?;", (key,)).fetchone()
+        return row[0] if row else None
+    goto(b, "#/settings/alerts")
+    assert not b.eval("!!document.querySelector('#settings-nav a[data-section=demo]')"), "Demo data shown without demo data"
+    setting("demo_mode", "on")
+    setting("demo_seed", "{}")       # nothing recorded: removing deletes no device here
+    before = len(api("/api/devices")["devices"])
+    goto(b, "#/dashboard")
+    goto(b, "#/settings/demo")
+    b.wait_for("!!document.querySelector('#settings-nav a[data-section=demo]') && !!document.getElementById('btn-demo-remove')")
+    run(b, "document.getElementById('btn-demo-remove').click(); true")
+    b.wait_for("!document.querySelector('#settings-nav a[data-section=demo]')", timeout=20)
+    assert setting("demo_mode") == "off"
+    assert len(api("/api/devices")["devices"]) == before, "a device was removed"
+    goto(b, "#/dashboard")
+    return "shown while on, removed with a password, entry gone"
 
 
 @check("Notifications, Messages: each message box is the card's full width")
@@ -1551,7 +1647,7 @@ def main() -> int:
 
         print(f"Browser checks against {BASE} (isolated database {_env.TMP})")
         for test in (t_login, t_dashboard, t_resize, t_move, t_columns, t_graph_tile, t_content_follows, t_map, t_sort, t_groups,
-                     t_ack, t_live, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_message_rows, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_inventory_quiet, t_host_actions, t_wifi_pihole, t_guide, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_logout, t_phone, t_no_js_errors):
+                     t_ack, t_live, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_updates, t_demo_card, t_message_rows, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_inventory_quiet, t_host_actions, t_wifi_pihole, t_guide, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_logout, t_phone, t_no_js_errors):
             # HM_ONLY=t_users,t_shell runs a subset (login always runs first) while debugging.
             only = os.environ.get("HM_ONLY")
             if only and test is not t_login and test.__name__ not in only.split(","):

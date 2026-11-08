@@ -1,10 +1,11 @@
-"""Demo mode: simulated devices for testing, screenshots and trying the app without a network.
+"""Demo mode: simulated devices for trying the app without a network, testing and screenshots.
 
-With MONITOR_DEMO=1 the poller answers for every device whose address is in a documentation
+Demo mode is on after the installer's "start with demo data" (or demo.py seed) until Settings, Demo
+data removes it again; MONITOR_DEMO=1 also switches it on (development). While it is on the poller answers for every device whose address is in a documentation
 range (192.0.2.0/24, 198.51.100.0/24 and 203.0.113.0/24, RFC 5737) from the simulation here
 instead of the network: ping, port and web checks, the profile's SNMP metrics and the tables
 (interfaces, storage, sensors, disks and volumes). Devices with any other address are polled
-normally, and without MONITOR_DEMO=1 nothing in this module is used by the poller.
+normally, and while demo mode is off nothing in this module is used by the poller.
 
 Values follow a daily curve plus smooth noise. Every random draw is a hash of the device id,
 a purpose and a time bucket, so the same device at the same moment always gets the same value:
@@ -18,7 +19,9 @@ something to show.
 The seed writes to the database MONITOR_DB_PATH names (the app's normal one when unset). It
 refuses a database holding any device outside the documentation ranges unless --force is
 given, so real data is never mixed in. It never creates a user account: the first account
-is made in the browser as usual.
+is made in the browser as usual. It records what it made, so remove() takes away exactly that:
+the demo devices (only while they still have their made-up addresses) with their history, and
+the groups and tags it added when nothing else uses them.
 """
 
 import argparse
@@ -47,8 +50,26 @@ REBOOT_PERIOD = 30 * DAY        # Planned restarts (updates): one per device in 
 
 # --- When demo mode applies ---
 
+MODE_KEY = "demo_mode"          # internal setting: "on" from the seed until remove()
+SEED_KEY = "demo_seed"          # internal setting: what the seed made, as JSON
+_cache = {"at": 0.0, "on": False}
+
+
 def enabled() -> bool:
-    return os.environ.get("MONITOR_DEMO") == "1"
+    if os.environ.get("MONITOR_DEMO") == "1":
+        return True
+    now = time.monotonic()
+    if now - _cache["at"] > 10:              # the poller asks for every device: read the flag at most every 10 s
+        try:
+            _cache["on"] = database.get_all_settings().get(MODE_KEY) == "on"
+        except Exception:  # noqa: BLE001 (no database yet: not in demo mode)
+            _cache["on"] = False
+        _cache["at"] = now
+    return bool(_cache["on"])
+
+
+def _forget() -> None:
+    _cache["at"] = 0.0
 
 
 def is_demo_address(host: Any) -> bool:
@@ -737,6 +758,8 @@ def seed(force: bool = False, days: int = SEED_DAYS, now: Optional[int] = None, 
         raise SeedRefused("The demo devices are already in this database. Delete the database file to seed it again.")
 
     profiles = _profiles()
+    groups_before = taxonomy.group_ids()
+    tags_before = {x["name"].lower() for x in taxonomy.tags()}
     now = int(now if now is not None else time.time())
     start = now - days * DAY
     start -= start % 300
@@ -770,10 +793,66 @@ def seed(force: bool = False, days: int = SEED_DAYS, now: Optional[int] = None, 
                 collect_tables(device, profile, now)
             totals["devices"] += 1
         database.rollup_hourly(now)
+    import json
+    made = {"devices": sorted(ids.values()), "groups": sorted(set(groups.values()) - groups_before),
+            "tags": sorted({tg for *_x, tg_list in DEMO_DEVICES for tg in (tg_list or []) if tg.lower() not in tags_before})}
+    database.set_internal_setting(SEED_KEY, json.dumps(made))
+    database.set_internal_setting(MODE_KEY, "on")
+    _forget()
+    import setup
+    setup.mark_completed()           # straight to the dashboard; removing the demo brings the setup guide back
     database.add_audit("device", f"Demo devices seeded ({totals['devices']} devices, {days} days of history)")
     log(f"Seeded {totals['devices']} demo devices, {totals['samples']} poll rounds and {totals['events']} events "
         f"into {database.DB_FILE}")
     return dict(totals, ids=ids)
+
+
+def status() -> Dict[str, Any]:
+    """Whether demo mode is on and how many of its devices are still there (Settings, Demo data)."""
+    import json
+    try:
+        made = json.loads(database.get_all_settings().get(SEED_KEY) or "{}")
+    except ValueError:
+        made = {}
+    present = {d["id"] for d in database.list_devices() if is_demo_address(d["ip_address"])}
+    on = database.get_all_settings().get(MODE_KEY) == "on"
+    return {"on": on, "devices": len(present & set(made.get("devices") or []))}
+
+
+def remove(log=print) -> Dict[str, int]:
+    """Takes the demo away: its devices (with their history, events and map places), then the groups
+    and tags it added when no other device uses them, and turns demo mode off. A device the seed
+    made but someone has since moved to a real address is left alone."""
+    import json
+    import taxonomy
+    try:
+        made = json.loads(database.get_all_settings().get(SEED_KEY) or "{}")
+    except ValueError:
+        made = {}
+    by_id = {d["id"]: d for d in database.list_devices()}
+    gone = 0
+    for did in made.get("devices") or []:
+        d = by_id.get(int(did))
+        if d and is_demo_address(d["ip_address"]) and database.delete_device(d["id"]):
+            gone += 1
+    left = database.list_devices()
+    groups = 0
+    for gid in made.get("groups") or []:
+        if gid in taxonomy.group_ids() and not any(d.get("device_group") == gid for d in left):
+            taxonomy.delete_group(gid)
+            groups += 1
+    in_use = {tg.lower() for d in left for tg in taxonomy.device_tags(d)}
+    tags = 0
+    for name in made.get("tags") or []:
+        if name.lower() not in in_use and any(x["name"].lower() == name.lower() for x in taxonomy.tags()):
+            taxonomy.delete_tag(name)
+            tags += 1
+    database.set_internal_setting(MODE_KEY, "off")
+    database.set_internal_setting(SEED_KEY, "")
+    _forget()
+    database.add_audit("device", f"Demo data removed ({gone} devices, {groups} groups, {tags} tags)")
+    log(f"Removed {gone} demo devices, {groups} groups and {tags} tags; demo mode is off")
+    return {"devices": gone, "groups": groups, "tags": tags}
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -791,7 +870,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except SeedRefused as exc:
         print(f"Refused: {exc}", file=sys.stderr)
         return 1
-    print("Start the server with MONITOR_DEMO=1 so these devices keep getting simulated readings.")
+    print("Demo mode is on: the running monitor keeps these devices supplied with made-up readings.")
     return 0
 
 

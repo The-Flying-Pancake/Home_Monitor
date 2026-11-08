@@ -4,6 +4,7 @@ vault.json
 *.key
 demo-data/
 backups/
+home_monitor.sh
 infra.sh
 dist/
 *.log

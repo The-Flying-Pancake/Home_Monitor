@@ -20,7 +20,21 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
 import database
-import demo
+
+try:
+    # The demo simulation (an install with demo data). Optional: the poller runs without it, and while
+    # demo mode is off every device is polled over the network.
+    import demo
+except ImportError:
+    demo = None
+
+
+def _simulated(host: Any) -> bool:
+    return demo is not None and demo.handles(host)
+
+
+def _simulated_url(url: str) -> bool:
+    return demo is not None and demo.handles_url(url)
 
 PROFILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profiles")
 IF_NAME_OID = "1.3.6.1.2.1.31.1.1.1.1"
@@ -40,7 +54,7 @@ def ping_host(ip_address: str, timeout_seconds: float = 2.0) -> Tuple[bool, Opti
     """
     if not ip_address or ip_address.startswith("-"):
         return False, None
-    if demo.handles(ip_address):
+    if _simulated(ip_address):
         return demo.ping_address(ip_address)
 
     is_windows = platform.system().lower() == "windows"
@@ -347,8 +361,8 @@ def _snmp_request(
     stale (late replies to an earlier attempt) and ignored. Returns None on
     timeout, transport error or a non-zero error-status.
     """
-    if demo.handles(ip_address):
-        return None     # Demo mode: simulated devices answer through demo.py, never over the network
+    if _simulated(ip_address):
+        return None     # Demo devices answer through demo.py, never over the network
     request_id = secrets.randbits(31)
     packet = build_snmp_packet(pdu_type, community, oids, request_id, 0, max_repetitions)
 
@@ -664,7 +678,7 @@ def ping_device(device: Dict[str, Any], timeout_seconds: float = 1.5) -> Tuple[s
     Up/down events come from the problem engine (server.ProblemEngine), which
     logs the unreachable problem opening and resolving with its duration.
     """
-    if demo.handles(device["ip_address"]):
+    if _simulated(device["ip_address"]):
         alive, ping_ms = demo.ping(device)
     else:
         alive, ping_ms = ping_host(device["ip_address"], timeout_seconds=timeout_seconds)
@@ -751,7 +765,7 @@ def http_check(url: str, expect: Optional[Dict[str, Any]] = None, timeout_second
     expect = expect or {}
     if not url.lower().startswith(("http://", "https://")):
         return {"up": False, "status": None, "ms": None, "error": "URL must start with http:// or https://"}
-    if demo.handles_url(url):
+    if _simulated_url(url):
         return demo.http(url, expect)
     refused = _own_address(urlparse(url).hostname or "")
     if refused:
@@ -819,7 +833,7 @@ def cert_days_left(url: str, timeout_seconds: float = 5.0) -> Optional[float]:
 def service_check(device: Dict[str, Any], timeout_seconds: float) -> Tuple[bool, Optional[float], Dict[str, float]]:
     """The port check's own test (TCP or HTTP). Returns (up, response ms, extra metrics).
     An https:// check also reports the days its certificate has left (read at most hourly)."""
-    if demo.handles(device["ip_address"]):
+    if _simulated(device["ip_address"]):
         return demo.service(device)
     if device.get("service_kind") == "http" and device.get("service_url"):
         r = http_check(device["service_url"], device.get("service_expect") or {}, max(3.0, timeout_seconds * 2))
@@ -843,7 +857,7 @@ def tcp_check(host: str, port: int, timeout_seconds: float = 2.0) -> Tuple[bool,
     """
     if not host or not 0 < int(port) < 65536:
         return False, None
-    if demo.handles(host):
+    if _simulated(host):
         return demo.tcp(host, int(port))
     start = time.perf_counter()
     try:
@@ -942,7 +956,7 @@ def poll_snmp_metrics(
     if not any(s.get("key") == "uptime_seconds" for s in specs):
         specs.insert(0, {"key": "uptime_seconds", "oid": "1.3.6.1.2.1.1.3.0", "type": "timeticks", "history": "none"})
 
-    if demo.handles(ip):
+    if _simulated(ip):
         results = demo.snmp_metrics(device, specs, now)
     else:
         specs, results = _snmp_fetch(device, specs, timeout_seconds, retries)
@@ -1715,7 +1729,7 @@ def log_software_changes(device_id: int, old: Dict[str, Dict[str, Any]], new: Di
 def collect_tables(device: Dict[str, Any], profile: Optional[Dict[str, Any]],
                    timeout_seconds: float = 2.0, retries: int = 1) -> List[str]:
     """Collects inventory and the profile's SNMP tables for a device."""
-    if demo.handles(device["ip_address"]):
+    if _simulated(device["ip_address"]):
         return demo.collect_tables(device, profile)
     return TableCollector(device, profile, timeout_seconds, retries).run()
 
@@ -1753,7 +1767,7 @@ def live_sample(device: Dict[str, Any], profile: Optional[Dict[str, Any]],
     Nothing is written to the database. The caller derives interface rates
     from consecutive samples and keeps them in memory.
     """
-    if demo.handles(device["ip_address"]):
+    if _simulated(device["ip_address"]):
         return demo.live_sample(device, profile)
     alive, ping_ms = ping_host(device["ip_address"], min(timeout_seconds, 2.0))
     sample: Dict[str, Any] = {"timestamp": time.time(), "alive": alive, "metrics": {}, "counters": {}}

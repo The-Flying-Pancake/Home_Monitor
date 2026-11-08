@@ -26,8 +26,7 @@ Thanks for thinking about it! Ideas, bug reports and pull requests are all welco
 python3 tests/run_all.py          # must pass
 python3 tests/browser_checks.py   # for changes to the web pages (needs Chrome or Edge)
 ```
-Demo mode (see the README) gives you devices and history to work with without a real network.
-Changes to the installer are covered by `tests/test_deploy.py`, which runs `infra.sh` against a
+Changes to the installer are covered by `tests/test_deploy.py`, which runs `home_monitor.sh` against a
 fake Proxmox host.
 
 ## Pull requests

@@ -23,7 +23,7 @@ The key travels with the data so restoring never needs a passphrase; the
 backup folder must therefore be kept as private as a password (it is on a
 NAS through Syncthing, or on an NFS share). The database alone,
 copied anywhere, still has every secret encrypted. With a backup passphrase
-set (BACKUP_PASSPHRASE in infra.sh, kept on the container in
+set (BACKUP_PASSPHRASE in home_monitor.sh, kept on the container in
 /etc/homelab-monitor-install/backup-passphrase, root only) the key is sealed
 with it instead (vault.key.sealed): a copy of the share alone opens nothing.
 
@@ -190,7 +190,7 @@ def seal_key(key: bytes, passphrase: str) -> bytes:
 def unseal_key(blob: bytes, passphrase: str) -> bytes:
     """The vault key from vault.key.sealed; exits with 4 when the passphrase is missing or wrong."""
     if not passphrase:
-        fail("This backup's key is sealed with a backup passphrase. Give it (BACKUP_PASSPHRASE in infra.sh, "
+        fail("This backup's key is sealed with a backup passphrase. Give it (BACKUP_PASSPHRASE in home_monitor.sh, "
              "or type it when asked)", 4)
     try:
         meta = json.loads(blob)
@@ -530,7 +530,7 @@ def _syncthing_identity(st: dict, cfg: str, dry: bool) -> None:
         print(f"Syncthing identity from {src} (copied in by the Proxmox host) into {cfg}")
     elif not can_mount():
         fail("This container is unprivileged and cannot mount NFS shares. Set SYNCTHING_KEYS_NFS at the top of "
-             "infra.sh and run bash infra.sh --upgrade on the Proxmox host: it copies the Syncthing identity in")
+             "home_monitor.sh and run bash home_monitor.sh --upgrade on the Proxmox host: it copies the Syncthing identity in")
     else:
         print(f"Syncthing identity from {st['keys_source']} into {cfg}")
         tmp = tempfile.mkdtemp(prefix="hm-stkeys-")

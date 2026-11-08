@@ -32,9 +32,9 @@ def sitectl(*args, stdin=""):
 class InstallerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # Built into a temporary file so the test never rewrites the project's infra.sh.
+        # Built into a temporary file so the test never rewrites the project's home_monitor.sh.
         cls.tmp = tempfile.mkdtemp(prefix="hm-build-")
-        cls.out = os.path.join(cls.tmp, "infra.sh")
+        cls.out = os.path.join(cls.tmp, "home_monitor.sh")
         r = subprocess.run([sys.executable, os.path.join(ROOT, "deploy", "build.py"), "--reset-settings"], capture_output=True,
                            cwd=ROOT, env=dict(os.environ, HM_BUILD_OUT=cls.out))
         assert r.returncode == 0, r.stdout.decode() + r.stderr.decode()
@@ -54,6 +54,69 @@ class InstallerTests(unittest.TestCase):
         for name in names:
             self.assertFalse(name.endswith((".db", ".key", ".log")) or name.startswith(("tests/", "monitor")), name)
             self.assertNotIn("vault.json", name)
+
+    def test_payload_has_every_import(self):
+        """The packed app runs on its own: every module it imports is in the payload or in Python
+        itself (plus cryptography). 0.8.0 shipped poller.py importing demo.py without packing it, and
+        the new version could not start."""
+        import ast
+        b64 = self.text.split("\n__PAYLOAD_BEGIN__\n")[1].split("\n__PAYLOAD_END__")[0]
+        with tarfile.open(fileobj=io.BytesIO(base64.b64decode(b64)), mode="r:gz") as tar:
+            sources = {m.name: tar.extractfile(m).read().decode("utf-8") for m in tar.getmembers()
+                       if m.isfile() and m.name.endswith(".py") and "/" not in m.name}
+        self.assertIn("demo.py", sources)            # an install with demo data needs it
+        packed = {n[:-3] for n in sources}
+        allowed = set(sys.stdlib_module_names) | {"cryptography"} | packed
+        missing = []
+        for name, src in sources.items():
+            for node in ast.walk(ast.parse(src, name)):
+                if isinstance(node, ast.Import):
+                    mods = [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    mods = [node.module]
+                else:
+                    continue
+                for mod in mods:
+                    top = mod.split(".")[0]
+                    if top in allowed:
+                        continue
+                    missing.append(f"{name}: import {mod}")
+        self.assertEqual(missing, [])
+
+    def test_packed_app_starts(self):
+        """The packed server, poller and compat check import cleanly from the payload alone."""
+        b64 = self.text.split("\n__PAYLOAD_BEGIN__\n")[1].split("\n__PAYLOAD_END__")[0]
+        d = tempfile.mkdtemp(prefix="hm-payload-", dir=_env.TMP)
+        try:
+            with tarfile.open(fileobj=io.BytesIO(base64.b64decode(b64)), mode="r:gz") as tar:
+                tar.extractall(d, filter="data")
+            env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+            env.update(MONITOR_DB_PATH=os.path.join(d, "t.db"), MONITOR_KEY_FILE=os.path.join(d, "t.key"))
+            r = subprocess.run([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); "
+                                "import server, poller, compat, sitectl, updatectl; print(poller.demo is not None)", d],
+                               capture_output=True, text=True, cwd=d, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+            self.assertEqual(r.stdout.strip().splitlines()[-1], "True")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_installer_python_snippets_compile(self):
+        """Every Python snippet inside the installer compiles (a stray line break in one made the
+        upgrade's data check crash instead of reporting)."""
+        tpl = read(os.path.join(ROOT, "deploy", "install-template.sh"))
+        blocks = re.findall(r"<<'PY'\n(.*?)\nPY\n", tpl, re.S)
+        self.assertTrue(blocks)
+        for src in blocks:
+            compile(src, "<installer PY block>", "exec")
+        for src in re.findall(r"python3 -c '([^']*)'", tpl):
+            compile(src, "<installer python3 -c>", "exec")
+
+    def test_settings_folder_made_before_use(self):
+        """Upgrading an install from before 0.8.0: the folder exists before settings.env goes into it."""
+        tpl = read(os.path.join(ROOT, "deploy", "install-template.sh"))
+        body = tpl.split("files_into_place() {")[1].split("\n}\n")[0]
+        self.assertLess(body.index("install -d -m 0750 -o root -g ${SERVICE_USER} ${INSTALL_DIR}"),
+                        body.index("${INSTALL_DIR}/settings.env"))
 
     def test_installer_settings(self):
         block = self.text.split("# >>> SETTINGS")[1].split("# <<< SETTINGS")[0]
@@ -84,7 +147,7 @@ class InstallerTests(unittest.TestCase):
         self.assertNotRegex(self.text, r"bootstrap\.sh tools \"\$SNMP_COMMUNITY")
 
     def fake_host(self, settings=None):
-        """A PATH with stub Proxmox commands that log their arguments; returns (env, log path, infra.sh copy)."""
+        """A PATH with stub Proxmox commands that log their arguments; returns (env, log path, home_monitor.sh copy)."""
         fake = os.path.join(self.tmp, "fakebin")
         os.makedirs(fake, exist_ok=True)
         calls = os.path.join(self.tmp, "calls.log")
@@ -192,6 +255,26 @@ esac
         # Neither the SNMP community nor the root password reaches the container on a command line.
         self.assertNotRegex(calls, r"pct exec[^\n]*public")
         self.assertNotIn("restore.sh --latest", calls)
+
+    def test_fake_install_with_demo_data(self):
+        """DEMO="yes": the seed runs as the monitor's own user after the web interface answers; a
+        restore wins over demo data; anything but yes or no is refused."""
+        r, calls = self.run_fake({"DEMO": '"yes"'})
+        out = r.stdout.decode(errors="replace") + r.stderr.decode(errors="replace")
+        self.assertEqual(r.returncode, 0, out)
+        seed = [l for l in calls.splitlines() if "demo.py seed" in l]
+        self.assertEqual(len(seed), 1, calls)
+        self.assertIn("runuser -u homelab-monitor", seed[0])
+        self.assertIn("Settings, Demo data removes them", out)
+        self.assertLess(calls.index("hostname -I"), calls.index("demo.py seed"))
+        r, calls = self.run_fake({"DEMO": '"yes"', "RESTORE": '"latest"', "BACKUP_NFS": '"192.0.2.10:/Backups/Monitor"'})
+        self.assertEqual(r.returncode, 0, r.stderr.decode(errors="replace"))
+        self.assertNotIn("demo.py seed", calls)
+        r, calls = self.run_fake({"DEMO": '"maybe"'})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("DEMO: yes or no", r.stderr.decode(errors="replace"))
+        r, calls = self.run_fake()
+        self.assertNotIn("demo.py seed", calls)
 
     def test_fake_install_with_chosen_storage_and_restore(self):
         r, calls = self.run_fake({"DISK_STORAGE": '"data"', "RESTORE": '"latest"',
@@ -342,7 +425,7 @@ exit 0
         self.assertIn("not installed on this machine", out)
 
     def test_update_here_uses_the_settings_recorded_on_the_box(self):
-        """Update in the web page runs a clean release's infra.sh on the box itself: the box's own
+        """Update in the web page runs a clean release's home_monitor.sh on the box itself: the box's own
         settings (port, reach, target) apply, not the release's defaults, and the backup goes to pre-update."""
         r, out, calls = self.run_local("--update-here", stdin="", installed=True)
         self.assertNotEqual(r.returncode, 0)
@@ -411,7 +494,7 @@ exit 0
         out = r.stdout.decode(errors="replace") + r.stderr.decode(errors="replace")
         self.assertEqual(r.returncode, 0, out)
         self.assertIn("Windows line endings", out)
-        self.assertIn("bash infra.sh --upgrade", out)
+        self.assertIn("./home_monitor.sh --upgrade", out)
         with open(script, "rb") as f:
             fixed = f.read()
         self.assertNotIn(b"\r", fixed)

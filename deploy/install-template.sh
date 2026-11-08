@@ -1,27 +1,32 @@
 #!/usr/bin/env bash
-# ============================ Homelab Monitor: Proxmox installer ============================
-# Run on the Proxmox host as root (SSH in, then):
-#   bash infra.sh              a menu: install, upgrade, check, restore, rebuild or preview (confirmed
-#                              first); without a terminal it installs a new container
-#   bash infra.sh --rebuild    destroy the container and install again with its own settings
-#   bash infra.sh --upgrade    check, back up, then replace the app in place (rolls back if it fails)
-#   bash infra.sh --check      only the upgrade check: can this container be upgraded? changes nothing
-#   bash infra.sh --restore    keep the container, wipe the app and its data, restore a backup you pick
-#   bash infra.sh --preview    show what the installer looks like; changes nothing
-# No Proxmox, or inside a VM: add --local to install on the machine you run it on (Ubuntu 22.04+ or
-# Debian 12+, as root), and use --local --upgrade or --local --check later. No container is made.
+# ================================ Home Monitor: the installer ================================
+# On the Proxmox host as root (its Shell in the web interface, or SSH in), get it and start it:
+#   curl -fsSLO https://github.com/The-Flying-Pancake/Home_Monitor/releases/latest/download/home_monitor.sh
+#   chmod +x home_monitor.sh
+#   ./home_monitor.sh             a menu: install, upgrade, check, restore, rebuild or preview (each
+#                                 confirmed first); without a terminal it installs a new container
+# Or straight to one of them:
+#   ./home_monitor.sh --upgrade   check, back up, then replace the app in place (rolls back if it fails)
+#   ./home_monitor.sh --check     only the upgrade check: can it be upgraded? changes nothing
+#   ./home_monitor.sh --restore   keep the container, wipe the app and its data, restore a backup you pick
+#   ./home_monitor.sh --rebuild   destroy the container and install again with its own settings
+#   ./home_monitor.sh --preview   show what the installer looks like; changes nothing
+#   ./home_monitor.sh --demo      a new install filled with made-up devices to look around (removable)
+# No Proxmox, or inside a VM: sudo ./home_monitor.sh --local installs on the machine itself (Ubuntu
+# 22.04+ or Debian 12+); use --local --upgrade or --local --check later. No container is made.
 # Upgrade, check, restore and rebuild find the container by its Proxmox tag homelab-monitor.
+# (Called infra.sh before 0.10.0: the same file, renamed.)
 # App version __VERSION__, built __BUILT__. Regenerate with: py -3.15 deploy/build.py
 # ============================================================================================
 # Saved with Windows line endings (an editor or a text-mode copy on Windows)? Then every line ends
 # in a carriage return and nothing below would parse: this one line strips them from this file (or,
 # when it cannot be written, from a copy) and starts it again. It parses either way: with Windows
-# endings the carriage return lands in the trailing comment. ./infra.sh cannot be helped (Linux
-# rejects the first line before any of this runs): use bash infra.sh.
-if [ -z "${HM_CRLF_FIXED-}" ] && grep -qU $'\r' "$0" 2>/dev/null; then echo "  infra.sh had Windows line endings: fixing them and starting again." >&2; if sed -b -i 's/\r$//' "$0" 2>/dev/null; then HM_CRLF_FIXED=1 exec bash "$0" "$@"; else HM_CRLF_COPY="$(mktemp)"; tr -d '\r' < "$0" > "$HM_CRLF_COPY"; HM_CRLF_FIXED=1 exec bash "$HM_CRLF_COPY" "$@"; fi; fi #
+# endings the carriage return lands in the trailing comment. ./home_monitor.sh cannot be helped (Linux
+# rejects the first line before any of this runs): use bash home_monitor.sh.
+if [ -z "${HM_CRLF_FIXED-}" ] && grep -qU $'\r' "$0" 2>/dev/null; then echo "  home_monitor.sh had Windows line endings: fixing them and starting again." >&2; if sed -b -i 's/\r$//' "$0" 2>/dev/null; then HM_CRLF_FIXED=1 exec bash "$0" "$@"; else HM_CRLF_COPY="$(mktemp)"; tr -d '\r' < "$0" > "$HM_CRLF_COPY"; HM_CRLF_FIXED=1 exec bash "$HM_CRLF_COPY" "$@"; fi; fi #
 
 # >>> SETTINGS: change these for your Proxmox host. deploy/build.py keeps this block as you
-# leave it when it regenerates infra.sh (delete the block to get the defaults back).
+# leave it when it regenerates home_monitor.sh (delete the block to get the defaults back).
 
 CTID=201                      # container ID for a new install (upgrades find theirs by its tag)
 HOSTNAME="Monitor"            # container hostname (also accepted in the browser address bar)
@@ -50,6 +55,11 @@ SNMP_COMMUNITY="public"
 SNMP_ALLOW=""                 # blank: only the container itself (its own address and 127.0.0.1)
 
 PORT=8080                     # web interface port
+
+# yes: a new install starts with made-up devices and a week of history, to look around before
+# pointing it at your network. Settings, Demo data removes them when you are ready (the installer
+# also asks on a first install).
+DEMO="no"
 
 # Only with --local (installed on a VM or another machine, not in a container): a time server on
 # your network, e.g. 192.168.1.1. The outbound firewall blocks internet time servers, and 2FA codes
@@ -119,17 +129,18 @@ for arg in "$@"; do
     --preview) MODE="preview" ;;
     --check) MODE="check" ;;
     --restore) MODE="restore" ;;
+    --demo) DEMO="yes" ;;
     # Used by Update in the web page (updatectl.py, as root on the box): upgrade the machine this runs
     # on, with the settings recorded there at install time instead of the ones in this file.
     --update-here) MODE="upgrade"; RUN_HERE=1 ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
-    *) echo "Unknown option $arg (use --local, --rebuild, --upgrade, --check, --restore, --preview or --help)" >&2; exit 1 ;;
+    -h|--help) sed -n '2,/^# App version/p' "$0"; exit 0 ;;
+    *) echo "Unknown option $arg (use --local, --rebuild, --upgrade, --check, --restore, --preview, --demo or --help)" >&2; exit 1 ;;
   esac
 done
 if [[ -n "$RUN_HERE" ]]; then
   # The box's own settings (written by every install and upgrade): only these names, plain characters.
   SETTINGS_ENV="${HM_SETTINGS_ENV:-/etc/homelab-monitor-install/settings.env}"
-  [[ -f "$SETTINGS_ENV" ]] || { echo "No recorded settings at $SETTINGS_ENV: upgrade once with infra.sh from the Proxmox host first." >&2; exit 1; }
+  [[ -f "$SETTINGS_ENV" ]] || { echo "No recorded settings at $SETTINGS_ENV: upgrade once with home_monitor.sh from the Proxmox host first." >&2; exit 1; }
   set_re='^(CTID|HOSTNAME|PORT|ADMIN_NET|SNMP_ALLOW|SSH_KEY_LINE|UNPRIVILEGED|SYNCTHING_KEYS_NFS|SYNCTHING_FOLDER|BACKUP_NFS|TARGET)="([A-Za-z0-9 ._:/@+=,-]*)"$'
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" =~ $set_re ]] && printf -v "${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
@@ -154,6 +165,8 @@ fi
 bad_setting() { echo "$1" >&2; exit 1; }
 [[ -z "$BACKUP_PASSPHRASE" || ${#BACKUP_PASSPHRASE} -ge 12 ]] || bad_setting "BACKUP_PASSPHRASE: 12 characters or more, or blank."
 [[ "$UNPRIVILEGED" == 0 || "$UNPRIVILEGED" == 1 ]] || bad_setting "UNPRIVILEGED: 0 or 1."
+DEMO="${DEMO,,}"
+[[ "$DEMO" == yes || "$DEMO" == no ]] || bad_setting "DEMO: yes or no."
 net_re='^(([0-9]{1,3}[.]){3}[0-9]{1,3}(/([0-9]|[12][0-9]|3[0-2]))?|[0-9A-Fa-f:]+(/[0-9]{1,3})?)$'
 for net in ${ADMIN_NET//,/ }; do
   [[ "$net" =~ $net_re ]] || bad_setting "ADMIN_NET: addresses or networks such as 192.168.1.0/24, separated by spaces ($net is not one)."
@@ -174,6 +187,8 @@ else
 fi
 LOG="/var/log/homelab-monitor-install-$(date +%Y%m%d-%H%M%S).log"
 [[ "$MODE" == "preview" || ! -w /var/log ]] && LOG="$(mktemp /tmp/homelab-monitor-install-XXXX.log)"
+# Update in the app (updatectl.py, root) keeps the log beside the download, for the update history.
+[[ -n "$RUN_HERE" && "${HM_LOG_FILE-}" == /root/hm-update-*/install.log ]] && LOG="$HM_LOG_FILE"
 ( umask 077; : >> "$LOG" ) 2>/dev/null || true      # root only: it records what was installed and where
 STATE="$(mktemp -d)"
 DRAWER=""
@@ -216,6 +231,14 @@ die()  {
 share_needed() {
   [[ "$TARGET" == container && "$UNPRIVILEGED" == 1 ]] || return 1
   [[ -n "$SYNCTHING_KEYS_NFS" || ( "$RESTORE" == latest && -n "$BACKUP_NFS" ) ]]
+}
+# Demo data: only on a new install that does not restore a backup.
+demo_wanted() { [[ "$DEMO" == yes && "$RESTORE" != latest && ( "$MODE" == install || "$MODE" == preview ) ]]; }
+ask_demo() {
+  local a
+  read -r -p "  Start with demo data, made-up devices to look around first? yes or no [${DEMO}]: " a || a=""
+  a="${a,,}"; [[ "$a" == yes || "$a" == y ]] && DEMO="yes"; [[ "$a" == no || "$a" == n ]] && DEMO="no"
+  return 0
 }
 STEPS=()
 define_steps() {
@@ -262,7 +285,8 @@ define_steps() {
       )
       share_needed && STEPS+=("share|Copying from your NFS share through this host|4|20")
       [[ "$RESTORE" == "latest" ]] && STEPS+=("restore|Restoring the latest backup|10|90")
-      STEPS+=("web|Starting the web interface|4|10") ;;
+      STEPS+=("web|Starting the web interface|4|10")
+      demo_wanted && STEPS+=("demo|Filling it with demo data|8|45") ;;
   esac
   return 0
 }
@@ -400,7 +424,7 @@ no_tag_help() {
   stop_drawer 2>/dev/null || true
   {
     printf '\n  %s✖  No container on this host has the tag %s, so there is nothing to %s.%s\n\n' "$RED$B" "$HM_TAG" "$MODE" "$R"
-    printf '  The tag is how this script finds the monitor. Containers installed by an older infra.sh\n'
+    printf '  The tag is how this script finds the monitor. Containers installed by an older home_monitor.sh\n'
     printf '  do not have it yet. Tag yours once (it keeps any tags it already has):\n\n'
     printf '    %spct list%s                       # find the monitor'"'"'s container ID\n' "$B" "$R"
     printf '    %sID=201; T=$(pct config $ID | awk '"'"'/^tags:/ {print $2}'"'"'); pct set $ID --tags "%s${T:+;$T}"%s\n\n' "$B" "$HM_TAG" "$R"
@@ -447,7 +471,7 @@ adopt_ct() {  # a rebuild keeps the container's own settings, not the ones at th
   return 0
 }
 
-# ------------------------------------------------------------------ menu (bash infra.sh with no options)
+# ------------------------------------------------------------------ menu (bash home_monitor.sh with no options)
 # A person at the terminal without options gets a numbered menu; the choice is confirmed before
 # anything happens. The options themselves (--upgrade and the rest) skip it.
 if [[ "$HM_ARGS" -eq 0 && -t 0 && -t 1 && -z "${HM_FAKE_HOST-}" && -z "${HM_NO_ASK-}" ]]; then
@@ -516,6 +540,7 @@ show_summary() {
     printf '   %sContainer%s  %-22s %sTime%s     %s\n' "$D" "$R" "none (--local)" "$D" "$R" "${NTP_SERVER:-as it is now}"
     printf '   %sRestore%s    %s\n' "$D" "$R" \
       "$([[ "$RESTORE" == latest ]] && echo "newest backup from ${SYNCTHING_KEYS_NFS:+Syncthing, identity }${SYNCTHING_KEYS_NFS:-$BACKUP_NFS}" || echo "no, fresh install")"
+    demo_wanted && printf '   %sDemo%s       %s\n' "$D" "$R" "made-up devices to look around (Settings, Demo data removes them)"
     return 0
   fi
   printf '   %sContainer%s  %-22s %sNetwork%s  %s\n' "$D" "$R" "${CTID} ${HOSTNAME}" "$D" "$R" "${BRIDGE}${VLAN_TAG:+ VLAN $VLAN_TAG}, ${IP_ADDRESS}${MAC_ADDRESS:+, $MAC_ADDRESS}"
@@ -525,6 +550,8 @@ show_summary() {
   printf '   %sKind%s       %-22s %sSSH%s      %s\n' "$D" "$R" "$([[ "$UNPRIVILEGED" == 1 ]] && echo unprivileged || echo privileged)" "$D" "$R" \
     "$([[ -n "$SSH_KEY_LINE" ]] && echo "root with your key only" || echo "root with the password")"
   printf '   %sReach%s      %s\n' "$D" "$R" "SSH and the web page from ${ADMIN_NET:-private addresses}; other incoming traffic dropped"
+  demo_wanted && printf '   %sDemo%s       %s\n' "$D" "$R" "made-up devices to look around (Settings, Demo data removes them)"
+  return 0
 }
 
 # ------------------------------------------------------------------ preview (changes nothing)
@@ -556,11 +583,11 @@ fi
 # ------------------------------------------------------------------ embedded application
 PAYLOAD="$(mktemp)"
 sed -n '/^__PAYLOAD_BEGIN__$/,/^__PAYLOAD_END__$/p' "$0" | sed '1d;$d' | base64 -d > "$PAYLOAD" 2>/dev/null \
-  || { [[ "$MODE" == "preview" ]] || die "The embedded application is damaged; copy infra.sh to the host again"; }
+  || { [[ "$MODE" == "preview" ]] || die "The embedded application is damaged; copy home_monitor.sh to the host again"; }
 # The application must be exactly what build.py packed (a damaged or changed copy is never installed).
 if [[ "$MODE" != "preview" ]] && command -v sha256sum >/dev/null; then
   [[ "$(sha256sum "$PAYLOAD" | awk '{print $1}')" == "$PAYLOAD_SHA256" ]] \
-    || die "The embedded application does not match its checksum; copy infra.sh to the host again"
+    || die "The embedded application does not match its checksum; copy home_monitor.sh to the host again"
 fi
 
 wait_for_ct() {
@@ -626,6 +653,7 @@ if [[ "$TARGET" == "local" && "$MODE" == "install" ]]; then
   [[ -n "$NTP_SERVER" ]] || say "  • ${YEL}Time:${R} internet time servers are blocked too. Unless this machine already uses one on your"
   [[ -n "$NTP_SERVER" ]] || say "    network, set NTP_SERVER at the top of this file first (2FA codes need a correct clock)."
   echo
+  if [[ -t 0 && -z "${HM_FAKE_HOST-}" && -z "${HM_NO_ASK-}" && "$RESTORE" != latest ]]; then ask_demo; echo; fi
   read -r -p "  Type INSTALL to continue: " ok || ok=""
   [[ "$ok" == "INSTALL" ]] || die "Cancelled. Nothing was changed."
   SETUP_TOKEN="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | cut -c1-20)"
@@ -724,6 +752,7 @@ if [[ "$TARGET" == "container" && ( "$MODE" == "install" || "$MODE" == "rebuild"
       hm_ask "Network card MAC (none: Proxmox picks one)" "$MAC_ADDRESS"
       if [[ "${REPLY,,}" == "none" ]]; then MAC_ADDRESS=""; elif [[ "$REPLY" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then MAC_ADDRESS="$REPLY"; fi
     fi
+    [[ "$RESTORE" != latest ]] && ask_demo
     hm_rule
     echo
   fi
@@ -786,7 +815,7 @@ if [[ "$TARGET" == "container" && ( "$MODE" == "install" || "$MODE" == "rebuild"
       -hostname "${HOSTNAME}" -cores "${CORES}" -memory "${MEMORY}" -swap "${SWAP}" \
       -rootfs "${DISK_STORAGE}:${DISK_SIZE}" -net0 "${NET0}" -unprivileged "${UNPRIVILEGED}" \
       -features "${FEATURES}" -timezone "${TIMEZONE:-host}" -onboot 1 -tty 2 \
-      -tags "${HM_TAG}" -description "Homelab Monitor, installed by infra.sh ${VERSION} on $(date +%Y-%m-%d). The tag ${HM_TAG} is how infra.sh --upgrade finds this container." \
+      -tags "${HM_TAG}" -description "Homelab Monitor, installed by home_monitor.sh ${VERSION} on $(date +%Y-%m-%d). The tag ${HM_TAG} is how home_monitor.sh --upgrade finds this container." \
       "${extra[@]}"
   }
   s_boot() {
@@ -817,6 +846,13 @@ if [[ "$MODE" == "install" || "$MODE" == "rebuild" ]]; then
     done
     pct exec "${CTID}" -- bash -lc "curl -fsS http://127.0.0.1:${PORT}/api/auth/status >/dev/null"
     pct exec "${CTID}" -- hostname -I | awk '{print $1}' > "$STATE/ip"
+  }
+  # The made-up devices, written as the monitor's own user into its database; the running monitor
+  # sees demo mode switch on by itself. Settings, Demo data takes them away again.
+  s_demo() {
+    pct exec "${CTID}" -- runuser -u "${SERVICE_USER}" -- env MONITOR_DB_PATH="${DATA_DIR}/monitor.db" \
+      MONITOR_KEY_FILE="${KEY_DIR}/vault.key" MONITOR_INSTALL_CONF="${INSTALL_DIR}/install.conf" \
+      python3 "${APP_DIR}/demo.py" seed
   }
 fi
 
@@ -860,7 +896,7 @@ LAYOUT=0
 for f in /etc/homelab-monitor-install/layout "$KEYDIR/layout"; do
   [[ -f "$f" ]] && { LAYOUT="$(sed -n 's/^LAYOUT=//p' "$f")"; break; }
 done
-if [[ "${LAYOUT:-0}" -gt "$WANT_LAYOUT" ]]; then block "This container was set up by a newer installer (layout $LAYOUT, this one knows $WANT_LAYOUT): use the newer infra.sh"
+if [[ "${LAYOUT:-0}" -gt "$WANT_LAYOUT" ]]; then block "This container was set up by a newer installer (layout $LAYOUT, this one knows $WANT_LAYOUT): use the newer home_monitor.sh"
 elif [[ "${LAYOUT:-0}" -eq 0 ]]; then note "Built before layout markers: checked item by item above"
 else ok "Container layout $LAYOUT"; fi
 if [[ -f "$DATA/monitor.db" ]]; then
@@ -877,8 +913,7 @@ import json, sys
 try:
     r = json.loads(sys.argv[1].strip().splitlines()[-1])
 except (ValueError, IndexError):
-    print("BLOCK|The data check could not run: " + sys.argv[1].strip()[-300:].replace("
-", " "))
+    print("BLOCK|The data check could not run: " + sys.argv[1].strip()[-300:].replace(chr(10), " "))
     sys.exit(0)
 print(("OK|" if r["exit"] == 0 else "BLOCK|") + "Data: " + r["message"])
 if r.get("trial") and r["exit"] == 0:
@@ -892,7 +927,7 @@ EOF
 BOOT="$(mktemp)"
 cat > "$BOOT" <<"EOF"
 #!/usr/bin/env bash
-# Container bootstrap, run in phases by infra.sh: packages | tools <snmp allow list> | syncthing
+# Container bootstrap, run in phases by home_monitor.sh: packages | tools <snmp allow list> | syncthing
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 APT=(-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
@@ -1101,7 +1136,7 @@ UNIT
 
 # Where restore.sh and the Settings page find the backup sources chosen in the settings block.
 cat > "$FILES/install.conf" <<CONF
-# Written by infra.sh ${VERSION}. Read (never run) by /root/restore.sh and the Settings, System page.
+# Written by home_monitor.sh ${VERSION}. Read (never run) by /root/restore.sh and the Settings, System page.
 CTID="${CTID}"
 TARGET="${TARGET}"
 SYNCTHING_KEYS_NFS="${SYNCTHING_KEYS_NFS}"
@@ -1120,7 +1155,7 @@ fi
 # The settings an Update from the web page needs to keep (it runs a clean release whose own settings
 # block holds the defaults). Root only on the box; rewritten by every install and upgrade.
 {
-  echo "# Written by infra.sh ${VERSION}. Read (never run) by infra.sh --update-here."
+  echo "# Written by home_monitor.sh ${VERSION}. Read (never run) by home_monitor.sh --update-here."
   for name in CTID HOSTNAME PORT ADMIN_NET SNMP_ALLOW SSH_KEY_LINE UNPRIVILEGED SYNCTHING_KEYS_NFS SYNCTHING_FOLDER BACKUP_NFS TARGET; do
     printf '%s="%s"\n' "$name" "${!name-}"
   done
@@ -1182,7 +1217,7 @@ else
 fi
 nft_list() { local IFS=,; printf '%s' "$*"; }
 {
-  echo "# Written by infra.sh ${VERSION}: what may reach this container. Loaded by hm-ingress.service."
+  echo "# Written by home_monitor.sh ${VERSION}: what may reach this container. Loaded by hm-ingress.service."
   echo "table inet hm_ingress"
   echo "delete table inet hm_ingress"
   echo "table inet hm_ingress {"
@@ -1347,8 +1382,8 @@ EOF
 cat > "$FILES/restore.sh" <<"EOF"
 #!/usr/bin/env bash
 # Restores a Homelab Monitor backup into this container.
-#   /root/restore.sh            asks where the backups are (the source set in infra.sh first) and which one
-#   /root/restore.sh --latest   no questions: the newest backup from the source set in infra.sh
+#   /root/restore.sh            asks where the backups are (the source set in home_monitor.sh first) and which one
+#   /root/restore.sh --latest   no questions: the newest backup from the source set in home_monitor.sh
 # Backups carry the vault key, the database and the site settings; the site settings are applied
 # (NFS mounts, Syncthing identity) and the service starts. Older backups made with a vault
 # passphrase ask for it once.
@@ -1404,10 +1439,10 @@ choose_source() {
   if (( LATEST )); then
     [[ -n "$SYNCTHING_KEYS_NFS" ]] && { from_syncthing "$SYNCTHING_KEYS_NFS" "$SYNCTHING_FOLDER"; return; }
     [[ -n "$BACKUP_NFS" ]] && { from_nfs "$BACKUP_NFS"; return; }
-    echo "No backup source is set in infra.sh (SYNCTHING_KEYS_NFS or BACKUP_NFS)."; exit 1
+    echo "No backup source is set in home_monitor.sh (SYNCTHING_KEYS_NFS or BACKUP_NFS)."; exit 1
   fi
   echo; echo "  Where are the backups?"
-  [[ -n "$configured" ]] && echo "    0) $configured  (from infra.sh)"
+  [[ -n "$configured" ]] && echo "    0) $configured  (from home_monitor.sh)"
   echo "    1) Syncthing: restore this container's Syncthing identity from an NFS share, then sync"
   echo "    2) An NFS share"
   echo "    3) A folder already in this container"
@@ -1611,9 +1646,9 @@ EOF
 
 cat > "$FILES/update.sh" <<"EOF"
 #!/usr/bin/env bash
-# update.sh: menu-driven updates. The monitor app itself is upgraded with infra.sh:
-#   bash infra.sh --upgrade            from the Proxmox host (a container)
-#   bash infra.sh --local --upgrade    on this machine (installed with --local)
+# update.sh: menu-driven updates. The monitor app itself is upgraded with home_monitor.sh:
+#   bash home_monitor.sh --upgrade            from the Proxmox host (a container)
+#   bash home_monitor.sh --local --upgrade    on this machine (installed with --local)
 set -Eeuo pipefail
 [[ $EUID -eq 0 ]] || { echo "Run as root"; exit 1; }
 log(){ printf '\n[%s] %s\n' "$(date +'%F %T')" "$*"; }
@@ -1751,13 +1786,13 @@ files_into_place() {
     install -d -m 0755 /etc/homelab-monitor-egress
     install -m 0644 egress-hosts /etc/homelab-monitor-egress/hosts
     install -m 0644 github-hosts /etc/homelab-monitor-egress/github-hosts
+    install -d -m 0750 -o root -g ${SERVICE_USER} ${INSTALL_DIR}
     install -m 0600 -o root -g root settings.env ${INSTALL_DIR}/settings.env
     install -m 0644 egress.nft /etc/homelab-monitor-egress/egress.nft
     install -m 0644 ingress.nft /etc/homelab-monitor-egress/ingress.nft
     install -m 0755 egress-refresh.sh /etc/homelab-monitor-egress/refresh.sh
     install -m 0700 backup.sh restore.sh update.sh reset-admin.sh setup-code.sh /root/
     install -m 0600 hm-look.sh /root/.hm-look.sh
-    install -d -m 0750 -o root -g ${SERVICE_USER} ${INSTALL_DIR}
     if [ -f install.conf ]; then install -m 0640 -o root -g ${SERVICE_USER} install.conf ${INSTALL_DIR}/install.conf;
     elif [ -f ${KEY_DIR}/install.conf ] && [ ! -f ${INSTALL_DIR}/install.conf ]; then install -m 0640 -o root -g ${SERVICE_USER} ${KEY_DIR}/install.conf ${INSTALL_DIR}/install.conf; fi
     rm -f ${KEY_DIR}/install.conf ${KEY_DIR}/layout
@@ -1889,7 +1924,13 @@ s_ready() {
   wait_for_ct || { echo "${WHERE^} did not become ready." > "$STATE/why"; return 1; }
   # The tag says where; the app itself must be there too. Nothing about the container (CPU, memory,
   # disk, network, start at boot) is changed by an upgrade or a restore: only the files inside it.
-  pct exec "${CTID}" -- test -f "${APP_DIR}/server.py" && return 0
+  if pct exec "${CTID}" -- test -f "${APP_DIR}/server.py"; then
+    # The version that runs now, for the update history (a plain version number or nothing).
+    local fv; fv="$(pct exec "${CTID}" -- grep -m1 '^APP_VERSION = ' "${APP_DIR}/server.py" 2>/dev/null || true)"
+    fv="${fv#*\"}"; fv="${fv%%\"*}"
+    [[ "$fv" =~ ^[0-9]{1,4}[.][0-9]{1,4}[.][0-9]{1,4}$ ]] && echo "$fv" > "$STATE/from_version"
+    return 0
+  fi
   if [[ "$MODE" == "restore" ]]; then
     # A restore can also mend an install whose app is gone, as long as this installer set it up.
     pct exec "${CTID}" -- bash -lc "id ${SERVICE_USER} && test -f /etc/systemd/system/homelab-monitor.service" && return 0
@@ -1907,6 +1948,15 @@ s_copy() {
   ct "rm -rf ${NEW_DIR} && mkdir -m 0700 ${NEW_DIR} && tar -xzf /root/.hm-new.tar.gz -C ${NEW_DIR}"
 }
 tidy_new() { ct "rm -rf ${NEW_DIR} /root/.hm-new.tar.gz /root/.hm-precheck.sh /root/hm-restore.tar.gz" >> "$LOG" 2>&1 || true; }
+# An upgrade run from here goes into the box's update history (Settings, Updates) with this log, so it
+# can be read in the app. Update in the app records its own. $1: 1 or 0, $2: blocked, replace, health or none.
+record_history() {
+  [[ -n "${HM_FROM_UPDATER-}" ]] && return 0
+  local fv; fv="$(cat "$STATE/from_version" 2>/dev/null || true)"
+  [[ "$fv" =~ ^[0-9]{1,4}[.][0-9]{1,4}[.][0-9]{1,4}$ ]] || fv=""
+  pct push "${CTID}" "$LOG" /root/.hm-upgrade.log >> "$LOG" 2>&1 || return 0
+  ct "python3 ${NEW_DIR}/updatectl.py record --data ${DATA_DIR} --kind upgrade --source host --from '${fv}' --to ${VERSION} --ok $1 --why $2 --log /root/.hm-upgrade.log; rm -f /root/.hm-upgrade.log" >> "$LOG" 2>&1 || true
+}
 
 if [[ "$MODE" == "upgrade" || "$MODE" == "check" ]]; then
   s_check() {
@@ -1949,6 +1999,7 @@ if [[ "$MODE" == "upgrade" || "$MODE" == "check" ]]; then
   run_step check s_check
   PKGS="$(sed -n 's/^PKG|//p' "$STATE/precheck" | tr '\n' ' ')"
   if grep -q '^BLOCK|' "$STATE/precheck"; then
+    [[ "$MODE" == "upgrade" ]] && record_history 0 blocked
     tidy_new
     end_screen
     result_box "$RED" "✖" "${WHERE^} cannot be upgraded in place"
@@ -1984,7 +2035,8 @@ if [[ "$MODE" == "upgrade" || "$MODE" == "check" ]]; then
     {
       ct "systemctl stop homelab-monitor || true
         if [ -d ${APP_DIR}.old ]; then rm -rf ${APP_DIR}.failed; [ -d ${APP_DIR} ] && mv ${APP_DIR} ${APP_DIR}.failed; mv ${APP_DIR}.old ${APP_DIR}; fi
-        python3 ${NEW_DIR}/sitectl.py restore ${BACKUP_FILE} --data ${DATA_DIR} --key ${KEY_DIR}/vault.key --passphrase-file ${NEW_DIR}/passphrase-before
+        python3 ${NEW_DIR}/sitectl.py restore ${BACKUP_FILE} --data ${DATA_DIR} --key ${KEY_DIR}/vault.key --passphrase-file ${NEW_DIR}/passphrase-before \
+          || { echo 'The new build could not restore the backup: using the previous version for it'; python3 ${APP_DIR}/sitectl.py restore ${BACKUP_FILE} --data ${DATA_DIR} --key ${KEY_DIR}/vault.key; }
         chown -R ${SERVICE_USER}:${SERVICE_USER} ${DATA_DIR} ${KEY_DIR}
         systemctl start homelab-monitor"
     } >> "$LOG" 2>&1
@@ -1995,11 +2047,13 @@ if [[ "$MODE" == "upgrade" || "$MODE" == "check" ]]; then
       say "${RED}✖${R}  The rollback did not come up either. Rebuild and restore ${BACKUP_FILE}."
       rebuild_help
     fi
+    [[ "$UPGRADE_FAILED" == *installed* ]] && record_history 0 replace || record_history 0 health
     tidy_new
     echo
     exit 1
   fi
   ct "printf 'LAYOUT=%s\nVERSION=%s\n' ${LAYOUT} ${VERSION} > ${INSTALL_DIR}/layout" >> "$LOG" 2>&1
+  record_history 1 none
   tidy_new
   rm -f "$BOOT" "$PRECHECK"; rm -rf "$FILES"
   end_screen
@@ -2200,6 +2254,7 @@ if [[ "$MODE" == "install" || "$MODE" == "rebuild" ]]; then
   share_needed && run_step share s_share
   [[ "$RESTORE" == "latest" ]] && run_step restore s_restore
   run_step web s_web
+  demo_wanted && run_step demo s_demo
   pct exec "${CTID}" -- rm -f /root/.hm-bootstrap.sh >> "$LOG" 2>&1 || true
   sleep 0.6
   stop_drawer
@@ -2233,8 +2288,13 @@ if [[ -n "${RESTORED-}" ]]; then
   printf '      workflows and settings came back with it.\n\n'
 else
   printf '  %sFirst visit%s\n' "$B" "$R"
-  printf '      Choose the administrator username and password, then the setup guide walks\n'
-  printf '      you through scanning your network.\n'
+  if demo_wanted; then
+    printf '      Choose the administrator username and password. The demo devices are waiting for\n'
+    printf '      you; Settings, Demo data removes them when you want to use it for real.\n'
+  else
+    printf '      Choose the administrator username and password, then the setup guide walks\n'
+    printf '      you through scanning your network.\n'
+  fi
   printf '      Setup code  %s%s%s  %s(asked once, on that page)%s\n' "$YEL$B" "$SETUP_TOKEN" "$R" "$D" "$R"
   printf '      %s⚠  Copy the setup code now: it is shown only this once.%s\n' "$YEL$B" "$R"
   if [[ "$TARGET" == "local" ]]; then

@@ -1,4 +1,4 @@
-# Windows development dependencies. Vetted and approved per PROJECT_PLAN.md section 5.
+# Windows development dependencies, pinned with hashes (the only third-party package is cryptography).
 # Install: py -3.15 -m pip install --require-hashes --only-binary=:all: -r requirements-windows.txt
 # Debian production uses the system package instead: apt install python3-cryptography
 cryptography==50.0.2 \

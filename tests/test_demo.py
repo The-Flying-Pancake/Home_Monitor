@@ -38,10 +38,12 @@ class _Sandbox:
 
     def __enter__(self):
         self.patch.start()
+        demo._forget()               # demo mode is read from this database, not the last one
         return self
 
     def __exit__(self, *exc) -> None:
         self.patch.stop()
+        demo._forget()
         # The vault remembers where its metadata lives: send it back to the shared test database.
         VAULT.load(os.path.dirname(os.path.abspath(database.DB_FILE)))
         shutil.rmtree(self.dir, ignore_errors=True)
@@ -190,6 +192,42 @@ class DemoSeedAndPollTests(unittest.TestCase):
         self.assertLess(min(levels), 80)
 
 
+class DemoModeFlagTests(unittest.TestCase):
+    """The seed switches demo mode on in the database (no environment variable needed); removing it
+    takes away exactly what the seed made and switches it off."""
+
+    def test_seed_turns_it_on_and_remove_takes_only_the_demo(self):
+        import setup
+        import taxonomy
+        with _Sandbox(), mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MONITOR_DEMO", None)
+            self.assertFalse(demo.enabled())
+            demo.seed(days=1, log=lambda *_a: None)
+            self.assertTrue(demo.enabled())
+            self.assertTrue(setup.is_completed())                  # straight to the dashboard
+            seeded = demo.status()
+            self.assertTrue(seeded["on"])
+            self.assertGreaterEqual(seeded["devices"], 12)
+            # Things that are not the demo's: a real device using a demo tag, and a demo device moved to a real address.
+            real = database.add_device("home-router", "192.168.1.1", "generic_device", snmp_community="public")
+            taxonomy.set_device_tags(real, ["critical"])
+            moved = next(d for d in database.list_devices() if d["hostname"] == "pihole")
+            with database.get_connection() as conn:
+                conn.execute("UPDATE devices SET ip_address = '192.168.1.53' WHERE id = ?;", (moved["id"],))
+                conn.commit()
+            done = demo.remove(log=lambda *_a: None)
+            self.assertEqual(done["devices"], seeded["devices"] - 1)
+            left = {d["hostname"] for d in database.list_devices()}
+            self.assertEqual(left, {"home-router", "pihole"})
+            self.assertIn("critical", [x["name"] for x in taxonomy.tags()])   # still used by a real device
+            with database.get_connection() as conn:
+                orphans = conn.execute("SELECT COUNT(*) FROM metrics WHERE device_id NOT IN (SELECT id FROM devices);").fetchone()[0]
+            self.assertEqual(orphans, 0)
+            self.assertFalse(demo.enabled())
+            self.assertFalse(demo.status()["on"])
+            self.assertEqual(demo.remove(log=lambda *_a: None)["devices"], 0)   # a second time removes nothing
+
+
 class DemoRefusesRealDataTests(unittest.TestCase):
     def test_refuses_database_with_real_device(self):
         import server
@@ -203,7 +241,7 @@ class DemoRefusesRealDataTests(unittest.TestCase):
 
 
 class DemoOffTests(unittest.TestCase):
-    """Without MONITOR_DEMO=1 a documentation address goes to the network like any other."""
+    """With demo mode off a documentation address goes to the network like any other."""
 
     def setUp(self):
         self.env = mock.patch.dict(os.environ, {}, clear=False)

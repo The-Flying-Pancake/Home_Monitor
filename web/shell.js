@@ -141,6 +141,7 @@ function applyCurrentUser(user) {
   refreshBell();
   if (typeof showChanges === "function") showChanges();
   if (typeof refreshFeatures === "function") refreshFeatures();
+  if (typeof refreshUpdateBadge === "function") refreshUpdateBadge();
   if (typeof loadTaxonomy === "function") loadTaxonomy();
 }
 

@@ -57,7 +57,7 @@ def refuse_newer_schema() -> None:
         found = schema_version()
         if found > SCHEMA_VERSION:
             raise SchemaTooNew(f"The database was written by a newer build (schema {found}; this build knows up to "
-                               f"{SCHEMA_VERSION}). Upgrade the app (infra.sh --upgrade with the newer infra.sh); "
+                               f"{SCHEMA_VERSION}). Upgrade the app (home_monitor.sh --upgrade with the newer home_monitor.sh); "
                                f"the data was not changed.")
 
 

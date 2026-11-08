@@ -21,7 +21,7 @@ function backupsSection(b) {
     ["Backups there", `${b.count}${b.count ? `, ${formatBytes(b.total_bytes)} in total` : ""}`],
     ["Newest", latest],
   ];
-  if (b.restore_source) rows.push(["Restore source (infra.sh)", b.restore_source]);
+  if (b.restore_source) rows.push(["Restore source (home_monitor.sh)", b.restore_source]);
   const resultLine = (r, isPending, label) => {
     if (isPending) return `<span class="text-warn">${escapeHtml(label)} requested, waiting for the container...</span>`;
     if (!r) return `<span class="dim">Not run yet</span>`;
@@ -48,7 +48,7 @@ function backupsSection(b) {
       </div>
       <div class="bk-actions"><button type="submit" class="btn btn-primary">Save backup location</button></div>
     </form>
-    <p class="form-help">Each backup holds everything a rebuild needs: devices and history, users (with their 2FA), workflows, settings, NFS and Syncthing choices, and the key that unlocks the stored passwords. Restoring asks no questions, so keep the backup folder as private as a password store. To rebuild: run infra.sh on the Proxmox host, then <code>/root/restore.sh</code> in the new container (or set RESTORE="latest" at the top of infra.sh).</p>
+    <p class="form-help">Each backup holds everything a rebuild needs: devices and history, users (with their 2FA), workflows, settings, NFS and Syncthing choices, and the key that unlocks the stored passwords. Restoring asks no questions, so keep the backup folder as private as a password store. To rebuild: run home_monitor.sh on the Proxmox host, then <code>/root/restore.sh</code> in the new container (or set RESTORE="latest" at the top of home_monitor.sh).</p>
   </div>`;
 }
 

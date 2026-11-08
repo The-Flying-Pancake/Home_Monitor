@@ -49,7 +49,6 @@ py -3.15 tests/run_all.py --all      # everything
 | **Alert rules** | Override chain and sources; validation; thresholds, severity, off and waits applied by the trigger set; pending problems; Telegram minimum severity, per-rule never, reminders; API; migration | `test_alerts.py` |
 | **Deployment** | Installer payload holds the app and no data, keys or tests; fixed params (CT 201, MAC, Ubuntu 24.04, privileged, DHCP, root SSH, Telegram host); passphrase only on stdin; key derivation round trip with the server's vault; wrong passphrase refused; backup members, retention, restore over changed data, Syncthing folder default, path-traversal archive refused, site apply idempotent in dry run; every embedded script passes `bash -n` | `test_deploy.py`, `deploy/build.py` |
 | **LAN listening** | Host header rules with `MONITOR_LISTEN=0.0.0.0`: IP literals, own and configured names pass; other domains, wrong port, no port fail | `test_api.py` |
-| **Demo mode** | Seed creates 16 devices on documentation addresses only, with history, events, groups, tags and a map layout and no account; it refuses a database holding a real address and a second run; demo polling (ping, port and web checks, SNMP metrics, tables, live samples) gives plausible values with every socket, subprocess and urllib call patched to fail; values are deterministic and smooth; outages and the filling backup disk happen; with `MONITOR_DEMO` unset, or for a real address, the network is used as before | `test_demo.py` |
 | **Live system** | Server up, vault enabled with key outside the data folder, every device online with fresh data, expected tables per template, auto-detect agrees with assigned template, database growth within budget | `live_checks.py` |
 
 Not covered by automated tests (checked manually or not at all): the installer on a real Proxmox host (5.1, 5.2, 5.5: syntax-checked and unit-tested only), the outbound firewall, Telegram against the real API (mocked), a real first-run apply in a browser (API-tested), QNAP models other than TS-x41, behaviour on Debian (Phase 5.1), live mode rendering under real traffic, very long-running retention (days to months), Fix SNMP and workflows against a real host (unit tests mock SSH; run them by hand on a test host first), the drag-to-reorder handle in the workflow editor (the arrows are browser-tested, the drag is not).
@@ -60,7 +59,7 @@ Not covered by automated tests (checked manually or not at all): the installer o
 
 **2026-11-02 update (Phase 15): unit and API 252 / 252, browser 33 / 33 with HM_TEST_SSH_HOST=192.168.1.50, first visit check pass, live 21 / 21 on a database copy, Python 3.12 compatibility clean. New suites: test_totp, test_custom_oids, test_availability, test_proxmox, test_devices_extra; browser checks for 2FA, availability and Proxmox, Telegram editor and triggers. The browser harness answers step-up password prompts itself (window.__noAutoConfirm to inspect one).**
 
-**2026-11-01 update (port checks): unit and API 197 / 197 pass (new `test_service_check.py`: TCP check open and closed, status from port and ping, service problems, API validation and shared address, probe, map placement, device table migration), browser 29 / 29 pass (new: add a port check). infra.sh not rebuilt.**
+**2026-11-01 update (port checks): unit and API 197 / 197 pass (new `test_service_check.py`: TCP check open and closed, status from port and ping, service problems, API validation and shared address, probe, map placement, device table migration), browser 29 / 29 pass (new: add a port check). home_monitor.sh not rebuilt.**
 
 **2026-11-01 update (Phase 12: layout, users, automation builder): unit and API 184 / 184 pass (new `test_users.py`: permission table, roles, device access, user API, block / log out / password reset end sessions, last admin protected, per-section settings permission, notifications unread / read, event log filters and pages; new `test_automation.py` and schedule tests from the automation work), browser 28 / 28 pass with HM_TEST_SSH_HOST=192.168.1.50 (new: shell theme / menu / bell / back to top, event log filters, settings one section at a time and the leave guard, users add / block / delete, credential key generation, workflow builder; SSH task checks replaced by workflow checks; the harness now accepts the app's own dialogs and saves a screenshot of any failure to tests/results/fail_<check>.png; `HM_ONLY=t_a,t_b` runs a subset), live 21 / 21 pass on a database copy, installer rebuilt, Python 3.12 compatibility clean. Real server restarted; events table migrated (94 events kept, `actor` column, nullable device), the existing account is Administrator.**
 
@@ -107,7 +106,7 @@ Plaintext community residue in a free database page (secure_delete plus one-time
 | Files changed | Re-run |
 | :--- | :--- |
 | `vault.py`, secret handling in `database.py` or `server.py` | unit (`test_vault.py`) + live |
-| `poller.py`, `profiles/*.json` | unit (`test_protocol.py`, `test_storage.py`, `test_demo.py`) + live |
+| `poller.py`, `profiles/*.json` | unit (`test_protocol.py`, `test_storage.py`) + live |
 | `database.py` (other) | unit |
 | `server.py` routes, validation, scheduler | unit (`test_api.py`, `test_storage.py`) + browser |
 | `ssh_runner.py` | unit (`test_ssh.py`, `test_workflows.py`, `test_snmpfix.py`) + browser with `HM_TEST_SSH_HOST` |
@@ -116,7 +115,6 @@ Plaintext community residue in a free database page (secure_delete plus one-time
 | `workflows.py`, `web/workflows.js` | unit (`test_workflows.py`) + browser "Workflow" |
 | `snmpfix.py` | unit (`test_snmpfix.py`); then a real run on one host |
 | `discovery.py`, `setup.py`, `web/setup.js` | unit (`test_setup.py`) + browser "Setup preview" |
-| `demo.py` | unit (`test_demo.py`) |
 | `notify.py` | unit (`test_notify.py`); a real test message from Settings |
 | `deploy/*` | `py -3.15 deploy/build.py` (bash -n) + unit (`test_deploy.py`); then a run on Proxmox |
 | `web/*` | browser (+ unit `test_api.py` for the no-inline-handler check) |
@@ -126,18 +124,19 @@ After a run, update section 3 (date, counts, notable details) and add any defect
 
 ## 5. Demo mode
 
-Demo mode runs the app on simulated devices, for testing and screenshots without a real network. With `MONITOR_DEMO=1` the poller answers for every device whose address is in a documentation range (192.0.2.0/24, 198.51.100.0/24 and 203.0.113.0/24) from `demo.py` instead of the network. Devices with any other address are polled as usual. Without the variable nothing changes.
+Demo mode runs the app on made-up devices: for trying it without a network (the installer's "start with demo data", or `--demo`), for testing and for screenshots. While it is on, the poller answers for every device whose address is in a documentation range (192.0.2.0/24, 198.51.100.0/24 and 203.0.113.0/24) from `demo.py` instead of the network. Devices with any other address are polled as usual.
 
-Seed a fresh database first, then start the server on it (PowerShell, from the project folder):
+It is on from the moment `demo.py seed` fills a database until Settings, Demo data removes the demo again (a flag in the database). `MONITOR_DEMO=1` also switches it on, for development. To run it on this computer (PowerShell, from the project folder):
 
 ```
 $env:MONITOR_DB_PATH = "$PWD\demo-data\monitor.db"
 $env:MONITOR_KEY_FILE = "$PWD\demo-data\vault.key"
-$env:MONITOR_DEMO = "1"
 py -3.15 demo.py seed
 py -3.15 server.py
 ```
 
 - The seed adds 16 generic devices (router, switches, access points, NAS, hypervisor, servers, printer, UPS, a TV and two port or web checks) with groups, tags, a map layout, 7 days of history and past events. It takes about half a minute.
 - It refuses a database that holds any device outside the documentation ranges (`--force` overrides) and a database that already holds the demo set. It creates no account: create the admin account in the browser as usual.
+- It records what it made. Removing the demo deletes exactly those devices (only while they still have their made-up addresses) and the groups and tags it added when nothing else uses them, then turns demo mode off. With no device left the setup guide opens again.
 - Readings follow a daily curve with smooth noise, seeded by device id and time. Some devices drop off for a few minutes now and then (and restart), and the backup NAS disk fills past 90% before a clean-up every ten days.
+- Tests (`test_demo.py`): the seed uses documentation addresses only and creates no account; it refuses real data and a second run; demo polling gives plausible values with every network call patched to fail; the flag turns it on and off; removing it keeps real devices, a demo device moved to a real address and tags still in use.

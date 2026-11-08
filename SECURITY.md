@@ -10,7 +10,7 @@ reporting: open the repository's **Security** tab and choose **Report a vulnerab
 maintainer sees the report.
 
 Helpful things to include:
-- the version (Settings, System, or the `VERSION` line in `infra.sh`)
+- the version (Settings, System, or the `VERSION` line in `home_monitor.sh`)
 - what an attacker needs first (network access, a login, a particular role)
 - the steps to reproduce it and what happens
 
@@ -19,14 +19,14 @@ a new release, and the release notes say what was fixed once it is safe to do so
 
 ## Supported versions
 
-Only the latest release gets security fixes. Settings, Updates (or `bash infra.sh --upgrade`)
+Only the latest release gets security fixes. Settings, Updates (or `bash home_monitor.sh --upgrade`)
 brings an install up to date.
 
 ## Verifying a release
 
-Each release's `infra.sh` is signed. The public key is in `deploy/release-signers`:
+Each release's `home_monitor.sh` is signed. The public key is in `deploy/release-signers`:
 
 ```bash
-ssh-keygen -Y verify -f deploy/release-signers -I release@home-monitor -n home-monitor-release -s infra.sh.sig < infra.sh
+ssh-keygen -Y verify -f deploy/release-signers -I release@home-monitor -n home-monitor-release -s home_monitor.sh.sig < home_monitor.sh
 ```
 The in-app updater makes the same check before it installs anything.

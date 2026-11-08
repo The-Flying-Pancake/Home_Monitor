@@ -1,11 +1,11 @@
-"""Builds infra.sh (project root): the Proxmox installer with the application embedded.
+"""Builds home_monitor.sh (project root): the Proxmox installer with the application embedded.
 
-  py -3.15 deploy/build.py                  rebuild, keeping the SETTINGS block of the current infra.sh
+  py -3.15 deploy/build.py                  rebuild, keeping the SETTINGS block of the current home_monitor.sh
   py -3.15 deploy/build.py --reset-settings rebuild with the template's default settings
 
 Regenerate it after any change to the app, the profiles, sitectl.py or the template
 (deploy/install-template.sh). The block between "# >>> SETTINGS" and "# <<< SETTINGS" at the
-top of infra.sh is the only part meant for editing by hand; this script carries it over into
+top of home_monitor.sh is the only part meant for editing by hand; this script carries it over into
 the new file, so local values (storage, CT ID, MAC, restore source) survive a rebuild. A
 setting added to the template but missing from the kept block is appended to it with its
 default, and reported.
@@ -35,7 +35,8 @@ sys.path.insert(0, ROOT)
 MODULES = ["server.py", "poller.py", "database.py", "vault.py", "ssh_runner.py", "auth.py", "topology.py",
            "workflows.py", "snmpfix.py", "notify.py", "discovery.py", "setup.py", "alerts.py", "schedule.py", "rbac.py",
            "availability.py", "proxmox.py", "customoids.py", "totp.py", "compat.py", "taxonomy.py", "tls.py", "changelog.py", "maintenance.py", "forecast.py",
-           "inventory.py", "hostactions.py", "lanhttp.py", "pihole.py", "unifi.py", "digest.py", "telebot.py", "botcmds.py", "tpl.py", "sitecheck.py"]
+           "inventory.py", "hostactions.py", "lanhttp.py", "pihole.py", "unifi.py", "digest.py", "telebot.py", "botcmds.py", "tpl.py", "sitecheck.py",
+           "demo.py"]
 WEB = ["index.html", "app.js", "map.js", "workflows.js", "wftemplates.js", "hostactions.js", "telegram.js", "workflows.css", "setup.js", "alerts.js", "theme.js", "shell.js", "users.js", "security.js","adddevice.js", "backups.js", "updates.js", "snmp.js",
        "charts.js", "availability.js", "proxmox.js", "taxonomy.js", "tls.js", "changes.js", "lan.js", "inventory.js", "botcmds.js", "guide.js", "guide.html", "style.css"]
 
@@ -91,7 +92,8 @@ def bash_check(path: str) -> None:
 
 
 SETTINGS_RE = re.compile(r"^# >>> SETTINGS.*?^# <<< SETTINGS$", re.S | re.M)
-OUTPUT = os.path.join(ROOT, "infra.sh")
+OUTPUT = os.path.join(ROOT, "home_monitor.sh")
+LEGACY = os.path.join(ROOT, "infra.sh")      # the installer's name before 0.10.0: its settings are carried over once
 
 
 def setting_names(block: str) -> list:
@@ -99,7 +101,7 @@ def setting_names(block: str) -> list:
 
 
 def merge_settings(template: str, current_path: str) -> str:
-    """The template with its SETTINGS block replaced by the one in the current infra.sh."""
+    """The template with its SETTINGS block replaced by the one in the current home_monitor.sh."""
     try:
         with open(current_path, encoding="utf-8") as f:
             current = f.read()
@@ -115,7 +117,7 @@ def merge_settings(template: str, current_path: str) -> str:
         lines = [l for l in fresh.group(0).splitlines() if re.match(r"^(%s)=" % "|".join(missing), l)]
         block = block.replace("# <<< SETTINGS", "# Added by build.py (new in this version):\n" + "\n".join(lines) + "\n\n# <<< SETTINGS")
         print("New settings added with their defaults: " + ", ".join(missing))
-    print("Kept the SETTINGS block from the current infra.sh")
+    print(f"Kept the SETTINGS block from the current {os.path.basename(current_path)}")
     return template[:fresh.start()] + block + template[fresh.end():]
 
 
@@ -123,13 +125,13 @@ def main() -> None:
     import server
     template = open(os.path.join(ROOT, "deploy", "install-template.sh"), encoding="utf-8").read()
     if "--reset-settings" not in sys.argv:
-        template = merge_settings(template, OUTPUT)
+        template = merge_settings(template, OUTPUT if os.path.exists(OUTPUT) else LEGACY)
     raw = payload()
     data = base64.encodebytes(raw).decode("ascii").rstrip("\n")
     # The installer checks the unpacked application against this before using it.
     out = (template.replace("__VERSION__", server.APP_VERSION).replace("__BUILT__", BUILT)
            .replace("__PAYLOAD_SHA256__", hashlib.sha256(raw).hexdigest()).replace("__PAYLOAD__", data))
-    # Linux line endings only: a settings block kept from an infra.sh saved on Windows must not
+    # Linux line endings only: a settings block kept from a home_monitor.sh saved on Windows must not
     # carry carriage returns into the new file (nothing in it, the payload included, needs one).
     out = out.replace("\r", "")
     path = os.environ.get("HM_BUILD_OUT") or OUTPUT

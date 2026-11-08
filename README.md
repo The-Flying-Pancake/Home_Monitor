@@ -28,7 +28,7 @@ installs with one file and backs itself up.
 | | |
 | :--- | :--- |
 | 📈 **Monitoring** | Ping, SNMP (CPU, memory, disks, interfaces, temperatures, UPS, printers, NAS), port and web checks. Templates for common homelab gear, with custom OIDs for anything else. |
-| 🟢 **Availability** | Status pages and uptime history per device, in the style of Uptime Kuma. |
+| 🟢 **Availability** | Status pages and uptime history for every device. |
 | 🚨 **Alerts** | Rules with thresholds, durations and severities. Problems group sensibly (a switch going down does not page you for everything behind it). Quiet hours, maintenance windows and acknowledgements. |
 | 📱 **Telegram** | Alerts with your own message texts, plus a read-only bot you can ask for status. |
 | 🤖 **Automation** | A visual workflow builder: SSH commands on your hosts, waits, conditions and schedules, or a trigger when something happens. Ready-made host actions for common Linux chores. |
@@ -40,48 +40,86 @@ installs with one file and backs itself up.
 
 ## 🚀 Getting started
 
-### On Proxmox (the main way)
+Everything comes in one file, `home_monitor.sh`. You download it, make it runnable and start it. It
+asks a few questions and does the rest. You do not need to know Linux: copying the commands below
+is enough.
 
-1. Download `infra.sh` from the [latest release](../../releases/latest) to your Proxmox host.
-2. Have a look at the settings block at the top (container ID, storage, address), then run:
+### On Proxmox (recommended)
+
+1. **Open a shell on your Proxmox host.** In the Proxmox web interface, click your server's name
+   under *Datacenter*, then **Shell**. (Or connect with SSH: `ssh root@<your Proxmox address>`.)
+2. **Download the installer:**
    ```bash
-   bash infra.sh
+   curl -fsSLO https://github.com/The-Flying-Pancake/Home_Monitor/releases/latest/download/home_monitor.sh
    ```
-   A menu offers install, upgrade, check, restore and a preview that changes nothing.
-3. Open the address it prints, create your administrator account with the one-time setup code,
-   and let the setup guide scan your network.
+3. **Make it runnable, then start it:**
+   ```bash
+   chmod +x home_monitor.sh
+   ./home_monitor.sh
+   ```
+   `chmod +x` marks the file as a program you are allowed to run. You only need it once.
+4. **Choose 1, Install**, then answer the questions. Pressing Enter keeps the answer shown in
+   [brackets]: the container's number, its name, its address (DHCP is fine) and whether to start
+   with demo data. Then choose a root password for the new container.
+5. **Open the address it shows at the end** in your browser. Type the one-time setup code it prints,
+   create your administrator account and let the setup guide find the devices on your network.
 
-The installer makes a small container (Ubuntu 24.04), with an outbound firewall that only reaches
-package sources and Telegram, plus an inbound one that only lets in SSH and the web page from your
-own network.
+The installer makes a small container for the monitor (Ubuntu 24.04 with 2 cores, 1 GB of memory and
+a 20 GB disk) and tags it `homelab-monitor`, so it can find it again for upgrades. Only your own
+network can reach its web page and SSH. The container itself can reach your network, package updates
+and Telegram, and nothing else.
 
-### On a VM or a spare machine
+### On a spare computer or a virtual machine
 
-```bash
-sudo bash infra.sh --local
-```
-Ubuntu 22.04 or newer, or Debian 12 or newer. Best on a machine of its own.
+Any computer or VM with Ubuntu 22.04 or newer, or Debian 12 or newer, will do. A fresh, minimal
+install is best: the monitor sets up the firewall of the whole machine.
 
-### Just looking? Try demo mode
+1. Log in to it, at its own screen or with `ssh <you>@<its address>`.
+2. Make sure `curl` is installed:
+   ```bash
+   sudo apt update && sudo apt install -y curl
+   ```
+3. Download the installer, make it runnable and install with `--local`:
+   ```bash
+   curl -fsSLO https://github.com/The-Flying-Pancake/Home_Monitor/releases/latest/download/home_monitor.sh
+   chmod +x home_monitor.sh
+   sudo ./home_monitor.sh --local
+   ```
+4. Type `INSTALL` when it asks, then open the address it shows, as above.
 
-No network to point it at? Demo mode fills the app with sixteen made-up devices and believable
-readings, so you can click around safely:
+### Just looking? Start with demo data
 
-```bash
-export MONITOR_DB_PATH=$PWD/demo-data/monitor.db MONITOR_KEY_FILE=$PWD/demo-data/vault.key MONITOR_DEMO=1
-python3 demo.py seed
-python3 server.py      # then open http://127.0.0.1:8080
-```
-On Windows PowerShell, set the same three variables with `$env:NAME = "..."`.
+Answer **yes** to *Start with demo data* (or run `./home_monitor.sh --demo`) and the new monitor
+fills itself with sixteen made-up devices and a week of history: graphs, a network map, a few
+problems and all. Their readings are invented on the monitor, so nothing is sent to those addresses.
+When you are ready for the real thing, **Settings, Demo data, Remove the demo data** takes them away
+and the setup guide starts on your own network.
+
+### Changing the defaults (optional)
+
+The top of `home_monitor.sh` holds its settings, each with a note: storage, CPU and memory, the
+network bridge and VLAN, a fixed address, backups to a NAS and more. Most people never need them. To
+change one, open the file with `nano home_monitor.sh`, edit, save with **Ctrl+O** then **Enter**,
+leave with **Ctrl+X** and run it again.
+
+### Is my download genuine? (optional)
+
+Every release is signed. The `SHA256SUMS` file next to it lists the checksums, so after downloading it
+too, `sha256sum -c SHA256SUMS --ignore-missing` should say `OK`. The release notes show how to check
+the signature itself.
 
 ## 🔄 Updating
 
-- **From the app:** Settings, Updates, then *Check for updates*. An update is installed only if its
-  signature matches the release key built into your copy. It backs up first, and it puts the old
-  version back by itself if the new one does not start. For two days you can go back, either to
-  the previous version with today's data or to the data from before the update.
-- **From the Proxmox host:** `bash infra.sh --upgrade` with a newer `infra.sh`. It works without
-  internet access on the box, too.
+- **From the app:** the monitor looks for a new version once a day and shows a red number on
+  Settings when one is ready. Settings, Updates shows what is new in it, and *Update now* does the
+  rest while you watch. An update is installed only if its signature matches the release key built
+  into your copy. It backs up first and puts the old version back by itself if the new one does not
+  start. For two days you can still go back, and the update history keeps the log of every update.
+- **From the Proxmox host:** download the newest `home_monitor.sh` as above, then run
+  `./home_monitor.sh --upgrade`. This works without internet access on the monitor, too.
+
+Before version 0.10.0 the installer was called `infra.sh`. It is the same file with a new name, and
+both names work for upgrading.
 
 ## 🔐 Security
 
@@ -100,7 +138,7 @@ Plain Python 3.10+ (standard library plus `cryptography`) and vanilla JavaScript
 python3 tests/run_all.py             # unit, API and installer tests
 python3 tests/browser_checks.py      # browser checks (needs Chrome or Edge)
 ```
-`TESTING.md` explains the test layers, and `deploy/build.py` turns the source into `infra.sh`.
+`TESTING.md` explains the test layers, and `deploy/build.py` turns the source into `home_monitor.sh`.
 
 ## 💛 About this project
 
@@ -114,10 +152,11 @@ and testing it on real hardware.
 
 Ideas, fixes and pull requests are very welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-### 🙏 Inspiration
+### 🙏 Good company
 
-Home Monitor's ideas owe a lot to some excellent projects: [Uptime Kuma](https://github.com/louislam/uptime-kuma)
-(status pages), [LibreNMS](https://www.librenms.org/) and [Zabbix](https://www.zabbix.com/) (device
-pages and problem handling) and [n8n](https://n8n.io/) (visual workflows). No code from them is
-used, and Home Monitor is not affiliated with them. If you need any of those things done really
-well, they are worth a look.
+Home Monitor is its own app, written from scratch for this project. It sits alongside some excellent
+open-source tools that many homelabs already run happily, such as
+[Uptime Kuma](https://github.com/louislam/uptime-kuma), [LibreNMS](https://www.librenms.org/),
+[Zabbix](https://www.zabbix.com/) and [n8n](https://n8n.io/). Each of them goes much deeper into its
+own job than Home Monitor tries to, so if you need one of those jobs done really well, they are well
+worth a look. Home Monitor is not affiliated with any of them.

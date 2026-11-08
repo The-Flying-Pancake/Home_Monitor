@@ -3101,6 +3101,7 @@ const SETTINGS_SECTIONS = [
   ["live", "Live mode", "Faster polling for the device page you have open. Live samples are held in memory for 15 minutes and never written to the database.", "Monitoring", "settings.system"],
   ["groups", "Groups and tags", "", "Monitoring", "devices.manage"],
   ["maintenance", "Maintenance windows", "", "Monitoring", "problems.ack"],
+  ["demo", "Demo data", "This monitor was installed with made-up devices to look around. Remove them when you are ready to use it for real.", "System", "settings.system"],
   ["users", "Users", "", "System", "users.manage"],
   ["retention", "Data retention and storage", "How long history is kept. Raw samples are rolled up into hourly min / avg / max before they expire.", "System", "settings.system"],
   ["backups", "Backups", "Where backups go and how to rebuild. Without Syncthing they stay in the container (the newest 7); with Syncthing they are written to the synced folder, so your NAS holds them.", "System", "settings.system"],
@@ -3164,9 +3165,39 @@ function settingInput(s, value) {
   return `<input type="text" ${common} value="${escapeHtml(value)}">`;
 }
 
-/** Settings sections this user may open: Users only with users.manage; the rest are readable by all. */
+/** Settings sections this user may open: Users only with users.manage, Demo data only while there is demo data. */
+let demoOn = false;
 function settingsSectionsShown() {
-  return SETTINGS_SECTIONS.filter(([id, , , , perm]) => id !== "users" || can(perm));
+  return SETTINGS_SECTIONS.filter(([id, , , , perm]) => (id !== "users" || can(perm)) && (id !== "demo" || demoOn));
+}
+
+function demoPanel(d) {
+  if (!d || !d.on) return "";
+  const admin = currentUser && currentUser.role === "admin";
+  return `<div class="backup-panel demo-panel">
+    <p>${d.devices ? `${d.devices} made-up devices` : "Made-up devices"} fill the dashboard, the map, the graphs and the history, so you can try everything without touching your network. Their readings are invented here; nothing is sent to those addresses.</p>
+    <p>Removing them deletes the demo devices with their history and events, and the groups and tags that came with them. Your account, your settings and any device you added yourself stay. With nothing left, the setup guide opens to find the devices on your network.</p>
+    ${admin ? `<button type="button" class="btn btn-danger-solid" id="btn-demo-remove">Remove the demo data and start for real</button>`
+      : `<p class="form-help">An administrator can remove it.</p>`}
+  </div>`;
+}
+
+async function removeDemoData(btn) {
+  const ok = await confirmDialog({ title: "Remove the demo data?", confirmLabel: "Remove it", danger: true,
+    message: "The made-up devices, their history and events, and the groups and tags that came with them are deleted. This cannot be undone." });
+  if (!ok) return;
+  btn.disabled = true;
+  try {
+    const r = await api("/api/demo/remove", { method: "POST", body: {} });
+    showToast(`Demo data removed (${r.removed.devices} devices). Ready for your own.`, "success");
+    if (r.setup) { window.location.hash = "#/setup"; window.location.reload(); return; }
+    demoOn = false;
+    window.location.hash = "#/settings/alerts";
+    loadSettings();
+  } catch (err) {
+    showToast(err.message, "error");
+    btn.disabled = false;
+  }
 }
 
 function showSettingsSection(id) {
@@ -3190,14 +3221,17 @@ function showSettingsSection(id) {
 }
 
 function renderSettings(values, system) {
+  demoOn = !!(system.demo && system.demo.on);
   let group = "";
   document.getElementById("settings-nav").innerHTML = settingsSectionsShown().map(([id, title, , g]) => {
     const head = g !== group ? `<div class="settings-nav-group">${escapeHtml(g)}</div>` : "";
     group = g;
-    return `${head}<a data-section="${id}" href="#/settings/${id}">${escapeHtml(title)}</a>`;
+    const badge = id === "updates" && typeof updateWaiting !== "undefined" && updateWaiting
+      ? `<span class="nav-badge" aria-label="An update is ready">1</span>` : "";
+    return `${head}<a data-section="${id}" href="#/settings/${id}">${escapeHtml(title)}${badge}</a>`;
   }).join("");
 
-  const cards = SETTINGS_SECTIONS.filter(([id]) => !STATIC_SETTINGS_CARDS.has(id)).map(([id, title, blurb, , perm]) => {
+  const cards = SETTINGS_SECTIONS.filter(([id]) => !STATIC_SETTINGS_CARDS.has(id) && (id !== "demo" || demoOn)).map(([id, title, blurb, , perm]) => {
     const readOnly = perm && !can(perm);
     // Command replies are edited in the command builder (botcmds.js), not as rows here.
     const rows = settingsSchema.filter(s => s.section === id && !s.key.startsWith("bot_tpl_")).map(s => {
@@ -3217,12 +3251,13 @@ function renderSettings(values, system) {
     if (id === "system") extra = systemPanel(system);
     if (id === "backups") extra = backupsSection(system.backup);
     if (id === "updates") extra = updatesSection(system.update);
+    if (id === "demo") extra = demoPanel(system.demo);
     if (id === "notify") extra = notifyPanel() + `<div id="bot-builder" class="bot-builder" data-ntab="commands"></div>`;
     if (id === "alerts") extra = alertRulesPanel();
     const note = readOnly ? `<div class="panel-note-bar warn">Your account can view these settings but not change them.</div>` : "";
     return `<section class="settings-card${readOnly ? " read-only" : ""}" id="settings-${id}" data-card="${id}">
       <div class="settings-card-head"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(blurb)}${SECTION_LINKS[id] || ""}</p></div>
-      ${id === "notify" ? notifyTabsBar() : ""}${note}${rows}${extra}</section>`;
+      ${id === "notify" ? notifyTabsBar() : ""}${note}${id === "updates" ? extra + rows : rows + extra}</section>`;
   }).join("");
   document.getElementById("settings-sections").innerHTML = cards;
   document.querySelectorAll("#settings-sections .read-only [data-setting], #settings-sections .read-only button").forEach(el => { el.disabled = true; });
@@ -3438,6 +3473,8 @@ function initSettingsAndAudit() {
   sections.addEventListener("click", ev => {
     const t = ev.target.closest("[data-ntab-go]");
     if (t) { notifyTabActive = t.dataset.ntabGo; applyNotifyTab(); }
+    const demoBtn = ev.target.closest("#btn-demo-remove");
+    if (demoBtn) removeDemoData(demoBtn);
   });
   sections.addEventListener("keydown", ev => {
     const t = ev.target.closest && ev.target.closest("[data-ntab-go]");

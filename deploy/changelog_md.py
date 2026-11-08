@@ -14,7 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import changelog  # noqa: E402
 
-VERSIONS = {26: "0.8.0", 25: "0.7.0", 24: "0.6.0", 23: "0.5.0", 22: "0.4.0", 21: "0.3.1", 20: "0.3.0"}
+VERSIONS = {28: "0.10.0", 27: "0.9.0", 26: "0.8.0", 25: "0.7.0", 24: "0.6.0", 23: "0.5.0", 22: "0.4.0", 21: "0.3.1", 20: "0.3.0"}
 
 HEADER = '''# Changelog
 
@@ -23,7 +23,7 @@ Guide, What's changed.
 
 ## Version numbers
 
-`APP_VERSION` in `server.py` is shown in the app, written into infra.sh and recorded in every backup.
+`APP_VERSION` in `server.py` is shown in the app, written into home_monitor.sh and recorded in every backup.
 
 - **Minor** (0.7.0 to 0.8.0): new features or a database change (an upgrade migrates the database).
 - **Patch** (0.7.0 to 0.7.1): fixes and small adjustments to existing features.
@@ -43,10 +43,10 @@ def render(public: bool) -> str:
         out.extend(f"- {i}" for i in r["items"])
         out.append("")
     if not public:
-        with open(os.path.join(ROOT, "docs", "early-history.md"), encoding="utf-8") as f:
+        with open(os.path.join(ROOT, "docs", "history", "early-history.md"), encoding="utf-8") as f:
             early = f.read().strip()
         out.append("## Before the in-app release notes (2026-10-29 to 2026-11-01)\n")
-        out.append("The build that came before release 1, from PROJECT_PLAN.md (each phase there has the full detail). "
+        out.append("The build that came before release 1, from docs/history/project-plan.md (each phase there has the full detail). "
                    "Release 1 is Phase 15 of that plan and release 2 is Phase 16.\n")
         out.append("### " + early.split("\n### ", 1)[1])
     return "\n".join(out).rstrip() + "\n"

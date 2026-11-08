@@ -205,6 +205,104 @@ class UserApiTests(unittest.TestCase):
         self.assertEqual(as_user(c, "POST", "/api/updates/install", {})[0], 403)
         request("DELETE", "/api/users/upd-op")
 
+    def test_update_waiting_skip_and_history(self):
+        """The red number, skipping a version, the daily check and the history with its logs."""
+        import json
+        import os
+        import shutil
+        import tempfile
+        from unittest import mock
+        data_dir = os.path.dirname(os.path.abspath(database.DB_FILE))
+        result = os.path.join(data_dir, "update-check.result.json")
+        tmp = tempfile.mkdtemp(prefix="hm-hist-", dir=_env.TMP)
+
+        def known(latest):
+            with open(result, "w", encoding="utf-8") as f:
+                json.dump({"ok": True, "newer": True, "latest": latest, "current": server.APP_VERSION, "time": int(time.time()),
+                           "changes": [{"version": latest, "notes": "Better things", "evil": "x"}]}, f)
+        try:
+            known("98.0.0")
+            self.assertEqual(request("GET", "/api/updates/summary")[1]["waiting"], 1)
+            u = request("GET", "/api/system")[1]["update"]
+            self.assertEqual(u["check"]["changes"], [{"version": "98.0.0", "name": "", "published": "", "notes": "Better things"}])
+            # Skipping needs the version that is waiting; then the number goes until a newer one comes.
+            self.assertEqual(request("POST", "/api/updates/skip", {"version": "97.0.0"})[0], 409)
+            self.assertEqual(request("POST", "/api/updates/skip", {"version": "98.0.0"})[0], 200)
+            self.assertEqual(request("GET", "/api/updates/summary")[1]["waiting"], 0)
+            known("99.0.0")
+            self.assertEqual(request("GET", "/api/updates/summary")[1]["waiting"], 1)
+            known("98.0.0")
+            request("POST", "/api/updates/unskip", {})
+            self.assertEqual(request("GET", "/api/updates/summary")[1]["waiting"], 1)
+
+            # History: listed from root's file; a log opens only by a number that is in it.
+            hist, logs = os.path.join(tmp, "update-history.json"), os.path.join(tmp, "update-logs")
+            os.makedirs(logs)
+            with open(hist, "w", encoding="utf-8") as f:
+                json.dump([{"id": 5, "time": 1, "kind": "upgrade", "from": "0.6.0", "to": "0.9.0", "ok": False, "error": "x", "log": True},
+                           {"id": "../x", "kind": "bad"}], f)
+            for n, text in ((5, "the log"), (6, "not in the history")):
+                with open(os.path.join(logs, f"{n}.log"), "w", encoding="utf-8") as f:
+                    f.write(text)
+            with mock.patch.object(server, "UPDATE_HISTORY", hist), mock.patch.object(server, "UPDATE_LOGS", logs):
+                rows = request("GET", "/api/updates/history")[1]["history"]
+                self.assertEqual([(r["id"], r["ok"], r["log"]) for r in rows], [(5, False, True)])
+                self.assertEqual(request("GET", "/api/updates/history/5/log")[1]["log"], "the log")
+                self.assertEqual(request("GET", "/api/updates/history/6/log")[0], 404)
+                for bad in ("/api/updates/history/..%2F..%2Fetc%2Fpasswd/log", "/api/updates/history/5/../../x/log",
+                            "/api/updates/history/-1/log"):
+                    self.assertNotEqual(request("GET", bad)[0], 200, bad)
+                self.make_user("hist-op", role="operator")
+                _, _, c = login_as("hist-op")
+                self.assertEqual(as_user(c, "GET", "/api/updates/history")[0], 403)
+                self.assertEqual(as_user(c, "GET", "/api/updates/history/5/log")[0], 403)
+                self.assertEqual(as_user(c, "GET", "/api/updates/summary")[1]["waiting"], 0)
+                self.assertEqual(as_user(c, "POST", "/api/updates/skip", {"version": "98.0.0"})[0], 403)
+                request("DELETE", "/api/users/hist-op")
+
+            # The daily check asks root once a day, only on an installed monitor and when it is on.
+            installed = dict(server.update_status(), installed=True, check={"time": time.time() - 25 * 3600})
+            with mock.patch.object(server, "update_status", return_value=installed), \
+                    mock.patch.object(server, "request_root_action") as ask:
+                self.assertTrue(server.auto_update_check())
+                ask.assert_called_once_with("update-check")
+                installed["check"] = {"time": time.time() - 3600}
+                self.assertFalse(server.auto_update_check())
+                installed["check"] = {"time": 0}
+                database.update_setting("update_auto_check", "off")
+                self.assertFalse(server.auto_update_check())
+                database.update_setting("update_auto_check", "on")
+        finally:
+            database.set_internal_setting(server.UPDATE_SKIP_KEY, "")
+            os.remove(result)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_demo_routes(self):
+        """Settings, Demo data: hidden (off) on a monitor without demo data; removing is for administrators."""
+        self.assertEqual(request("GET", "/api/system")[1]["demo"], {"on": False, "devices": 0})
+        code, body = request("POST", "/api/demo/remove", {})[:2]
+        self.assertEqual(code, 409)
+        self.assertIn("no demo data", body["error"])
+        self.assertEqual(rbac.route_tier("POST", "/api/demo/remove"), 2)
+        self.make_user("demo-op", role="operator")
+        _, _, c = login_as("demo-op")
+        self.assertEqual(as_user(c, "POST", "/api/demo/remove", {})[0], 403)
+        request("DELETE", "/api/users/demo-op")
+
+    def test_update_progress_is_read_carefully(self):
+        import json
+        import os
+        tmp = os.path.join(_env.TMP, "hm-progress")
+        os.makedirs(tmp, exist_ok=True)
+        with open(os.path.join(tmp, "update-progress.json"), "w", encoding="utf-8") as f:
+            json.dump({"state": "running", "to": "0.9.0", "current": "backup", "time": int(time.time()),
+                       "steps": {"backup": "run", "evil": "x"}, "extra": "<script>"}, f)
+        p = server.update_progress(tmp, True)
+        self.assertEqual(p["steps"]["backup"], "run")
+        self.assertNotIn("evil", p["steps"])
+        self.assertNotIn("extra", p)
+        self.assertEqual(list(p["steps"]), list(server.UPDATE_STEPS))
+
     def test_validation(self):
         self.assertEqual(request("POST", "/api/users", {"username": "bad name", "password": PASSWORD})[0], 400)
         self.assertEqual(request("POST", "/api/users", {"username": "short1", "password": "short"})[0], 400)

@@ -170,6 +170,9 @@ SETTINGS_SCHEMA = [
     ("metric_retention_days", "retention", "Hourly trends", "int", "days", 7, 3650, "365",
      "Hourly min / avg / max kept for long-range graphs."),
     ("audit_retention_days", "retention", "Events and audit log", "int", "days", 1, 3650, "90", ""),
+    ("update_auto_check", "updates", "Check for updates every day", "select:on,off", "", None, None, "on",
+     "Looks for a new version once a day and shows a red number on Settings when one is ready. "
+     "Nothing is installed until you choose to."),
     ("telegram_enabled", "notify", "Telegram notifications", "select:off,on", "", None, None, "off",
      "Sends messages through a Telegram bot. This is the app's only internet connection (api.telegram.org)."),
     ("telegram_token", "notify", "Bot token", "secret", "", None, None, "",
@@ -773,7 +776,7 @@ def alert_rules_view(scope: str, target: str) -> Dict[str, Any]:
 
 def backup_status() -> Dict[str, Any]:
     """Where /root/backup.sh writes (same rule as sitectl.py), what is there, and the restore sources
-    infra.sh set. On a development copy there is no backup timer: installed is False."""
+    home_monitor.sh set. On a development copy there is no backup timer: installed is False."""
     data_dir = os.path.dirname(os.path.abspath(database.DB_FILE))
     site = setup.get_site()
     st = site.get("syncthing") or {}
@@ -813,6 +816,13 @@ def backup_status() -> Dict[str, Any]:
 ROOT_REQUESTS = ("site", "backup", "update-check", "update-install", "rollback-code", "rollback-all")
 UPDATE_KEEP_SECONDS = 2 * 24 * 3600          # how long an update can be undone (updatectl.py keeps the copy as long)
 UPDATE_STATE = "/etc/homelab-monitor-install/last-update.json"
+# Written by root (updatectl.py), readable by the app's group: the history and one log file per entry.
+UPDATE_HISTORY = "/etc/homelab-monitor-install/update-history.json"
+UPDATE_LOGS = "/etc/homelab-monitor-install/update-logs"
+UPDATE_SKIP_KEY = "update_skip_version"     # internal setting: the version the person chose to skip
+AUTO_CHECK_SECONDS = 24 * 3600
+_VERSION_RE = re.compile(r"\d{1,4}\.\d{1,4}\.\d{1,4}")
+UPDATE_STEPS = ("download", "verify", "ready", "copy", "check", "repair", "backup", "replace", "health")
 
 
 def request_root_action(kind: str) -> None:
@@ -860,6 +870,9 @@ def update_status() -> Dict[str, Any]:
         for k in ("notes", "output", "error"):
             if isinstance(out.get(k), str):
                 out[k] = out[k][-6000:]
+        if isinstance(r.get("changes"), list):
+            out["changes"] = [{k: str(c.get(k) or "")[:6000 if k == "notes" else 200] for k in ("version", "name", "published", "notes")}
+                              for c in r["changes"][:30] if isinstance(c, dict)]
         return out
 
     check, last = result("update-check"), result("update")
@@ -877,9 +890,113 @@ def update_status() -> Dict[str, Any]:
         back = {"all": True, "code": bool(state.get("schema_same")), "from": state.get("to_version"),
                 "to": state.get("from_version"), "expires": int(float(state["time"]) + UPDATE_KEEP_SECONDS)}
     installed = os.path.isdir(os.path.join(data_dir, "requests")) and os.path.exists("/etc/systemd/system/hm-update.path")
+    skipped = database.get_all_settings().get(UPDATE_SKIP_KEY) or ""
     return {"installed": installed, "current": APP_VERSION, "check": check, "last": last,
             "pending": {"check": pending_check, "work": pending_work}, "rollback": back,
+            "progress": update_progress(data_dir, pending_work), "skipped": skipped,
+            "waiting": update_waiting(check, skipped),
             "repository": "https://github.com/The-Flying-Pancake/Home_Monitor"}
+
+
+def _vt(v: Any) -> Tuple[int, ...]:
+    return tuple(int(x) for x in str(v).split(".")) if _VERSION_RE.fullmatch(str(v or "")) else (0, 0, 0)
+
+
+def demo_status() -> Dict[str, Any]:
+    """Settings, Demo data: shown only while the made-up devices from an install with demo data are on."""
+    if poller.demo is None:
+        return {"on": False, "devices": 0}
+    return poller.demo.status()
+
+
+def update_waiting(check: Optional[Dict[str, Any]], skipped: str) -> int:
+    """1 while a newer version is known and has not been skipped (the red number), else 0."""
+    if not check or not check.get("ok") or not check.get("newer"):
+        return 0
+    latest = check.get("latest")
+    if _vt(latest) <= _vt(APP_VERSION) or (skipped and _vt(latest) <= _vt(skipped)):
+        return 0
+    return 1
+
+
+def update_progress(data_dir: str, running: bool) -> Optional[Dict[str, Any]]:
+    """Which step the update is on (DATA/update-progress.json, written by root), only the known fields.
+    Shown while an update runs and for ten minutes after it ends."""
+    try:
+        with open(os.path.join(data_dir, "update-progress.json"), encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    ended = int(raw.get("finished") or 0)
+    if not running and raw.get("state") == "running" and time.time() - int(raw.get("time") or 0) > 3600:
+        return None      # left over from an update that never finished (the box restarted)
+    if ended and time.time() - ended > 600 and not running:
+        return None
+    steps = raw.get("steps") if isinstance(raw.get("steps"), dict) else {}
+    return {"state": str(raw.get("state") or "")[:10], "from": str(raw.get("from") or "")[:20], "to": str(raw.get("to") or "")[:20],
+            "started": int(raw.get("started") or 0), "finished": ended, "current": str(raw.get("current") or "")[:20],
+            "error": str(raw.get("error") or "")[:2000],
+            "steps": {s: str(steps.get(s) or "pending")[:10] for s in UPDATE_STEPS}}
+
+
+def update_history() -> List[Dict[str, Any]]:
+    """Every update, upgrade and rollback root recorded, newest first (no logs: those are fetched one by one)."""
+    try:
+        with open(UPDATE_HISTORY, encoding="utf-8") as f:
+            rows = json.load(f)
+    except (OSError, ValueError):
+        return []
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        if isinstance(r, dict) and isinstance(r.get("id"), int):
+            out.append({"id": r["id"], "time": int(r.get("time") or 0), "kind": str(r.get("kind") or "")[:20],
+                        "source": str(r.get("source") or "")[:10], "from": str(r.get("from") or "")[:20],
+                        "to": str(r.get("to") or "")[:20], "ok": bool(r.get("ok")), "error": str(r.get("error") or "")[:2000],
+                        "log": bool(r.get("log"))})
+    return out[:50]
+
+
+def update_history_log(entry_id: int) -> Optional[str]:
+    """The log of one history entry. Only a number that is in the history opens a file, and the file
+    name is made from that number here: nothing from the browser becomes part of a path."""
+    if not any(r["id"] == entry_id and r["log"] for r in update_history()):
+        return None
+    path = os.path.join(UPDATE_LOGS, f"{int(entry_id)}.log")
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, encoding="utf-8", errors="replace") as f:
+            return f.read(2 * 1024 * 1024)
+    except OSError:
+        return None
+
+
+def auto_update_check(now: Optional[float] = None) -> bool:
+    """Once a day, when Check for updates every day is on: ask root to look for a new version.
+    Returns whether it asked."""
+    now = time.time() if now is None else now
+    if (database.get_all_settings().get("update_auto_check") or "on") != "on":
+        return False
+    status = update_status()
+    if not status["installed"] or status["pending"]["check"] or status["pending"]["work"]:
+        return False
+    data_dir = os.path.dirname(os.path.abspath(database.DB_FILE))
+    last = max((status["check"] or {}).get("time") or 0, _request_time(data_dir, "update-check"))
+    if now - last < AUTO_CHECK_SECONDS:
+        return False
+    request_root_action("update-check")
+    return True
+
+
+def _auto_update_loop() -> None:
+    time.sleep(300)                  # let the monitor settle after a start
+    while True:
+        try:
+            auto_update_check()
+        except Exception:  # noqa: BLE001 (a failed check must never stop the loop)
+            log.exception("Daily update check")
+        time.sleep(3600)
 
 
 def _read_result(data_dir: str, kind: str) -> Optional[Dict[str, Any]]:
@@ -2601,13 +2718,39 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
                                        (f"{st['data_folder']} (identity {st['keys_source']}); " if st["enabled"] else "") + f"by {self.user.username}")
                     self._send_json(200, backup_status())
                     return
+                if path == "/api/demo/remove" and self.command == "POST":
+                    # Administrators only (an unlisted route), with the password (rbac.TIER_ROUTES).
+                    self._read_json()
+                    if not demo_status()["on"]:
+                        raise RequestError(409, "There is no demo data to remove")
+                    done = poller.demo.remove(log=log.info)
+                    # Nothing left: the setup guide runs again, to find the real network.
+                    fresh = not database.list_devices()
+                    if fresh:
+                        database.set_internal_setting(setup.COMPLETED_KEY, "")
+                    database.add_audit("system", "Demo data removed", f"{done['devices']} devices; by {self.user.username}")
+                    self._send_json(200, {"removed": done, "demo": demo_status(), "setup": fresh})
+                    return
                 if path.startswith("/api/updates/") and self.command == "POST":
                     # Administrators only (unlisted routes need the administrator role); installing and
                     # undoing also need the password and code (rbac.TIER_ROUTES). Root does the work.
                     body = self._read_json()
                     status = update_status()
+                    if path == "/api/updates/skip":
+                        version = str(body.get("version") or "")
+                        if not _VERSION_RE.fullmatch(version) or version != (status["check"] or {}).get("latest"):
+                            raise RequestError(409, "That is not the version waiting to be installed")
+                        database.set_internal_setting(UPDATE_SKIP_KEY, version)
+                        database.add_audit("system", f"Skipped update {version}", f"By {self.user.username}")
+                        self._send_json(200, update_status())
+                        return
+                    if path == "/api/updates/unskip":
+                        database.set_internal_setting(UPDATE_SKIP_KEY, "")
+                        database.add_audit("system", "Skipped update shown again", f"By {self.user.username}")
+                        self._send_json(200, update_status())
+                        return
                     if not status["installed"]:
-                        raise RequestError(409, "Update works on an installed monitor (infra.sh); this copy has no update helper")
+                        raise RequestError(409, "Update works on an installed monitor (home_monitor.sh); this copy has no update helper")
                     if status["pending"]["work"]:
                         raise RequestError(409, "An update or rollback is already running")
                     if path == "/api/updates/check":
@@ -3318,6 +3461,29 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, {"schema": list(SETTINGS.values())})
             return
 
+        if path == "/api/updates/summary":
+            # The red number on Settings: administrators only (they are the ones who can update).
+            if not self.user.is_admin:
+                self._send_json(200, {"waiting": 0})
+                return
+            u = update_status()
+            self._send_json(200, {"waiting": u["waiting"], "latest": (u["check"] or {}).get("latest"),
+                                  "running": bool(u["pending"]["work"])})
+            return
+
+        hist = re.fullmatch(r"/api/updates/history(?:/(\d{1,16})/log)?", path)
+        if hist:
+            if not self.user.is_admin:
+                raise RequestError(403, "Only administrators can see the update history")
+            if not hist.group(1):
+                self._send_json(200, {"history": update_history()})
+                return
+            text = update_history_log(int(hist.group(1)))
+            if text is None:
+                raise RequestError(404, "That log is no longer kept")
+            self._send_json(200, {"id": int(hist.group(1)), "log": text})
+            return
+
         if path == "/api/system":
             self._send_json(200, {
                 "version": APP_VERSION,
@@ -3331,6 +3497,7 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
                 "vault": self._vault_status(encrypted_items=database.count_encrypted_secrets()),
                 "backup": backup_status(),
                 "update": update_status(),
+                "demo": demo_status(),
             })
             return
 
@@ -5614,7 +5781,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.10.0"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:
@@ -5778,6 +5945,7 @@ def start_server() -> None:
 
     tls.load()
     threading.Thread(target=scheduler.run_forever, daemon=True, name="scheduler").start()
+    threading.Thread(target=_auto_update_loop, daemon=True, name="update-check").start()
 
     httpd = ThreadingServer((LISTEN_HOST, LISTEN_PORT), ApiRequestHandler)
     print(f"Server listening on {'https' if tls.SERVER.context else 'http'}://{LISTEN_HOST}:{LISTEN_PORT}")
