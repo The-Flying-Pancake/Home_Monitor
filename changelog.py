@@ -243,6 +243,9 @@ RELEASES: List[Dict[str, Any]] = [
         "When the new version was already in place but not yet checked, Undo stays open for two days to put the previous version and its data back.",
         "The problem report from the Proxmox host also shows the updater's own log.",
     ]},
+    {"id": 31, "date": "2026-11-08", "title": "Acknowledged problems have their own place", "items": [
+        "A problem you acknowledge has been seen to. It now leaves the dashboard and Current problems and waits under Acknowledged problems on the Devices page, with its note and an Unacknowledge button, until its cause clears.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 

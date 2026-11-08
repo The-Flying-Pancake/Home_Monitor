@@ -1183,7 +1183,19 @@ def t_ack(b):
     time.sleep(1.0)
     acked = [p for p in api("/api/problems")["problems"] if p["acknowledged_at"]]
     assert acked and acked[0]["ack_note"] == "ui-test", acked
-    return acked[0]["message"]
+    # Seen to, still true: it moves to Acknowledged problems, out of Current problems and off the dashboard.
+    key = json.dumps(acked[0]["problem_key"])
+    dev = int(acked[0]["device_id"])
+    sel = f"'[data-ack-device=\"{dev}\"][data-ack-key=' + JSON.stringify({key}) + ']'"
+    b.wait_for(f"!!document.querySelector('#acked-body ' + {sel})")
+    assert b.eval(f"!document.querySelector('#problems-body ' + {sel})"), "still in Current problems"
+    assert not b.eval("document.getElementById('acked-panel').classList.contains('hidden')")
+    goto(b, "#/dashboard")
+    b.wait_for("!!document.querySelector('#dash-grid [data-wid]')")
+    time.sleep(1.0)
+    assert b.eval(f"!document.querySelector('#dash-grid ' + {sel})"), "acknowledged problem still on the dashboard"
+    goto(b, "#/devices")
+    return acked[0]["message"] + "; moved to Acknowledged problems, off the dashboard"
 
 
 @check("Device page shows the LIVE badge")

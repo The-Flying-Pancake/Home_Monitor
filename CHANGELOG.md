@@ -15,6 +15,10 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 0.11.2: Release 31, Acknowledged problems have their own place (2026-11-08)
+
+- A problem you acknowledge has been seen to. It now leaves the dashboard and Current problems and waits under Acknowledged problems on the Devices page, with its note and an Unacknowledge button, until its cause clears.
+
 ### 0.11.1: Release 30, Updates that are cut short (2026-11-08)
 
 - Fixed: an update could fail with the new version unable to start, because the web port was still held by connections the old version had just closed. The new version now takes the port as soon as the old one has stopped. While it waits, the monitor no longer restarts over and over, which kept the processor busy.

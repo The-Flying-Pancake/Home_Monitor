@@ -64,7 +64,7 @@ chmod +x home_monitor.sh
     <li><strong>+ tag</strong> beside each name opens the tag manager for that device. When it has tags, a small bubble shows how many; hover over it to see them. See <a href="#/guide/groups">Groups and tags</a>.</li>
     <li><strong>Tick boxes</strong> next to the names select devices: then <em>Add tags</em>, <em>Remove tags</em> or <em>Delete selected</em> act on all of them.</li>
     <li><strong>Poll</strong> checks one device now; <strong>Poll all</strong> every device.</li>
-    <li><strong>Current problems</strong> above the list shows what is wrong now; <em>Acknowledge</em> marks one as seen (it stays until it is fixed). A <em>Device restarted</em> notice leaves this list after a minute.</li>
+    <li><strong>Current problems</strong> above the list shows what is wrong now and needs someone. <em>Acknowledge</em> (with an optional note) marks one as seen to: it stops reminders and moves to <strong>Acknowledged problems</strong> just below, where it stays until its cause clears. <em>Unacknowledge</em> brings it back. A <em>Device restarted</em> notice leaves the list after a minute.</li>
     <li>A small mark next to a status shows the device's worst open problem (<strong>!</strong>) or something that happened in the last half hour, such as a restart (<strong>i</strong>). Hover over it for what; click it for the device's events.</li>
   </ul>
 </section>
@@ -122,7 +122,7 @@ chmod +x home_monitor.sh
 <section id="dashboard" data-title="The dashboard">
   <h2>The dashboard</h2>
   <p>The first page: tiles for status, problems, availability, the internet connection, busy ports, wireless, device load and recent events, plus graph tiles for any device graph you choose. Click a tile's figures to open the data behind them.</p>
-  <p><strong>Active problems</strong> lists what is wrong now. A <em>Device restarted</em> notice (info) leaves it after a minute; warnings and worse stay until they are fixed. The restart stays on the device's own page for the first hour.</p>
+  <p><strong>Active problems</strong> lists what is wrong now and has not been acknowledged; once you acknowledge one it leaves the dashboard and waits under Acknowledged problems on the Devices page. A <em>Device restarted</em> notice (info) leaves it after a minute; warnings and worse stay until they are fixed. The restart stays on the device's own page for the first hour.</p>
   <h3>Several dashboards</h3>
   <ul>
     <li><strong>+ Add dashboard</strong> beside the title opens a window: give the dashboard a name, then pick <em>Blank</em> or one of 20 ready-made dashboards. Each card lists the tiles it brings.</li>

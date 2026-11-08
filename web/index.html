@@ -214,6 +214,16 @@
       </table>
     </div>
 
+    <div id="acked-panel" class="panel hidden">
+      <div class="panel-header-bar" data-collapse="acked" role="button" tabindex="0" aria-expanded="true">Acknowledged problems (<span id="acked-count">0</span>)<span class="dim panel-header-note"> seen to, still true: they leave when the cause clears</span></div>
+      <table id="tbl-acked" class="sortable">
+        <thead>
+          <tr><th data-type="num">Severity</th><th>Device</th><th>Problem</th></tr>
+        </thead>
+        <tbody id="acked-body"></tbody>
+      </table>
+    </div>
+
     <div class="section-header">
       <div class="detail-title">
         <span class="section-title">Monitored devices</span>

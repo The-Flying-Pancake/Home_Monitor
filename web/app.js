@@ -821,8 +821,24 @@ function renderFleet(allDevices, problems) {
   }
 
   const panel = document.getElementById("problems-panel");
-  const listed = shownProblems(problems);
+  const shown = shownProblems(problems);
+  const listed = shown.filter(p => !p.acknowledged_at);
+  const ackedList = shown.filter(p => p.acknowledged_at);
   const devById = Object.fromEntries(allDevices.map(d => [d.id, d]));
+  // Acknowledged: seen to, still true. Kept apart from the problems that need someone.
+  const ackedPanel = document.getElementById("acked-panel");
+  if (ackedList.length) {
+    show(ackedPanel);
+    document.getElementById("acked-count").textContent = String(ackedList.length);
+    fillTable("acked-body", ackedList.map(p => `
+      <tr class="acked">
+        <td data-sort="${SEVERITY_RANK[p.severity] ?? 3}">${severityPill(p.severity)}</td>
+        <td class="text-cell"><a class="device-link" href="#/device/${Number(p.device_id)}">${escapeHtml(p.hostname)}</a></td>
+        <td class="text-cell">${escapeHtml(p.message)} <span class="dim">for ${escapeHtml(formatSince(p.since))}</span>${ackLabel(p)} ${ackButton(p)}</td>
+      </tr>`).join(""), "", 3);
+  } else {
+    hide(ackedPanel);
+  }
   if (listed.length) {
     show(panel);
     fillTable("problems-body", listed.map(p => `
@@ -4448,13 +4464,13 @@ const DASH_RENDER = {
   },
 
   problems(w, body, sub) {
-    const list = dashData.problems;
-    const open = list.filter(isOpenProblem).length;
-    const acked = list.filter(p => p.acknowledged_at).length;
-    sub.textContent = list.length ? `${open} open${acked ? `, ${acked} acknowledged` : ""}` : "";
+    // Only what still needs someone: an acknowledged problem has been seen to, so it lives on the
+    // Devices page (Acknowledged problems) and the device's own page, not here.
+    const list = shownProblems(dashData.problems).filter(p => !p.acknowledged_at);
+    sub.textContent = list.length ? `${list.length} open` : "";
     body.classList.add("flush");
     if (!list.length) {
-      body.innerHTML = `<div class="ok-state">No active problems. All ${dashData.devices.length} devices are healthy.</div>`;
+      body.innerHTML = `<div class="ok-state">Nothing needs attention.</div>`;
       return;
     }
     body.innerHTML = `<table><tbody>${list.map(p => `
