@@ -82,7 +82,7 @@ async function chartZoom(host, t0, t1) {
   if (src && t1 - t0 < fetchedSpan / 3) {
     try {
       const keys = src.g.series.map(s => s[0]);
-      const q = `keys=${keys.join(",")}&hours=${src.hours}&start=${Math.floor(t0)}&end=${Math.ceil(t1)}` +
+      const q = `keys=${keys.map(encodeURIComponent).join(",")}&hours=${encodeURIComponent(src.hours)}&start=${Math.floor(t0)}&end=${Math.ceil(t1)}` +
         (src.compare ? `&compare=1&shift=${src.hours * 3600}` : "");
       const hist = await api(`/api/devices/${src.deviceId}/history?${q}`);
       const series = src.g.series.map(([k, label]) => ({ key: k, label, points: hist.series[k] || [] }));
@@ -124,7 +124,7 @@ function openChartModal(host) {
     <div class="modal-body">
       ${src ? `<div class="toolbar">
         <span class="dim">Range:</span>
-        <div class="seg">${CHART_RANGES.map(([h, l]) => `<button type="button" class="btn${h === hours ? " active" : ""}" data-hours="${h}">${l}</button>`).join("")}</div>
+        <div class="seg">${CHART_RANGES.map(([h, l]) => `<button type="button" class="btn${h === hours ? " active" : ""}" data-hours="${escapeHtml(h)}">${escapeHtml(l)}</button>`).join("")}</div>
         <label class="checkbox-label inline"><input type="checkbox" data-compare ${compare ? "checked" : ""}> Compare with the previous period</label>
         <span class="dim">Drag across the graph to zoom in.</span>
       </div>` : `<div class="toolbar"><span class="dim">Drag across the graph to zoom in.</span></div>`}

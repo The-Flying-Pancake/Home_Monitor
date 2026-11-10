@@ -57,16 +57,16 @@ function guideBuild(body) {
   hero.className = "guide-hero";
   hero.innerHTML = `<div class="guide-hero-text"><div class="guide-hero-title">How the monitor works</div>
       <div class="guide-hero-lead">Everything the monitor does, one page per topic. Search on the left, or start with a chapter.</div></div>
-    <div class="guide-chapters">${GUIDE_CHAPTERS.map(c => `<a class="guide-chapter" data-tone="${c.tone}" href="#/guide/${c.sections[0]}">
+    <div class="guide-chapters">${GUIDE_CHAPTERS.map(c => `<a class="guide-chapter" data-tone="${escapeHtml(c.tone)}" href="#/guide/${escapeHtml(c.sections[0])}">
       <span class="guide-chapter-title">${escapeHtml(c.title)}</span><span class="guide-chapter-blurb">${escapeHtml(c.blurb)}</span>
       <span class="guide-chapter-count">${c.sections.filter(id => body.querySelector(`section[id="${id}"]`)).length} topics</span></a>`).join("")}</div>`;
   body.prepend(hero);
   const byChapter = {};
   sections.forEach((s, i) => (byChapter[guideChapterOf(s.id).id] = byChapter[guideChapterOf(s.id).id] || []).push([s, i]));
   const chapters = [...GUIDE_CHAPTERS, { id: "more", title: "More", tone: "gray" }].filter(c => byChapter[c.id]);
-  document.getElementById("guide-toc").innerHTML = chapters.map(c => `<div class="guide-toc-group" data-tone="${c.tone}" data-chapter="${c.id}">
+  document.getElementById("guide-toc").innerHTML = chapters.map(c => `<div class="guide-toc-group" data-tone="${escapeHtml(c.tone)}" data-chapter="${escapeHtml(c.id)}">
       <div class="guide-toc-head">${escapeHtml(c.title)}</div>
-      ${byChapter[c.id].map(([s, i]) => `<a href="#/guide/${s.id}" data-guide-link="${s.id}"><span class="guide-toc-num">${i + 1}</span>${escapeHtml(s.dataset.title || s.id)}</a>`).join("")}
+      ${byChapter[c.id].map(([s, i]) => `<a href="#/guide/${escapeHtml(s.id)}" data-guide-link="${escapeHtml(s.id)}"><span class="guide-toc-num">${Number(i) + 1}</span>${escapeHtml(s.dataset.title || s.id)}</a>`).join("")}
     </div>`).join("");
 }
 

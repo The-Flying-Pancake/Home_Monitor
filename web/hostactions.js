@@ -21,10 +21,12 @@ const HA_STATUS = { running: ["status-unknown", "running"], ok: ["status-ok", "d
 
 function haPill(status) {
   const [cls, text] = HA_STATUS[status] || ["status-unknown", status || "?"];
-  return `<span class="status-pill ${cls}">${escapeHtml(text)}</span>`;
+  return `<span class="status-pill ${escapeHtml(cls)}">${escapeHtml(text)}</span>`;
 }
 
 function haAllowed() { return !document.body.classList.contains("lacks-automation-run"); }
+/** Running an action logs in with a stored credential: Run workflows and Use stored credentials. */
+function haCanRun() { return haAllowed() && !document.body.classList.contains("lacks-credentials-use"); }
 /** Linux hosts polled over SNMP (Proxmox hosts use the same template); not port checks. */
 function haEligible(d) { return !!d && d.profile_id === "linux_host" && !d.service_port; }
 
@@ -57,8 +59,8 @@ function haFits(key) {
 
 /** The Fix... button on a problem: Linux hosts only, problems an action helps with, users who may run actions. */
 function haProblemButton(p, device) {
-  if (!haAllowed() || !haEligible(device) || !p.problem_key || !haFits(p.problem_key)) return "";
-  return ` <button class="btn btn-ack" data-perm="automation.run" data-ha-device="${Number(p.device_id)}" data-ha-problem="${escapeHtml(p.problem_key)}"` +
+  if (!haCanRun() || !haEligible(device) || !p.problem_key || !haFits(p.problem_key)) return "";
+  return ` <button class="btn btn-ack" data-perm="automation.run credentials.use" data-ha-device="${Number(p.device_id)}" data-ha-problem="${escapeHtml(p.problem_key)}"` +
     ` data-ha-message="${escapeHtml(p.message)}" title="Checks and fixes for this problem, run on the host over SSH">Fix...</button>`;
 }
 
@@ -93,12 +95,22 @@ async function openHostActions(deviceId, problemKey = "", message = "", runId = 
   document.getElementById("ha-nocred").classList.toggle("hidden", !none);
   document.getElementById("ha-form").classList.toggle("hidden", none);
   document.getElementById("ha-hostkey").classList.toggle("hidden", none || view.device.host_key);
+  haRunAs();
   const prob = document.getElementById("ha-problem");
   prob.textContent = message ? `For the problem: ${message}` : "";
   prob.classList.toggle("hidden", !message);
   show(document.getElementById("modal-hostact"));
   if (runId || view.running) haWatch(runId || view.running);
   else haShowList();
+}
+
+/** Who the commands run as: the chosen credential's user and its name. */
+function haRunAs() {
+  const line = document.getElementById("ha-runas");
+  const id = parseInt(document.getElementById("ha-cred").value, 10);
+  const c = ((autoData && autoData.credentials) || []).find(x => x.id === id);
+  line.textContent = c ? `Runs as ${c.username || "root"} using the credential ${c.name}.` : "";
+  line.classList.toggle("hidden", !c);
 }
 
 function haItem(a, choice) {
@@ -323,7 +335,7 @@ async function loadHostActionRuns() {
     const r = await api("/api/host-actions/runs");
     fillTable("ha-runs-body", r.runs.map(x => `
       <tr class="clickable-row" data-ha-run="${Number(x.id)}" data-ha-run-device="${Number(x.device_id)}">
-        <td data-sort="${x.started_at}">${escapeHtml(formatTime(x.started_at))}</td>
+        <td data-sort="${escapeHtml(x.started_at)}">${escapeHtml(formatTime(x.started_at))}</td>
         <td class="text-cell">${escapeHtml(x.hostname)}</td>
         <td class="text-cell">${escapeHtml(x.name)}${x.choice ? ` <span class="dim">(${escapeHtml(x.choice)})</span>` : ""}</td>
         <td class="dim">${escapeHtml(x.username || "")}</td>
@@ -353,7 +365,7 @@ function initHostActions() {
     clearTimeout(haTimer);
     if (ha.view === "run" || ha.view === "detail") {
       // Refresh the recent runs before going back to the list.
-      api(`/api/host-actions?device_id=${ha.device.id}&problem=${encodeURIComponent(ha.problemKey || "")}`)
+      api(`/api/host-actions?device_id=${Number(ha.device.id)}&problem=${encodeURIComponent(ha.problemKey || "")}`)
         .then(v => { if (ha) { ha.runs = v.runs || []; haShowList(); } }).catch(() => haShowList());
     }
   });
@@ -374,6 +386,7 @@ function initHostActions() {
   document.getElementById("btn-ha-preview").addEventListener("click", haPreview);
   document.getElementById("btn-ha-run").addEventListener("click", haRun);
   document.getElementById("btn-ha-workflow").addEventListener("click", haWorkflow);
+  document.getElementById("ha-cred").addEventListener("change", haRunAs);
   document.getElementById("btn-ha-hostkey").addEventListener("click", async () => {
     await openHostKeys({ device_ids: [ha.device.id], ssh_port: haBody().ssh_port });
     hide(document.getElementById("ha-hostkey"));

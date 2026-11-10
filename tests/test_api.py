@@ -1,9 +1,13 @@
 """HTTP security controls and input validation of the REST API."""
 
+import socket
+import threading
+import time
+import types
 import unittest
 from unittest import mock
 
-from tests import _env  # noqa: F401
+from tests import _env
 from tests.helpers import add_device, request, start_api_server
 
 import database
@@ -170,6 +174,195 @@ class LanListenTests(unittest.TestCase):
                 self.assertFalse(server.host_allowed(bad), bad)
         # On a workstation only the local names pass.
         self.assertFalse(server.host_allowed(f"192.168.1.201:{port}"))
+
+
+class ServerLimitTests(unittest.TestCase):
+    """Read limits and the connection cap, on real sockets against a server of their own with small limits."""
+
+    @classmethod
+    def setUpClass(cls):
+        start_api_server()
+
+    def setUp(self):
+        self.httpd = server.ThreadingServer(("127.0.0.1", 0), server.ApiRequestHandler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.socks = []
+
+    def tearDown(self):
+        for s in self.socks:
+            try:
+                s.close()
+            except OSError:
+                pass
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def connect(self):
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        self.socks.append(s)
+        return s
+
+    def wait_open(self, n, seconds=3.0):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end and self.httpd.open_connections() != n:
+            time.sleep(0.02)
+        self.assertEqual(self.httpd.open_connections(), n)
+
+    @staticmethod
+    def closed_within(s, seconds):
+        """Reads until the server closes; returns (seconds taken, bytes received), or None if still open."""
+        s.settimeout(seconds)
+        started = time.monotonic()
+        got = b""
+        try:
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    return time.monotonic() - started, got
+                got += chunk
+        except (ConnectionResetError, ConnectionAbortedError):
+            return time.monotonic() - started, got
+        except TimeoutError:
+            return None
+
+    def get_status(self, path="/api/auth/status"):
+        s = self.connect()
+        s.sendall(f"GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{_env.PORT}\r\n\r\n".encode())
+        result = self.closed_within(s, 5)
+        self.assertIsNotNone(result)
+        return int(result[1].split(b" ", 2)[1]) if result[1] else None
+
+    def test_slow_request_line_disconnected(self):
+        with mock.patch.object(server, "READ_IDLE_SECONDS", 0.4):
+            s = self.connect()
+            s.sendall(b"GET /api/auth/sta")
+            result = self.closed_within(s, 3)
+        self.assertIsNotNone(result, "a half request line kept the connection open")
+        self.assertLess(result[0], 2)
+
+    def test_drip_fed_headers_disconnected(self):
+        with mock.patch.object(server, "READ_IDLE_SECONDS", 2), mock.patch.object(server, "READ_TOTAL_SECONDS", 0.5):
+            s = self.connect()
+            started = time.monotonic()
+            closed = False
+            for b in f"GET / HTTP/1.0\r\nHost: 127.0.0.1:{_env.PORT}\r\nX-Slow: {'a' * 40}".encode():
+                try:
+                    s.sendall(bytes([b]))
+                except OSError:
+                    closed = True
+                    break
+                if self.closed_within(s, 0.1) is not None:
+                    closed = True
+                    break
+            took = time.monotonic() - started
+        self.assertTrue(closed, "a drip-fed request was never cut off")
+        self.assertLess(took, 2)
+
+    def test_slow_body_gets_408(self):
+        with mock.patch.object(server, "READ_IDLE_SECONDS", 0.3), mock.patch.object(server, "READ_TOTAL_SECONDS", 1):
+            s = self.connect()
+            s.sendall((f"POST /api/auth/login HTTP/1.0\r\nHost: 127.0.0.1:{_env.PORT}\r\n"
+                       "Content-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"user").encode())
+            result = self.closed_within(s, 5)
+        self.assertIsNotNone(result)
+        self.assertIn(b" 408 ", result[1].split(b"\r\n", 1)[0])
+        self.assertIn(server.SLOW_REQUEST_TEXT.encode(), result[1])
+
+    def test_http10_has_no_keep_alive(self):
+        self.assertEqual(server.ApiRequestHandler.protocol_version, "HTTP/1.0")
+        s = self.connect()
+        s.sendall(f"GET /api/auth/status HTTP/1.1\r\nHost: 127.0.0.1:{_env.PORT}\r\nConnection: keep-alive\r\n\r\n".encode())
+        result = self.closed_within(s, 3)
+        self.assertIsNotNone(result, "the connection stayed open after the reply")
+        self.assertIn(b" 200 ", result[1].split(b"\r\n", 1)[0])
+
+    def test_thread_cap_holds(self):
+        self.httpd.local_client = staticmethod(lambda addr: False)
+        with mock.patch.object(server, "MAX_CONNECTIONS", 3), mock.patch.object(server, "READ_IDLE_SECONDS", 5):
+            before = threading.active_count()
+            for _ in range(3):
+                self.connect()
+            self.wait_open(3)
+            started = time.monotonic()
+            fourth = self.connect()
+            result = self.closed_within(fourth, 3)
+            self.assertIsNotNone(result)
+            self.assertLess(time.monotonic() - started, 1.5)
+            self.assertIn(b" 503 ", result[1].split(b"\r\n", 1)[0])
+            self.assertIn(b"Retry-After: 5", result[1])
+            self.assertIn(server.BUSY_TEXT.encode(), result[1])
+            self.assertLessEqual(threading.active_count() - before, 3)
+            self.assertEqual(self.httpd.open_connections(), 3)
+
+    def test_slot_is_given_back(self):
+        self.httpd.local_client = staticmethod(lambda addr: False)
+        with mock.patch.object(server, "MAX_CONNECTIONS", 3), mock.patch.object(server, "READ_IDLE_SECONDS", 5):
+            held = [self.connect() for _ in range(3)]
+            self.wait_open(3)
+            for s in held:
+                s.close()
+            self.wait_open(0)
+            self.assertEqual(self.get_status(), 200)
+
+    def test_per_address_cap(self):
+        self.httpd.local_client = staticmethod(lambda addr: False)
+        with mock.patch.object(server, "MAX_CONNECTIONS", 10), mock.patch.object(server, "MAX_PER_ADDRESS", 2), \
+                mock.patch.object(server, "READ_IDLE_SECONDS", 5):
+            self.connect()
+            self.connect()
+            self.wait_open(2)
+            result = self.closed_within(self.connect(), 3)
+        self.assertIsNotNone(result)
+        self.assertIn(b" 503 ", result[1])
+
+    def test_local_clients_get_extra_slots(self):
+        remote = {"on": True}
+        self.httpd.local_client = staticmethod(lambda addr: not remote["on"])
+        with mock.patch.object(server, "MAX_CONNECTIONS", 2), mock.patch.object(server, "READ_IDLE_SECONDS", 5):
+            self.connect()
+            self.connect()
+            self.wait_open(2)
+            refused = self.closed_within(self.connect(), 3)
+            self.assertIn(b" 503 ", refused[1])
+            remote["on"] = False   # this machine: a health check still answers
+            self.assertEqual(self.get_status(), 200)
+
+    def test_thread_start_failure_is_safe(self):
+        class NoStart(threading.Thread):
+            def start(self):
+                raise RuntimeError("can't start new thread")
+        fake = types.SimpleNamespace(**{k: getattr(threading, k) for k in dir(threading) if not k.startswith("__")})
+        fake.Thread = NoStart
+        with mock.patch.object(server, "threading", fake):
+            result = self.closed_within(self.connect(), 3)
+            self.assertIsNotNone(result)
+            self.assertIn(b" 503 ", result[1])
+            self.assertEqual(self.httpd.open_connections(), 0)
+        self.assertEqual(self.get_status(), 200)
+        self.wait_open(0)
+
+
+class RetentionSettingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        start_api_server()
+
+    def test_audit_retention_below_floor_refused(self):
+        status, body, _ = request("POST", "/api/settings", {"audit_retention_days": "30"})
+        self.assertEqual(status, 400, body)
+        self.assertEqual(server.get_setting({"audit_retention_days": "5"}, "audit_retention_days"), 90)
+        self.assertEqual(request("POST", "/api/settings", {"event_retention_days": "30"})[0], 200)
+        request("POST", "/api/settings", {"event_retention_days": "90"})
+
+    def test_retention_change_is_audited(self):
+        from tests.helpers import TEST_USER
+        self.assertEqual(request("POST", "/api/settings", {"audit_retention_days": "100"})[0], 200)
+        self.assertEqual(request("POST", "/api/settings", {"audit_retention_days": "90"})[0], 200)
+        rows = database.list_audit_filtered(q="Audit log retention changed")[0]
+        self.assertEqual([(r["message"], r["actor"]) for r in rows[:2]],
+                         [("Audit log retention changed from 100 to 90 days", TEST_USER),
+                          ("Audit log retention changed from 90 to 100 days", TEST_USER)])
 
 
 if __name__ == "__main__":

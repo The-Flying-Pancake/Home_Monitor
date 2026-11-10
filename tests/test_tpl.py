@@ -1,11 +1,22 @@
 """The message template engine shared by every Telegram text."""
 
+import time
+import tracemalloc
 import unittest
+from unittest import mock
 
 from tests import _env  # noqa: F401
+from tests.helpers import request, session_cookie, start_api_server
 
+import auth
+import botcmds
 import notify
+import server
+import telebot
 import tpl
+import workflows
+
+PASSWORD = "template preview passphrase"
 
 V = {"up": 15, "total": 16, "down": 1, "down_list": "Down: NAS", "cpu": "34.6%", "state": "down", "ping": "",
      "list": "b 3\na 10\nc 2", "memory": "61%", "problems": 0, "count": 3, "name": "nas-01", "metric:temp.cpu-0": "55.5"}
@@ -79,6 +90,173 @@ class EngineTests(unittest.TestCase):
         for what, ex in tpl.TRICKS:
             out = tpl.render(ex, V, known=set(V) | {"problem", "list"})
             self.assertNotIn("{?", out, (what, ex, out))
+
+
+# Each replace makes every "n" twenty: 1, 20, 400, 8000, then 160,000 characters.
+GROW = "{device" + ("|replace:n:" + "n" * 20) * 5 + "}"
+GROW_VALUES = {"device": "nas-01"}
+
+
+def peak_of(fn):
+    """(result, peak bytes traced while fn runs, seconds)."""
+    tracemalloc.start()
+    t0 = time.monotonic()
+    try:
+        out = fn()
+        return out, tracemalloc.get_traced_memory()[1], time.monotonic() - t0
+    finally:
+        tracemalloc.stop()
+
+
+class LimitTests(unittest.TestCase):
+    MIB = 1024 * 1024
+
+    def test_replace_prediction_boundary(self):
+        v = "a" * (tpl.MAX_WORK // 2)
+        self.assertEqual(len(tpl.render("{v|replace:a:aa}", {"v": v}, max_len=10 ** 6, strict=True)), tpl.MAX_WORK)
+        with self.assertRaises(tpl.TemplateLimit):
+            tpl.render("{v|replace:a:aa}", {"v": v + "a"}, strict=True)
+
+    def test_chained_replace_is_stopped_cheaply(self):
+        out, peak, took = peak_of(lambda: tpl.render(GROW, GROW_VALUES))
+        self.assertEqual(out, tpl.FALLBACK)
+        self.assertLess(peak, 2 * self.MIB)
+        self.assertLess(took, 1)
+
+    def test_join_growth_is_bounded(self):
+        lines = "\n".join(f"line {i}" for i in range(2000))
+        out, peak, _ = peak_of(lambda: tpl.render('{v|join:"' + "-" * 1000 + '"}', {"v": lines}))
+        self.assertEqual(out, tpl.FALLBACK)
+        self.assertLess(peak, 2 * self.MIB)
+
+    def test_other_filters_checked_after(self):
+        with self.assertRaises(tpl.TemplateLimit):
+            tpl.render("{v|upper}", {"v": "ß" * tpl.MAX_WORK}, strict=True)
+
+    def test_line_cap(self):
+        many = "\n".join(str(i) for i in range(3000))
+        self.assertEqual(len(tpl.render("{v|sort}", {"v": many}, max_len=10 ** 6).split("\n")), tpl.MAX_LINES)
+        self.assertEqual(len(tpl.render("{v|unique}", {"v": many}, max_len=10 ** 6).split("\n")), tpl.MAX_LINES)
+        self.assertEqual(len(tpl.render("{v|join}", {"v": many}, max_len=10 ** 6).split(", ")), tpl.MAX_LINES)
+        self.assertEqual(tpl.render("{v|count}", {"v": many}), "3000")
+
+    def test_long_value_is_clipped_not_refused(self):
+        self.assertEqual(tpl.render("{v|truncate:5}", {"v": "x" * (tpl.MAX_WORK + 10)}), "xxxx…")
+
+    def test_total_budget(self):
+        big = {"v": "x" * tpl.MAX_WORK}
+        out, peak, _ = peak_of(lambda: tpl.render("{v|upper}" * 25, big))
+        self.assertEqual(out, tpl.FALLBACK)
+        self.assertLess(peak, 8 * self.MIB)
+        self.assertNotEqual(tpl.render("{v|upper}" * 3, big), tpl.FALLBACK)      # within the budget
+
+    def test_fallback_and_logged_once(self):
+        text = GROW + " logged once " + str(time.time())
+        with self.assertLogs("tpl", level="WARNING") as logs:
+            for _ in range(3):
+                self.assertEqual(tpl.render(text, GROW_VALUES), tpl.FALLBACK)
+        self.assertEqual(len(logs.records), 1)
+        self.assertNotIn("replace:n", logs.output[0])
+        self.assertNotIn("logged once", logs.output[0])
+
+    def test_overflow_is_a_mark(self):
+        vals = {"x": "1" * 400, "l": "a\nb"}
+        for t in ("{x|int}", "{x|fixed:0}", "{= floor(x)}", "{l|first:1e999}", "{if floor(x) > 1}y{end}"):
+            out = tpl.render(t, vals)
+            self.assertIn("{?", out, t)
+
+    def test_deep_brackets_are_a_mark(self):
+        self.assertIn("{?", tpl.render("{= " + "(" * 190 + "}", {}))
+        self.assertIn("{?", tpl.render("{if " + "(" * 190 + "}x{end}", {}))
+
+
+class CallerTests(unittest.TestCase):
+    def test_notify_render_fallback(self):
+        stored = GROW + " " * (500 - len(GROW))
+        self.assertEqual(notify.render(stored, GROW_VALUES), tpl.FALLBACK)
+
+    def test_notifier_event_uses_builtin_text(self):
+        n = notify.Notifier(lambda: {"telegram_enabled": "on", "notify_tpl_device_offline": GROW},
+                            sender=lambda *a, **k: None)
+        queued = []
+        with mock.patch.object(notify, "queue_message", side_effect=lambda text, *a, **k: queued.append(text) or 1):
+            n.event("device_offline", {"device": "nas-01", "ip": "192.0.2.5", "problem": ""})
+        self.assertEqual(len(queued), 1)
+        first, rest = queued[0].split("\n", 1)
+        self.assertEqual(first, notify.TOO_LONG_NOTE)
+        self.assertIn("nas-01 (192.0.2.5) is offline.", rest)
+
+    def test_telebot_fill_fallback(self):
+        self.assertEqual(telebot.fill(GROW, GROW_VALUES), tpl.FALLBACK)
+
+    def test_custom_command_fallback(self):
+        calls = []
+
+        def fill(text, values):
+            calls.append(text)
+            return telebot.fill(text, values)
+        items = [{"_name": f"d{i}", "device": f"nas-{i}"} for i in range(50)]
+        spec = {"gather": lambda c, now: ({}, items), "label": "test"}
+        with mock.patch.dict(botcmds.SOURCES, {"devices": dict(botcmds.SOURCES["devices"], **spec)}):
+            out = botcmds.render({"name": "x", "source": "devices", "header": "", "line": GROW, "footer": "{count}"},
+                                 fill=fill)
+        self.assertEqual(out, tpl.FALLBACK)
+        self.assertEqual(len(calls), 1)
+
+    def test_workflow_step_fallback(self):
+        sent = []
+        with mock.patch.object(workflows, "send_telegram", side_effect=lambda text: sent.append(text) or 1), \
+                mock.patch.object(workflows, "_telegram_values", return_value=dict(GROW_VALUES)):
+            ok, detail = workflows.WorkflowRun._telegram(object(), {"type": "telegram", "text": GROW})
+        self.assertTrue(ok)
+        self.assertEqual(sent, [tpl.FALLBACK])
+
+
+class RouteTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        start_api_server()
+        for name, role, perms in (("tpl-viewer", "viewer", None), ("tpl-op", "operator", None),
+                                  ("tpl-notify", "custom", ["settings.notifications"]),
+                                  ("tpl-auto", "custom", ["automation.edit"])):
+            body = {"username": name, "password": PASSWORD, "role": role}
+            if perms is not None:
+                body["permissions"] = perms
+            status, resp, _ = request("POST", "/api/users", body)
+            assert status == 201, resp
+
+    def login(self, name):
+        status, body, headers = request("POST", "/api/auth/login", {"username": name, "password": PASSWORD}, session=False)
+        self.assertEqual(status, 200, body)
+        return session_cookie(headers)
+
+    def preview(self, cookie, text="{device}", values=None):
+        return request("POST", "/api/template/render", {"text": text, "values": values or GROW_VALUES},
+                       headers={"Cookie": f"{auth.SESSION_COOKIE}={cookie}"}, session=False)
+
+    def test_chained_replace_returns_error_quickly(self):
+        cookie = self.login("tpl-notify")
+        (status, body, _), peak, took = peak_of(lambda: self.preview(cookie, GROW))
+        self.assertEqual(status, 400, body)
+        self.assertIn("too long to build", body["error"])
+        self.assertLess(took, 2)
+        self.assertLess(peak, 16 * 1024 * 1024)
+
+    def test_viewer_403_editors_200(self):
+        self.assertEqual(self.preview(self.login("tpl-viewer"))[0], 403)
+        self.assertEqual(self.preview(self.login("tpl-op"))[0], 403)
+        status, body, _ = self.preview(self.login("tpl-notify"))
+        self.assertEqual((status, body["text"]), (200, "nas-01"))
+        self.assertEqual(self.preview(self.login("tpl-auto"))[0], 200)
+
+    def test_rate_limit_per_session(self):
+        first, second = self.login("tpl-auto"), self.login("tpl-auto")
+        for i in range(server.TEMPLATE_PREVIEW_LIMIT):
+            self.assertEqual(self.preview(first)[0], 200, i)
+        status, body, _ = self.preview(first)
+        self.assertEqual(status, 429, body)
+        self.assertIn("Too many previews", body["error"])
+        self.assertEqual(self.preview(second)[0], 200)
 
 
 if __name__ == "__main__":

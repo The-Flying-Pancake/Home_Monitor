@@ -122,11 +122,24 @@
   </header>
   <div class="app-content" id="app-content">
 
+  <!-- Required 2FA (Settings, Login security): shown over everything until it is set up. -->
+  <div id="enrol-screen" class="auth-screen hidden">
+    <div class="auth-card enrol-card">
+      <div class="brand">Network Monitor & Automation</div>
+      <div class="auth-title">Set up two-factor authentication</div>
+      <div class="form-help">This monitor requires a code from an authenticator app for your account. Set it up now to continue.</div>
+      <div id="enrol-body"></div>
+      <div class="form-help">No phone to hand? Log out and ask an administrator. An administrator with no way in can run <code>/root/reset-admin.sh</code> on the container.</div>
+      <button type="button" class="btn" id="enrol-logout">Log out</button>
+    </div>
+  </div>
+
   <!-- Login / first-run account setup. Shown over everything until a session exists. -->
   <div id="auth-screen" class="auth-screen hidden">
     <form id="auth-form" class="auth-card" autocomplete="on">
       <div class="brand">Network Monitor & Automation</div>
       <div class="auth-title" id="auth-title">Log in</div>
+      <div class="auth-warning hidden" id="auth-https-lost">HTTPS could not start on this monitor, so logging in from another computer is switched off. This keeps your password from crossing the network unprotected. Monitoring and alerts keep running. To get back in, open the monitor's container, run <code>/root/update.sh</code> and choose option 6. You can then set up HTTPS again in Settings, HTTPS.</div>
       <div class="form-help hidden" id="auth-setup-help">No administrator account exists yet. Choose a username and a password of at least <span id="auth-min"></span> characters. Keep the password in your password manager. If it is ever lost, <code>/root/reset-admin.sh</code> on the container sets a new one.</div>
       <div class="auth-fields" id="auth-fields">
         <div class="form-group">
@@ -185,7 +198,7 @@
       <div class="dash-switch">
         <span class="section-title page-title" id="dash-title">Dashboard</span>
         <select id="dash-pick" class="hidden" title="Switch to another dashboard" aria-label="Switch dashboard"></select>
-        <button id="dash-new" data-perm="dashboard.edit" class="btn" title="A blank dashboard or one of the ready-made ones">+ Add dashboard</button>
+        <button id="dash-new" data-perm="dashboard.edit" data-unscoped class="btn" title="A blank dashboard or one of the ready-made ones">+ Add dashboard</button>
       </div>
       <div class="dash-toolbar">
         <span class="dim hidden" id="dash-edit-hint">Drag a tile by its header to move it, or by its bottom-right corner to resize it.</span>
@@ -194,7 +207,7 @@
         <button id="dash-rename" class="btn hidden" title="Rename this dashboard">Rename</button>
         <button id="dash-reset" class="btn hidden">Reset to default</button>
         <button id="dash-delete" class="btn btn-danger hidden" title="Delete this dashboard">Delete</button>
-        <button id="dash-edit" data-perm="dashboard.edit" class="btn">Edit dashboard</button>
+        <button id="dash-edit" data-perm="dashboard.edit" data-unscoped class="btn">Edit dashboard</button>
       </div>
     </div>
     <div class="dash-grid" id="dash-grid"></div>
@@ -284,7 +297,7 @@
       <div class="detail-actions">
         <button id="btn-live" data-perm="devices.poll" class="live-pill" title="Live mode: polls this device every few seconds while the page is open. Live samples are kept in memory only.">LIVE</button>
         <button id="btn-detail-poll" data-perm="devices.poll" class="btn btn-primary" title="Check this device now">Poll now</button>
-        <button id="btn-detail-hostact" data-perm="automation.run" class="btn hidden" title="Checks, clean-ups and restarts for this Linux host, run once over SSH">Host actions</button>
+        <button id="btn-detail-hostact" data-perm="automation.run credentials.use" class="btn hidden" title="Checks, clean-ups and restarts for this Linux host, run once over SSH">Host actions</button>
         <button id="btn-detail-fixsnmp" data-perm="devices.manage" class="btn hidden" title="Widen this host's snmpd view so interfaces, CPU, memory and storage are visible">Fix SNMP</button>
         <button id="btn-detail-maint" data-perm="problems.ack" class="btn" title="Planned work: keep this device's alerts quiet for a while">Maintenance</button>
         <button id="btn-detail-alerts" data-perm="settings.alerts" class="btn" title="Thresholds, severities and Telegram choices for this device">Alert rules</button>
@@ -713,7 +726,7 @@
     </div>
     <div class="section-header" data-perm="automation.run">
       <span class="section-title">Host actions</span>
-      <select id="ha-host-pick" class="ha-host-pick" aria-label="Run a host action on"></select>
+      <select id="ha-host-pick" class="ha-host-pick" data-perm="credentials.use" aria-label="Run a host action on"></select>
     </div>
     <div class="panel" data-perm="automation.run">
       <div class="panel-note-bar">Fixed maintenance jobs for Linux hosts, run once over SSH: checks that change nothing, clean-ups that show what they would remove first and restarts you confirm by typing the host's name. They also open from a host's page and from its problems (Fix...). Any of them can be saved as a workflow to repeat on a schedule.</div>
@@ -789,7 +802,7 @@
             <input type="number" id="fixsnmp-port" value="22" min="1" max="65535">
           </div>
         </div>
-        <div id="fixsnmp-hostkey" class="text-warn hidden">This host's SSH key is not approved yet. <button type="button" class="btn" id="btn-fixsnmp-hostkey">Review host key</button></div>
+        <div id="fixsnmp-hostkey" class="text-warn hidden">This host's SSH key is not approved yet. <button type="button" class="btn" id="btn-fixsnmp-hostkey" data-perm="credentials.manage">Review host key</button><span class="hk-ask">Someone with the Manage credentials permission needs to approve it.</span></div>
         <ul id="fixsnmp-changes" class="fixsnmp-changes"></ul>
         <div id="fixsnmp-file" class="hidden">
           <div class="output-label">New /etc/snmp/snmpd.conf <span class="dim">(the community is hidden here; the real one is written)</span></div>
@@ -834,7 +847,8 @@
             <input type="number" id="ha-port" value="22" min="1" max="65535">
           </div>
         </div>
-        <div id="ha-hostkey" class="text-warn hidden">This host's SSH key is not approved yet. <button type="button" class="btn" id="btn-ha-hostkey">Review host key</button></div>
+        <div id="ha-hostkey" class="text-warn hidden">This host's SSH key is not approved yet. <button type="button" class="btn" id="btn-ha-hostkey" data-perm="credentials.manage">Review host key</button><span class="hk-ask">Someone with the Manage credentials permission needs to approve it.</span></div>
+        <div id="ha-runas" class="form-help hidden"></div>
         <div id="ha-list"></div>
         <div id="ha-detail" class="hidden"></div>
         <div id="ha-run" class="hidden"></div>
@@ -1027,7 +1041,8 @@
                 <li>Using <code>https://</code>? Pi-hole has its own certificate: press <strong>Fetch fingerprint</strong> and compare it with the one your browser shows for the Pi-hole page.</li>
               </ol>
               <div class="form-row">
-                <div class="form-group"><label for="ph-url">Address</label><input type="text" id="ph-url" placeholder="http://192.168.1.100" spellcheck="false"></div>
+                <div class="form-group"><label for="ph-url">Address</label><input type="text" id="ph-url" placeholder="http://192.168.1.100" spellcheck="false">
+                  <div class="form-help text-warn hidden" id="ph-url-http">This address uses http://, so the app password travels unencrypted on your network. If your Pi-hole offers https://, use that instead.</div></div>
                 <div class="form-group"><label for="ph-secret">App password or API token</label><input type="password" id="ph-secret" autocomplete="new-password" spellcheck="false"></div>
               </div>
               <div class="form-row">
@@ -1089,6 +1104,7 @@
         </section>
         <section class="settings-card hidden" id="settings-https" data-card="https">
           <div class="settings-card-head"><h3>HTTPS</h3><p>How browsers connect to the monitor. With HTTPS the connection is encrypted, so passwords and stored secrets cannot be read off the network. Old http:// addresses and bookmarks are sent on to https:// automatically.</p></div>
+          <div class="form-help text-err hidden" id="tls-failure"></div>
           <div class="setting-row">
             <div><label for="tls-mode">Connection</label></div>
             <div class="setting-input"><select id="tls-mode">
@@ -1364,7 +1380,7 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
         </form>
         <button id="map-link" class="btn map-edit-only hidden" title="Click two nodes to connect them">Link</button>
         <button id="map-layout" class="btn map-edit-only hidden">Arrange as tree</button>
-        <button id="map-edit" data-perm="map.edit" class="btn">Edit</button>
+        <button id="map-edit" data-perm="map.edit" data-unscoped class="btn">Edit</button>
       </div>
     </div>
     <div class="map-layout">
@@ -1407,7 +1423,7 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
     <div class="panel">
       <table id="tbl-audit">
         <thead>
-          <tr><th>Time</th><th>Category</th><th>Message</th><th>Details</th></tr>
+          <tr><th>Time</th><th>Category</th><th>Message</th><th>Who</th><th data-perm="audit.sensitive">From</th><th>Details</th></tr>
         </thead>
         <tbody id="audit-table-body"></tbody>
       </table>

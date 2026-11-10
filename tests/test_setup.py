@@ -212,6 +212,48 @@ class ContainerAccountCommandTests(unittest.TestCase):
         self.assertEqual(enabled, 0)
         self.assertIn("container shell", msg)
 
+    def test_shell_reset_is_attributed(self):
+        from tests.helpers import TEST_USER
+        r = self.run_cmd("reset-password", "--data", self.tmp, "--user", TEST_USER, stdin="a long new password\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        conn = sqlite3.connect(os.path.join(self.tmp, "monitor.db"))
+        row = conn.execute("SELECT message, actor, source FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()
+        conn.close()
+        self.assertEqual(row, (f"Password reset from the container shell for {TEST_USER}", "root", "container shell"))
+
+    def test_shell_audit_works_on_schema_6(self):
+        """Just after restoring an older backup the audit table has no actor or source yet."""
+        conn = sqlite3.connect(os.path.join(self.tmp, "monitor.db"))
+        conn.execute("ALTER TABLE audit_log DROP COLUMN actor;")
+        conn.execute("ALTER TABLE audit_log DROP COLUMN source;")
+        conn.commit()
+        conn.close()
+        r = self.run_cmd("tls-off", "--data", self.tmp)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        conn = sqlite3.connect(os.path.join(self.tmp, "monitor.db"))
+        msg = conn.execute("SELECT message FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()[0]
+        conn.close()
+        self.assertEqual(msg, "HTTPS switched off from the container shell")
+
+    def test_reset_password_can_clear_the_rule(self):
+        from tests.helpers import TEST_USER
+        conn = sqlite3.connect(os.path.join(self.tmp, "monitor.db"))
+        conn.execute("UPDATE settings SET value = 'all' WHERE key = 'require_2fa';")
+        conn.commit()
+        conn.close()
+        self.assertEqual(self.run_cmd("require-2fa", "--data", self.tmp).stdout.decode().strip(), "all")
+        r = self.run_cmd("reset-password", "--data", self.tmp, "--user", TEST_USER, stdin="a long new password\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.run_cmd("require-2fa", "--data", self.tmp).stdout.decode().strip(), "all")
+        r = self.run_cmd("reset-password", "--data", self.tmp, "--user", TEST_USER, "--no-2fa-rule", stdin="a long new password\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.run_cmd("require-2fa", "--data", self.tmp).stdout.decode().strip(), "off")
+        conn = sqlite3.connect(os.path.join(self.tmp, "monitor.db"))
+        rows = [m for (m,) in conn.execute("SELECT message FROM audit_log ORDER BY id DESC LIMIT 2")]
+        conn.close()
+        self.assertIn("2FA requirement turned off from the container shell", rows)
+
+
 
 if __name__ == "__main__":
     unittest.main()

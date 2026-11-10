@@ -54,6 +54,59 @@ class PermissionTableTests(unittest.TestCase):
                                           ["unifi_ap"], [5, 7]), {"all": False, "profiles": ["unifi_ap"], "devices": [5, 7]})
         self.assertEqual(rbac.parse_scope("nonsense", [], []), {"all": True})
 
+    def test_scope_within(self):
+        profile_of = {1: "unifi_ap", 2: "unifi_ap", 3: "linux_host"}
+        def s(profiles=(), devices=()):
+            return {"profiles": list(profiles), "devices": list(devices)}
+        within = rbac.scope_within
+        self.assertTrue(within(None, None, profile_of))
+        self.assertTrue(within(s(devices=[1]), None, profile_of))
+        self.assertFalse(within(None, s(devices=[1]), profile_of))
+        self.assertTrue(within(s(devices=[1, 3]), s(devices=[1, 3]), profile_of))               # equal
+        self.assertTrue(within(s(devices=[3]), s(devices=[1, 3]), profile_of))                  # narrower
+        self.assertFalse(within(s(devices=[1, 3]), s(devices=[3]), profile_of))
+        self.assertTrue(within(s(devices=[2]), s(profiles=["unifi_ap"]), profile_of))           # device inside the template
+        self.assertTrue(within(s(profiles=["unifi_ap"]), s(profiles=["unifi_ap"]), profile_of))  # same template
+        # A template is not the devices it holds today: it also covers devices added later.
+        self.assertFalse(within(s(profiles=["unifi_ap"]), s(devices=[1, 2]), profile_of))
+        self.assertTrue(within(s(), s(devices=[3]), profile_of))                                # empty inner
+        self.assertTrue(within(s(devices=[3, 99]), s(devices=[3]), profile_of))                 # unknown device ignored
+
+    def test_all_of_route_rule(self):
+        u = rbac.User({"username": "c", "role": "custom", "permissions": '["automation.edit", "credentials.use"]'})
+        self.assertTrue(u.can([("automation.edit", "credentials.manage"), "credentials.use"]))
+        self.assertFalse(u.can(["devices.manage", "credentials.manage"]))
+        self.assertFalse(u.can(["automation.edit", "credentials.manage"]))
+        self.assertTrue(u.can(["automation.edit"]))
+        no_use = rbac.User({"username": "d", "role": "custom", "permissions": '["credentials.manage"]'})
+        self.assertFalse(no_use.can([("automation.edit", "credentials.manage"), "credentials.use"]))
+        self.assertEqual(rbac.route_permission("POST", "/api/devices/3/hostkey"), ["devices.manage", "credentials.manage"])
+        self.assertEqual(rbac.route_permission("DELETE", "/api/devices/3/hostkey"), "devices.manage")
+        self.assertFalse(rbac.allowed(rbac.User({"username": "e", "role": "custom", "permissions": '["devices.manage"]'}),
+                                      "POST", "/api/devices/3/hostkey"))
+
+    def test_operator_has_use_viewer_does_not(self):
+        self.assertTrue(rbac.User({"username": "o", "role": "operator"}).can("credentials.use"))
+        self.assertFalse(rbac.User({"username": "o", "role": "operator"}).can("credentials.manage"))
+        self.assertFalse(rbac.User({"username": "v", "role": "viewer"}).can("credentials.use"))
+        self.assertTrue(rbac.User({"username": "a", "role": "admin"}).can("credentials.use"))
+
+    def test_scope_table_matches_real_routes(self):
+        # Every route that needs every device is a real mutating route with its own permission.
+        import re
+        for method, pattern in rbac.UNSCOPED_ROUTES:
+            example = (pattern.replace(r"\d+", "7").replace("[a-z0-9-]+", "home")
+                       .replace("[0-9a-fA-F:.-]{12,17}", "aa:bb:cc:dd:ee:ff"))
+            self.assertTrue(re.fullmatch(pattern, example), pattern)
+            self.assertTrue(rbac.needs_all_devices(method, example), example)
+            self.assertNotIn(rbac.route_permission(method, example), ("admin", None), example)
+
+    def test_help_texts_say_often_root(self):
+        texts = {k: h for k, _, h in rbac.PERMISSIONS}
+        for key in ("credentials.use", "automation.run", "automation.edit", "devices.manage", "credentials.manage"):
+            self.assertIn("often root", texts[key], key)
+        self.assertIn("often root", rbac.ROLES["operator"][1])
+
 
 class UserApiTests(unittest.TestCase):
     @classmethod
@@ -179,6 +232,67 @@ class UserApiTests(unittest.TestCase):
         self.assertEqual(request("PUT", "/api/users/um1", {"role": "viewer"})[0], 200)
         for name in ("um1", "um-op", "um-low", "um-new"):
             request("DELETE", f"/api/users/{name}")
+
+    def scoped_manager(self, name, devices):
+        self.make_user(name, role="custom", permissions=["users.manage", "devices.poll"],
+                       scope={"all": False, "devices": devices})
+        return login_as(name)[2]
+
+    def target(self, name, devices=None):
+        scope = {"all": True} if devices is None else {"all": False, "devices": devices}
+        self.make_user(name, role="custom", permissions=["devices.poll"], scope=scope)
+        self.addCleanup(database.delete_user, name)
+
+    ACTIONS = (("PUT", "", {"display_name": "Changed"}), ("PUT", "", {"disabled": True}), ("PUT", "", {"disabled": False}),
+               ("POST", "/password", {"password": "a new long passphrase"}), ("POST", "/2fa-reset", {}),
+               ("POST", "/logout", {}), ("DELETE", "", None))
+
+    def test_scoped_manager_refused_on_wider_target(self):
+        cookie = self.scoped_manager("sm-narrow", [self.d1])
+        self.addCleanup(database.delete_user, "sm-narrow")
+        self.target("sm-wide")
+        self.target("sm-other", [self.d2])
+        for who in ("sm-wide", "sm-other"):
+            for method, tail, body in self.ACTIONS:
+                status, res, _ = as_user(cookie, method, f"/api/users/{who}{tail}", body)
+                self.assertEqual((status, res["error"]), (403, "Only an administrator can change a user with device access you do not have."),
+                                 (who, method, tail))
+            row = database.get_user(who)
+            self.assertIsNotNone(row)
+            self.assertEqual((row["display_name"], row["disabled"]), (None, 0))
+            self.assertEqual(login_as(who)[0], 200)                          # the old password still logs in
+
+    def test_scoped_manager_allowed_on_equal_or_narrower(self):
+        cookie = self.scoped_manager("sm-two", [self.d1, self.d2])
+        self.addCleanup(database.delete_user, "sm-two")
+        self.target("sm-equal", [self.d1, self.d2])
+        self.target("sm-less", [self.d2])
+        for who in ("sm-equal", "sm-less"):
+            for method, tail, body in self.ACTIONS:
+                status, res, _ = as_user(cookie, method, f"/api/users/{who}{tail}", body)
+                self.assertEqual(status, 200, (who, method, tail, res))
+            self.assertIsNone(database.get_user(who))
+
+    def test_unscoped_manager_and_admin_unchanged(self):
+        self.make_user("sm-all", role="custom", permissions=["users.manage", "devices.poll"])
+        self.addCleanup(database.delete_user, "sm-all")
+        cookie = login_as("sm-all")[2]
+        self.target("sm-wide2")
+        self.assertEqual(as_user(cookie, "PUT", "/api/users/sm-wide2", {"display_name": "By a manager"})[0], 200)
+        self.assertEqual(request("PUT", "/api/users/sm-wide2", {"display_name": "By the administrator"})[0], 200)
+        self.assertEqual(database.get_user("sm-wide2")["display_name"], "By the administrator")
+
+    def test_user_list_marks_who_can_be_changed(self):
+        cookie = self.scoped_manager("sm-list", [self.d1])
+        self.addCleanup(database.delete_user, "sm-list")
+        self.target("sm-list-wide")
+        self.target("sm-list-same", [self.d1])
+        users = {u["username"]: u for u in as_user(cookie, "GET", "/api/users")[1]["users"]}
+        self.assertFalse(users["sm-list-wide"]["can_change"])
+        self.assertTrue(users["sm-list-same"]["can_change"])
+        self.assertFalse(users[TEST_USER]["can_change"])                     # an administrator account
+        self.assertTrue(users["sm-list"]["can_change"])                      # yourself
+        self.assertTrue(all(u["can_change"] for u in request("GET", "/api/users")[1]["users"]))
 
     def test_vault_details_need_system_settings(self):
         self.make_user("vault-view", role="viewer")
@@ -349,6 +463,50 @@ class UserApiTests(unittest.TestCase):
         self.assertNotIn("evil", p["steps"])
         self.assertNotIn("extra", p)
         self.assertEqual(list(p["steps"]), list(server.UPDATE_STEPS))
+
+    def test_migrate_credentials_use(self):
+        import json
+        before = {u["username"]: u.get("permissions") for u in database.list_users()}
+        notice = "Home Monitor now has a Use stored credentials permission"
+        users = {"mcu-run": ["automation.run"], "mcu-edit": ["automation.edit"], "mcu-dev": ["devices.manage"],
+                 "mcu-cred": ["credentials.manage"], "mcu-poll": ["devices.poll"], "mcu-blocked": ["automation.run"]}
+        try:
+            for name, perms in users.items():
+                self.make_user(name, role="custom", permissions=perms)
+            database.update_user("mcu-blocked", {"disabled": 1})
+            database.set_internal_setting(server.CREDENTIALS_USE_MARKER, "")
+            server.migrate_credentials_use()
+            perms = {u["username"]: rbac.permissions_for(u) for u in database.list_users()}
+            for name in ("mcu-run", "mcu-edit", "mcu-dev", "mcu-cred", "mcu-blocked"):
+                self.assertIn("credentials.use", perms[name], name)
+                self.assertTrue(perms[name] > set(users[name]), name)        # kept what they had
+            self.assertEqual(perms["mcu-poll"], {"devices.poll"})
+            audit = [a["message"] for a in database.list_audit_logs(limit=200)]
+            for name in ("mcu-run", "mcu-edit", "mcu-dev", "mcu-cred", "mcu-blocked"):
+                self.assertEqual(audit.count(f"Gave {name} the Use stored credentials permission"), 1, name)
+            self.assertNotIn("Gave mcu-poll the Use stored credentials permission", audit)
+            admins = [u["username"] for u in database.list_users() if u.get("role") == "admin" and not u.get("disabled")]
+            with database.get_connection() as c:
+                rows = c.execute("SELECT actor, message FROM events WHERE message LIKE ?;", (notice + "%",)).fetchall()
+            self.assertEqual(sorted(r[0] for r in rows), sorted(admins))     # one notice per active administrator
+            self.assertIn("were given it, so nothing changes for them", rows[0][1])
+            self.assertEqual(database.get_all_settings()[server.CREDENTIALS_USE_MARKER], "1")
+            # Once only: a second start changes nothing, and a later removal is not undone.
+            database.update_user("mcu-run", {"permissions": json.dumps(["automation.run"])})
+            self.assertEqual(server.migrate_credentials_use(), 0)
+            self.assertEqual(rbac.permissions_for(database.get_user("mcu-run")), {"automation.run"})
+            with database.get_connection() as c:
+                again = c.execute("SELECT COUNT(*) FROM events WHERE message LIKE ?;", (notice + "%",)).fetchone()[0]
+            self.assertEqual(again, len(admins))
+        finally:
+            for name in users:
+                database.delete_user(name)
+            for name, value in before.items():
+                database.update_user(name, {"permissions": value})
+            database.set_internal_setting(server.CREDENTIALS_USE_MARKER, "1")
+            with database.get_connection() as c:
+                c.execute("DELETE FROM events WHERE message LIKE ?;", (notice + "%",))
+                c.commit()
 
     def test_validation(self):
         self.assertEqual(request("POST", "/api/users", {"username": "bad name", "password": PASSWORD})[0], 400)

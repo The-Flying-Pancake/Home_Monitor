@@ -69,6 +69,30 @@ def check_private(text: str) -> None:
         raise SystemExit("Not released: the build matches deploy/private-words.txt\n  " + "\n  ".join(hits[:40]))
 
 
+def key_fingerprint(path: str = SIGNERS) -> str:
+    """The release key's fingerprint as ssh-keygen -l prints it (SHA256:...), computed from the public
+    key in deploy/release-signers so the notes can never show a different one."""
+    import base64
+    with open(path, encoding="utf-8") as f:
+        words = f.read().split()
+    blob = next(words[i + 1] for i, w in enumerate(words) if w.startswith(("ssh-", "ecdsa-", "sk-")) and i + 1 < len(words))
+    return "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(blob)).digest()).decode().rstrip("=")
+
+
+def install_notes(version: str) -> str:
+    """The part of the release notes on installing and checking the download."""
+    return (
+        "\n### Installing or upgrading\n\n"
+        "- **From the web page:** Settings, Updates, then Check for updates (installs made with 0.8.0 or later).\n"
+        "- **On the Proxmox host** (in its Shell): the README has a short block that downloads `home_monitor.sh` and checks its "
+        "signature. Then `chmod +x home_monitor.sh` and `./home_monitor.sh`. The menu offers install and upgrade.\n"
+        "- `infra.sh` is the same file under its old name, for installs made before 0.10.0.\n"
+        "- **Check the download:** the README has a short block to copy and paste, or use `release-signers` from the repository:\n"
+        f"  `ssh-keygen -Y verify -f deploy/release-signers -I {IDENTITY} -n {NAMESPACE} -s home_monitor.sh.sig < home_monitor.sh`\n"
+        f"- **Release key fingerprint:** `{key_fingerprint()}`. The check catches a changed download or a swapped release file. "
+        "It can't catch someone taking over the project's GitHub account. `SHA256SUMS` only spots a damaged download.\n")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--publish", action="store_true")
@@ -106,15 +130,7 @@ def main() -> None:
         f.write("\n".join(sums) + "\n")
     sys.path.insert(0, os.path.join(ROOT, "deploy"))
     import changelog_md
-    notes = changelog_md.notes_for(version) + (
-        "\n### Installing or upgrading\n\n"
-        "- **From the web page:** Settings, Updates, then Check for updates (installs made with 0.8.0 or later).\n"
-        "- **On the Proxmox host** (in its Shell):\n"
-        f"  `curl -fsSLO https://github.com/{REPO}/releases/latest/download/home_monitor.sh`, then `chmod +x home_monitor.sh` "
-        "and `./home_monitor.sh`. The menu offers install and upgrade.\n"
-        "- `infra.sh` is the same file under its old name, for installs made before 0.10.0.\n"
-        "- **Check the download:** `sha256sum -c SHA256SUMS`, or verify the signature with `release-signers` from the repository:\n"
-        f"  `ssh-keygen -Y verify -f deploy/release-signers -I {IDENTITY} -n {NAMESPACE} -s home_monitor.sh.sig < home_monitor.sh`\n")
+    notes = changelog_md.notes_for(version) + install_notes(version)
     with open(os.path.join(DIST, "NOTES.md"), "w", encoding="utf-8", newline="\n") as f:
         f.write(notes)
     print(f"Release {version} ready in {DIST}: {', '.join(ASSETS)}, NOTES.md")

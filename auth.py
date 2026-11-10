@@ -15,7 +15,7 @@ import hmac
 import secrets
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 # OWASP minimum for scrypt (128 MiB, about 0.3 s per check). Tests lower N.
 SCRYPT_N = 2 ** 17
@@ -151,6 +151,22 @@ class SessionStore:
             s = self.sessions.get(_token_id(token)) if token else None
             return s.get(key) if s else None
 
+    def allow(self, token: Optional[str], key: str, limit: int, window: float) -> bool:
+        """A per-session rate limit in a fixed window: True while fewer than limit calls were made
+        in the current window of window seconds. A missing session is never allowed."""
+        now = time.time()
+        with self.lock:
+            s = self.sessions.get(_token_id(token)) if token else None
+            if s is None:
+                return False
+            start, count = s.get(key) or (0.0, 0)
+            if now - start >= window:
+                start, count = now, 0
+            if count >= limit:
+                return False
+            s[key] = (start, count + 1)
+            return True
+
     def revoke(self, token: Optional[str]) -> None:
         if token:
             with self.lock:
@@ -192,16 +208,19 @@ class Challenges:
     """Short-lived, single-purpose tokens kept in memory: the step between password and
     authenticator code at login, and the Telegram code of a password recovery."""
 
-    def __init__(self) -> None:
+    def __init__(self, one_per_user: bool = False) -> None:
         self.lock = threading.Lock()
         self.items: Dict[str, Dict[str, Any]] = {}
+        # One live token per user: a new one voids the earlier ones (the login step).
+        self.one_per_user = one_per_user
 
     def issue(self, username: str, ttl: float, secret: Optional[str] = None) -> str:
         """Returns the token. With secret, the token is only an id and the secret (hashed) must be shown later."""
         token = secrets.token_urlsafe(24)
         with self.lock:
             now = time.time()
-            self.items = {k: v for k, v in self.items.items() if v["expires"] > now}
+            self.items = {k: v for k, v in self.items.items()
+                          if v["expires"] > now and not (self.one_per_user and v["username"] == username)}
             self.items[_token_id(token)] = {"username": username, "expires": now + ttl, "attempts": 0,
                                             "secret": _token_id(secret) if secret else None}
         return token
@@ -253,6 +272,16 @@ class LoginLimiter:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.failures: Dict[str, list] = {}
+        # Called as on_lockout(client, username, keys) when a key has just been locked out, after the
+        # lock is released (server.py: the audit row and the security alert).
+        self.on_lockout: Optional[Callable[[str, Optional[str], list], None]] = None
+
+    def _locked_out(self, client: str, username: Optional[str], started: list) -> None:
+        if started and self.on_lockout is not None:
+            try:
+                self.on_lockout(client, username, started)
+            except Exception:
+                pass
 
     @staticmethod
     def _keys(client: str, username: Optional[str]) -> list:
@@ -278,10 +307,43 @@ class LoginLimiter:
     def failed(self, client: str, username: Optional[str] = None) -> None:
         now = time.time()
         with self.lock:
+            started = self._record(client, username, now)
+        self._locked_out(client, username, started)
+
+    def reserve(self, client: str, username: Optional[str] = None) -> float:
+        """Pay first: checks the lockout and counts one failure in the same locked step, so parallel
+        requests cannot each take a free guess. Returns the wait (nothing recorded) while locked out,
+        otherwise 0. A right answer then clears the counters (succeeded) or takes the charge back (refund)."""
+        now = time.time()
+        with self.lock:
+            wait = max(self._wait(k, now) for k in self._keys(client, username))
+            if wait > 0:
+                return wait
+            started = self._record(client, username, now)
+        self._locked_out(client, username, started)
+        return 0.0
+
+    def refund(self, client: str, username: Optional[str] = None) -> None:
+        """Takes back one failure counted by reserve."""
+        with self.lock:
             for k in self._keys(client, username):
-                # The newest attempts are all a lockout needs; older ones only use memory.
-                self.failures[k] = (self.failures.get(k, []) + [now])[-(FAIL_FREE_ATTEMPTS + 20):]
-            self._prune(now)
+                ts = self.failures.get(k)
+                if ts:
+                    ts.pop()
+                if not ts:
+                    self.failures.pop(k, None)
+
+    def _record(self, client: str, username: Optional[str], now: float) -> list:
+        """Counts one failure; returns the keys that have just reached the lockout (exactly
+        FAIL_FREE_ATTEMPTS recent failures), so a lockout is reported once when it starts."""
+        started = []
+        for k in self._keys(client, username):
+            # The newest attempts are all a lockout needs; older ones only use memory.
+            self.failures[k] = (self.failures.get(k, []) + [now])[-(FAIL_FREE_ATTEMPTS + 20):]
+            if sum(1 for t in self.failures[k] if now - t < FAIL_WINDOW_SECONDS) == FAIL_FREE_ATTEMPTS:
+                started.append(k)
+        self._prune(now)
+        return started
 
     def succeeded(self, client: str, username: Optional[str] = None) -> None:
         with self.lock:
@@ -298,5 +360,5 @@ class LoginLimiter:
 
 SESSIONS = SessionStore()
 LIMITER = LoginLimiter()
-LOGIN_CHALLENGES = Challenges()
+LOGIN_CHALLENGES = Challenges(one_per_user=True)
 RECOVERY_CHALLENGES = Challenges()

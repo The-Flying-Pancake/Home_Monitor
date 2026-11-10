@@ -199,6 +199,10 @@ def _collect_v6(cfg: Dict[str, str], now: float) -> Dict[str, Any]:
             "upstreams": ups, "blocked": top}
 
 
+def _num(v: Any) -> Optional[float]:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
 def _collect_v5(cfg: Dict[str, str], now: float) -> Dict[str, Any]:
     s = _v5_get(cfg, "summaryRaw")
     metrics = {"pihole.queries": s.get("dns_queries_today"), "pihole.blocked": s.get("ads_blocked_today"),
@@ -208,7 +212,7 @@ def _collect_v5(cfg: Dict[str, str], now: float) -> Dict[str, Any]:
     if last:
         metrics["pihole.gravity_days"] = round((now - float(last)) / 86400, 1)
     fwd = (_v5_get(cfg, "getForwardDestinations") or {}).get("forward_destinations") or {}
-    ups = [{"name": k.split("|")[0], "ip": k.split("|")[-1], "port": None, "count": None, "share_pct": v, "response_ms": None}
+    ups = [{"name": k.split("|")[0], "ip": k.split("|")[-1], "port": None, "count": None, "share_pct": _num(v), "response_ms": None}
            for k, v in fwd.items()]
     top = [{"domain": d, "count": c} for d, c in ((_v5_get(cfg, "topItems=10") or {}).get("top_ads") or {}).items()]
     return {"version": 5, "metrics": {k: float(v) for k, v in metrics.items() if isinstance(v, (int, float))},

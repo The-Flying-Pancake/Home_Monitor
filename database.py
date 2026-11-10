@@ -9,6 +9,7 @@ import contextlib
 import json
 import os
 import sqlite3
+import threading
 import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
@@ -34,7 +35,8 @@ DB_FILE = os.environ.get(
 # is brought forward on start. A file with a higher number was written by a newer build: this code
 # does not know its tables and would misread them, so it refuses to start on it rather than guess.
 # Raise SCHEMA_VERSION with every schema change; tests/test_compat.py holds the fingerprint of each.
-SCHEMA_VERSION = 6                 # 4: inventory.ssid and inventory.quiet; 5: action_runs; 6: workflows.saved_by
+SCHEMA_VERSION = 7                 # 4: inventory.ssid and inventory.quiet; 5: action_runs; 6: workflows.saved_by;
+                                   # 7: audit_log.actor and audit_log.source
 # The oldest version this build can migrate from (raise only if a migration is ever dropped).
 MIN_SCHEMA_VERSION = 0
 
@@ -575,6 +577,12 @@ def init_db() -> None:
             );
             """
         )
+        # Migration: who made each audit entry and from which address (blank on older rows).
+        audit_cols = {row[1] for row in cursor.execute("PRAGMA table_info(audit_log);")}
+        for col in ("actor", "source"):
+            if col not in audit_cols:
+                cursor.execute(f"ALTER TABLE audit_log ADD COLUMN {col} TEXT NOT NULL DEFAULT '';")
+
         # Migration: users and roles. The first account (created before roles existed) is the administrator.
         account_cols = {row[1] for row in cursor.execute("PRAGMA table_info(accounts);")}
         for col, ddl in (("role", "TEXT NOT NULL DEFAULT 'admin'"), ("permissions", "TEXT"),
@@ -808,9 +816,12 @@ def delete_metric_history(device_id: Optional[int], keys: List[str], drop_latest
 
 
 def purge_expired(raw_retention_days: int, audit_retention_days: int,
-                  trend_retention_days: int = 365) -> Dict[str, int]:
-    """Deletes raw metrics, hourly trends, audit and event rows past their retention windows."""
+                  trend_retention_days: int = 365, event_retention_days: Optional[int] = None) -> Dict[str, int]:
+    """Deletes raw metrics, hourly trends, audit and event rows past their retention windows. The audit
+    log is always kept for at least AUDIT_RETENTION_FLOOR days, whatever the database says."""
     now = int(time.time())
+    events_days = audit_retention_days if event_retention_days is None else event_retention_days
+    audit_retention_days = max(int(audit_retention_days), AUDIT_RETENTION_FLOOR)
     with get_connection() as conn:
         metrics_deleted = conn.execute(
             "DELETE FROM metrics WHERE timestamp < ?;", (now - raw_retention_days * 86400,)
@@ -822,7 +833,7 @@ def purge_expired(raw_retention_days: int, audit_retention_days: int,
             "DELETE FROM audit_log WHERE timestamp < ?;", (now - audit_retention_days * 86400,)
         ).rowcount
         audit_deleted += conn.execute(
-            "DELETE FROM events WHERE timestamp < ?;", (now - audit_retention_days * 86400,)
+            "DELETE FROM events WHERE timestamp < ?;", (now - events_days * 86400,)
         ).rowcount
         conn.commit()
     return {"metrics": metrics_deleted, "audit": audit_deleted}
@@ -883,13 +894,7 @@ def add_device(
             )
         )
         device_id = cursor.lastrowid
-        cursor.execute(
-            """
-            INSERT INTO audit_log (timestamp, category, message, details)
-            VALUES (?, 'device', ?, ?);
-            """,
-            (now, f"Added device {hostname} ({ip_address})", f"Profile: {profile_id}")
-        )
+        _audit_row(cursor, "device", f"Added device {hostname} ({ip_address})", f"Profile: {profile_id}", now=now)
         conn.commit()
         return device_id
 
@@ -941,13 +946,7 @@ def update_device(
         # rowcount must be read before the audit INSERT, which resets it.
         if cursor.rowcount == 0:
             return False
-        cursor.execute(
-            """
-            INSERT INTO audit_log (timestamp, category, message, details)
-            VALUES (?, 'device', ?, ?);
-            """,
-            (now, f"Updated configuration for {hostname} ({ip_address})", f"Device ID: {device_id}")
-        )
+        _audit_row(cursor, "device", f"Updated configuration for {hostname} ({ip_address})", f"Device ID: {device_id}", now=now)
         conn.commit()
         return True
 
@@ -969,13 +968,7 @@ def delete_device(device_id: int) -> bool:
         cursor.execute("DELETE FROM alert_overrides WHERE scope = 'device' AND target = ?;", (str(device_id),))
         cursor.execute("UPDATE devices SET upstream_device_id = NULL, upstream_port = NULL WHERE upstream_device_id = ?;", (device_id,))
         cursor.execute("DELETE FROM map_positions WHERE node = ?;", (key,))
-        cursor.execute(
-            """
-            INSERT INTO audit_log (timestamp, category, message, details)
-            VALUES (?, 'device', ?, ?);
-            """,
-            (now, f"Removed device {row['hostname']} ({row['ip_address']})", f"Device ID: {device_id}")
-        )
+        _audit_row(cursor, "device", f"Removed device {row['hostname']} ({row['ip_address']})", f"Device ID: {device_id}", now=now)
         conn.commit()
         return True
 
@@ -1097,6 +1090,39 @@ def rekey_secrets() -> int:
     return changed
 
 
+def forget_secrets(conn: sqlite3.Connection) -> int:
+    """Clears every stored secret in a database whose vault key is gone for good (a restore of a
+    backup made without its key). The same columns rekey_secrets walks: device communities, the
+    secret settings (removed, so their defaults apply), credential secrets and passphrases, and 2FA
+    (turned off, as a password reset from the shell does). Returns how many values were cleared.
+    Works on any older layout: tables and columns that are missing are skipped."""
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table';")}
+
+    def cols(table: str) -> set:
+        return {r[1] for r in conn.execute(f'PRAGMA table_info("{table}");')}
+    cleared = 0
+    if "devices" in tables and "snmp_community" in cols("devices"):
+        cleared += conn.execute("UPDATE devices SET snmp_community = '' WHERE COALESCE(snmp_community, '') != '';").rowcount
+    if "settings" in tables:
+        for key in sorted(SECRET_SETTINGS):
+            cleared += conn.execute("DELETE FROM settings WHERE key = ?;", (key,)).rowcount
+    if "credentials" in tables:
+        c = cols("credentials")
+        cleared += conn.execute("UPDATE credentials SET secret_encrypted = '' WHERE secret_encrypted != '';").rowcount
+        if "passphrase_encrypted" in c:
+            cleared += conn.execute("UPDATE credentials SET passphrase_encrypted = NULL "
+                                    "WHERE passphrase_encrypted IS NOT NULL;").rowcount
+    if "accounts" in tables:
+        c = cols("accounts")
+        if "totp_secret" in c:
+            cleared += conn.execute("UPDATE accounts SET totp_secret = NULL WHERE totp_secret IS NOT NULL;").rowcount
+            sets = [f"{col} = {val}" for col, val in (("totp_enabled", "0"), ("totp_recovery", "'[]'"),
+                                                      ("totp_last_step", "NULL")) if col in c]
+            if sets:
+                conn.execute("UPDATE accounts SET " + ", ".join(sets) + ";")
+    return cleared
+
+
 # --- Credentials (vault-encrypted) ---
 
 CREDENTIAL_TYPES = ("password", "ssh_key")
@@ -1161,6 +1187,14 @@ def delete_credential(cred_id: int) -> bool:
         n = conn.execute("DELETE FROM credentials WHERE id = ?;", (cred_id,)).rowcount
         conn.commit()
         return n > 0
+
+
+def get_credential_public(cred_id: int) -> Optional[Dict[str, Any]]:
+    """A credential's public parts (no vault access): id, name, type, username and the SSH public key."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT id, name, cred_type, username, public_key FROM credentials WHERE id = ?;",
+                           (cred_id,)).fetchone()
+    return dict(row) if row else None
 
 
 def get_credential_secret(cred_id: int) -> Optional[Dict[str, Any]]:
@@ -1504,8 +1538,9 @@ def list_audit_filtered(q: str = "", category: str = "", since: Optional[int] = 
     if q:
         like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         if search_details:
-            where.append("(message LIKE ? ESCAPE '\\' OR details LIKE ? ESCAPE '\\')")
-            args += [like, like]
+            where.append("(message LIKE ? ESCAPE '\\' OR details LIKE ? ESCAPE '\\' OR actor LIKE ? ESCAPE '\\' "
+                         "OR source LIKE ? ESCAPE '\\')")
+            args += [like, like, like, like]
         else:
             where.append("message LIKE ? ESCAPE '\\'")
             args.append(like)
@@ -1521,7 +1556,7 @@ def list_audit_filtered(q: str = "", category: str = "", since: Optional[int] = 
     clause = ("WHERE " + " AND ".join(where)) if where else ""
     with get_connection() as conn:
         total = conn.execute(f"SELECT COUNT(*) FROM audit_log {clause};", args).fetchone()[0]
-        rows = conn.execute(f"SELECT id, timestamp, category, message, details FROM audit_log {clause} "
+        rows = conn.execute(f"SELECT id, timestamp, category, message, details, actor, source FROM audit_log {clause} "
                             "ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?;", args + [limit, offset])
         return [dict(r) for r in rows], total
 
@@ -1747,13 +1782,52 @@ def storage_stats() -> Dict[str, Any]:
     }
 
 
-def add_audit(category: str, message: str, details: str = "") -> None:
-    """Records a user action in the audit log."""
+# The audit log always keeps at least this many days, so a change cannot be hidden by shortening it.
+AUDIT_RETENTION_FLOOR = 90
+
+# Who is acting on this thread: the web request's user and address, Telegram, or nobody ("system").
+# Per thread on purpose: a thread a request starts must not inherit the request's identity.
+_AUDIT = threading.local()
+
+
+def set_audit_context(actor: str, source: str = "") -> None:
+    _AUDIT.actor = actor
+    _AUDIT.source = source
+
+
+def clear_audit_context() -> None:
+    _AUDIT.__dict__.clear()
+
+
+@contextlib.contextmanager
+def audit_context(actor: str, source: str = "") -> Iterator[None]:
+    before = dict(_AUDIT.__dict__)
+    set_audit_context(actor, source)
+    try:
+        yield
+    finally:
+        _AUDIT.__dict__.clear()
+        _AUDIT.__dict__.update(before)
+
+
+def audit_identity() -> Tuple[str, str]:
+    """(actor, source) of the current thread; ("system", "") outside any request."""
+    return getattr(_AUDIT, "actor", "system"), getattr(_AUDIT, "source", "")
+
+
+def _audit_row(conn, category: str, message: str, details: str = "", actor: Optional[str] = None,
+               now: Optional[int] = None) -> None:
+    who, source = audit_identity()
+    conn.execute("INSERT INTO audit_log (timestamp, category, message, details, actor, source) VALUES (?, ?, ?, ?, ?, ?);",
+                 (int(time.time()) if now is None else now, category, message, details,
+                  (who if actor is None else actor)[:64], source[:64]))
+
+
+def add_audit(category: str, message: str, details: str = "", actor: Optional[str] = None) -> None:
+    """Records an action in the audit log, with who did it and from where (the thread's context;
+    actor= names someone explicitly, for routes that run before there is a session)."""
     with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO audit_log (timestamp, category, message, details) VALUES (?, ?, ?, ?);",
-            (int(time.time()), category, message, details)
-        )
+        _audit_row(conn, category, message, details, actor)
         conn.commit()
 
 
@@ -2338,6 +2412,13 @@ def take_held_notifications() -> List[str]:
         conn.execute("DELETE FROM notify_held;")
         conn.commit()
     return [f"{time.strftime('%H:%M', time.localtime(r['created_at']))} {r['text']}" for r in rows]
+
+
+def get_plain_setting(key: str, default: str = "") -> str:
+    """One setting as stored, without decrypting anything: for values read on every request."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?;", (key,)).fetchone()
+    return row["value"] if row else default
 
 
 def set_internal_setting(key: str, value: str) -> None:

@@ -123,8 +123,8 @@ function setSidebarCollapsed(collapsed) {
 // --- Current user and permissions ---
 
 const ALL_PERMISSIONS = ["devices.poll", "problems.ack", "devices.manage", "map.edit", "dashboard.edit", "automation.run",
-  "automation.edit", "credentials.manage", "settings.alerts", "settings.notifications", "settings.system", "audit.view",
-  "users.manage"];
+  "automation.edit", "credentials.use", "credentials.manage", "settings.alerts", "settings.notifications", "settings.system",
+  "audit.view", "audit.sensitive", "users.manage"];
 
 function can(perm) {
   if (!currentUser) return true;
@@ -135,6 +135,8 @@ function can(perm) {
 function applyCurrentUser(user) {
   currentUser = user;
   for (const p of ALL_PERMISSIONS) document.body.classList.toggle("lacks-" + p.replace(".", "-"), !user.permissions.includes(p));
+  // Limited to some devices: elements marked data-unscoped (shared objects, the whole network) hide.
+  document.body.classList.toggle("scoped", !!user.scoped);
   document.getElementById("header-username").textContent = user.username;
   document.getElementById("header-avatar").textContent = user.username.slice(0, 2);
   document.getElementById("header-role").textContent = `${user.role_label}${user.scoped ? ", some devices only" : ""}`;
@@ -147,7 +149,7 @@ function applyCurrentUser(user) {
 
 // --- Notification centre ---
 
-const BELL_LINK = e => e.device_id ? `#/device/${e.device_id}${e.event_type === "problem" ? "" : "/events"}` : "#/events";
+const BELL_LINK = e => e.device_id ? `#/device/${escapeHtml(e.device_id)}${e.event_type === "problem" ? "" : "/events"}` : "#/events";
 
 function bellSeverity(e) {
   if (e.event_type === "problem" && /^Resolved:/.test(e.message)) return "ok";

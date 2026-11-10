@@ -1,6 +1,7 @@
 """Web UI login: password hashing, session gate, cookie flags, confirmation, rate limiting, password change."""
 
 import unittest
+from unittest import mock
 
 from tests import _env  # noqa: F401
 from tests.helpers import TEST_PASSWORD, TEST_USER, login, raw_bytes, request, session_cookie, start_api_server
@@ -209,6 +210,42 @@ class LimiterTests(unittest.TestCase):
         auth.HASH_SLOTS.release()
         auth.HASH_SLOTS.release()
 
+    def test_reserve_is_atomic(self):
+        import threading
+        auth.LIMITER.failures.clear()
+        got, start = [], threading.Barrier(50)
+
+        def one():
+            start.wait()
+            got.append(auth.LIMITER.reserve("192.0.2.60", "reserve-user"))
+        threads = [threading.Thread(target=one) for _ in range(50)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sum(1 for w in got if w == 0), auth.FAIL_FREE_ATTEMPTS)
+        self.assertEqual(len(auth.LIMITER.failures["user:reserve-user"]), auth.FAIL_FREE_ATTEMPTS)
+
+    def test_refund_removes_one(self):
+        auth.LIMITER.failures.clear()
+        auth.LIMITER.failed("192.0.2.61", "refund-user")
+        auth.LIMITER.reserve("192.0.2.61", "refund-user")
+        auth.LIMITER.refund("192.0.2.61", "refund-user")
+        self.assertEqual(len(auth.LIMITER.failures["192.0.2.61"]), 1)
+        self.assertEqual(len(auth.LIMITER.failures["user:refund-user"]), 1)
+        auth.LIMITER.refund("192.0.2.61", "refund-user")
+        self.assertEqual(auth.LIMITER.failures, {})                                    # an empty key is deleted
+
+    def test_password_only_login_clears_as_before(self):
+        auth.LIMITER.failures.clear()
+        for _ in range(3):
+            request("POST", "/api/auth/login", {"username": TEST_USER, "password": "wrong password!"}, session=False)
+        self.assertEqual(len(auth.LIMITER.failures["user:" + TEST_USER]), 3)
+        status, body, headers = request("POST", "/api/auth/login", {"username": TEST_USER, "password": TEST_PASSWORD}, session=False)
+        self.assertEqual((status, body.get("success")), (200, True))
+        self.assertIsNotNone(session_cookie(headers))
+        self.assertEqual(auth.LIMITER.failures, {})
+
 
 class PasswordChangeTests(unittest.TestCase):
     @classmethod
@@ -227,6 +264,55 @@ class PasswordChangeTests(unittest.TestCase):
         request("POST", "/api/auth/password", {"current": "a different passphrase", "new": TEST_PASSWORD})
         self.assertNotIn(b"a different passphrase", raw_bytes())
         login()
+
+
+class LockoutAlertTests(unittest.TestCase):
+    """A lockout is audited and alerted once per target, with an hourly ceiling (REV-09)."""
+
+    @classmethod
+    def setUpClass(cls):
+        start_api_server()
+
+    def setUp(self):
+        self.calls = []
+        p = mock.patch.object(server.NOTIFIER, "security", side_effect=lambda key, **kw: self.calls.append(kw.get("target")))
+        p.start()
+        self.addCleanup(p.stop)
+        server._LOCKOUT["sent"].clear()
+        server._LOCKOUT["hour"].clear()
+        self.limiter = auth.LoginLimiter()
+        self.limiter.on_lockout = server._lockout_alert
+
+    def lock(self, client, user=None):
+        for _ in range(auth.FAIL_FREE_ATTEMPTS):
+            self.limiter.failed(client, user)
+
+    def test_lockout_alert_once_per_target(self):
+        self.lock("192.0.2.30", TEST_USER)
+        self.limiter.failed("192.0.2.30", TEST_USER)
+        self.limiter.succeeded("192.0.2.30", TEST_USER)
+        self.lock("192.0.2.30", TEST_USER)
+        self.assertEqual(self.calls, [TEST_USER])
+
+    def test_lockout_alert_hourly_ceiling(self):
+        for i in range(server.LOCKOUT_ALERTS_PER_HOUR + 5):
+            self.lock(f"198.51.100.{i + 1}")
+        self.assertEqual(len(self.calls), server.LOCKOUT_ALERTS_PER_HOUR)
+
+    def test_unknown_name_alerts_the_address_only(self):
+        self.lock("192.0.2.31", "no-such-user-xyz")
+        self.assertEqual(self.calls, ["192.0.2.31"])
+        self.assertNotIn("no-such-user-xyz", str(database.list_audit_filtered(q="Login lockout started")[0][:2]))
+
+    def test_reserve_reports_lockout(self):
+        for _ in range(auth.FAIL_FREE_ATTEMPTS):
+            self.limiter.reserve("192.0.2.32", None)
+        self.assertEqual(self.calls, ["192.0.2.32"])
+
+    def test_lockout_is_audited(self):
+        self.lock("192.0.2.33", None)
+        rows = database.list_audit_filtered(q="192.0.2.33")[0]
+        self.assertEqual([(r["message"], r["details"]) for r in rows], [("Login lockout started", "192.0.2.33")])
 
 
 if __name__ == "__main__":

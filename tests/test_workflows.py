@@ -471,5 +471,134 @@ class WorkflowScopeTests(unittest.TestCase):
             database.delete_user("wfs-author")
 
 
+def forget_skip_events(name):
+    """The skipped-run notices a test made: they would crowd the administrator's bell in later tests."""
+    with database.get_connection() as c:
+        c.execute("DELETE FROM events WHERE message LIKE ?;", (f"Workflow {name}: Run skipped%",))
+        c.commit()
+
+
+class CredentialUseTests(unittest.TestCase):
+    """Use stored credentials: needed for every command step, on save, manual run and scheduled run.
+    A password credential also needs Manage credentials, checked first."""
+
+    @classmethod
+    def setUpClass(cls):
+        start_api_server()
+        cls.dev = add_device("cu-host", "203.0.113.231")
+        database.approve_host_key(cls.dev, "ssh-ed25519", "AAAA", "SHA256:cu")
+        cls.key = database.add_credential("cu-key", "ssh_key", "root", "CU-PRIVATE-KEY-TEXT")
+        cls.pw = database.add_credential("cu-pw", "password", "root", "pw-cu")
+        cls.editor = user_session("cu-editor", permissions=["automation.edit"])
+        cls.runner = user_session("cu-runner", permissions=["automation.run", "credentials.use"])
+        cls.plain_runner = user_session("cu-plain", permissions=["automation.run"])
+        cls.devman = user_session("cu-devman", permissions=["devices.manage"])
+
+    @classmethod
+    def tearDownClass(cls):
+        for name in ("cu-editor", "cu-runner", "cu-plain", "cu-devman"):
+            database.delete_user(name)
+
+    def as_(self, who, method, path, body=None):
+        return request(method, path, body, headers=who, session=False)
+
+    def command(self, cred):
+        return {"type": "command", "command": "uptime", "device_ids": [self.dev], "credential_id": cred}
+
+    def saved(self, name, steps, author="tester"):
+        fields = __import__("server").parse_workflow_payload({"name": name, "steps": steps})
+        return database.save_workflow(None, dict(fields, saved_by=author))
+
+    def test_edit_without_use_cannot_save_key_command(self):
+        body = {"name": "Key command", "steps": [self.command(self.key)]}
+        status, res, _ = self.as_(self.editor, "POST", "/api/workflows", body)
+        self.assertEqual(status, 403, res)
+        self.assertIn("Use stored credentials", res["error"])
+        database.update_user("cu-editor", {"permissions": '["automation.edit", "credentials.use"]'})
+        try:
+            status, res, _ = self.as_(self.editor, "POST", "/api/workflows", body)
+            self.assertEqual(status, 201, res)
+            database.delete_workflow(res["id"])
+        finally:
+            database.update_user("cu-editor", {"permissions": '["automation.edit"]'})
+
+    def test_manual_run_of_password_workflow_needs_manage(self):
+        wid = self.saved("Password run", [self.command(self.pw)])
+        try:
+            with mock.patch.object(workflows.MANAGER, "start") as start:
+                status, res, _ = self.as_(self.runner, "POST", f"/api/workflows/{wid}/run")
+            self.assertEqual(status, 403, res)
+            self.assertIn("Manage credentials", res["error"])
+            start.assert_not_called()
+        finally:
+            database.delete_workflow(wid)
+
+    def test_manual_run_needs_use_for_commands_only(self):
+        cmd = self.saved("Key run", [self.command(self.key)])
+        wait = self.saved("Wait run", [{"type": "wait", "seconds": 1}])
+        try:
+            with mock.patch.object(workflows.MANAGER, "start", return_value=1) as start:
+                status, res, _ = self.as_(self.plain_runner, "POST", f"/api/workflows/{cmd}/run")
+                self.assertEqual(status, 403, res)
+                self.assertIn("Use stored credentials", res["error"])
+                start.assert_not_called()
+                status, res, _ = self.as_(self.plain_runner, "POST", f"/api/workflows/{wait}/run")
+                self.assertEqual(status, 200, res)
+                start.assert_called_once()
+        finally:
+            database.delete_workflow(cmd)
+            database.delete_workflow(wait)
+
+    def test_scheduled_run_checks_author_has_use(self):
+        import server
+        sched = server.PollScheduler.__new__(server.PollScheduler)
+        user_session("cu-author", permissions=["automation.edit", "credentials.use"])
+        wid = self.saved("Author use", [self.command(self.key)], author="cu-author")
+        try:
+            wf = database.get_workflow(wid)
+            self.assertIsNone(server.workflow_author_problem(wf))
+            database.update_user("cu-author", {"permissions": '["automation.edit"]'})
+            self.assertIn("Use stored credentials", server.workflow_author_problem(wf))
+            with mock.patch.object(workflows.MANAGER, "start") as start:
+                sched._start_scheduled(wf, "schedule: test")
+                start.assert_not_called()
+        finally:
+            database.delete_workflow(wid)
+            database.delete_user("cu-author")
+            forget_skip_events("Author use")
+
+    def test_repoint_blocks_scheduled_until_credential_holder_approves(self):
+        import server
+        sched = server.PollScheduler.__new__(server.PollScheduler)
+        dev = add_device("cu-repoint", "203.0.113.232")
+        database.approve_host_key(dev, "ssh-ed25519", "AAAA", "SHA256:old")
+        wid = self.saved("Repoint", [dict(self.command(self.key), device_ids=[dev])])
+        try:
+            body = {"hostname": "cu-repoint", "ip_address": "203.0.113.233", "profile_id": "generic_device"}
+            self.assertEqual(self.as_(self.devman, "PUT", f"/api/devices/{dev}", body)[0], 200)
+            self.assertFalse(database.get_host_keys(dev))
+            presented = {"key_type": "ssh-ed25519", "key_b64": "BBBB", "fingerprint": "SHA256:new"}
+            with mock.patch.object(server.ssh_runner, "fetch_host_key", return_value=presented) as fetch:
+                status, res, _ = self.as_(self.devman, "POST", f"/api/devices/{dev}/hostkey", {"fingerprint": "SHA256:new"})
+                self.assertEqual(status, 403, res)
+                fetch.assert_not_called()
+            self.assertFalse(database.get_host_keys(dev))
+            wf = database.get_workflow(wid)
+            with mock.patch.object(workflows.MANAGER, "start") as start:
+                sched._start_scheduled(wf, "schedule: test")
+                start.assert_not_called()
+            from tests.helpers import TEST_PASSWORD
+            request("POST", "/api/auth/confirm", {"password": TEST_PASSWORD, "tier": 3})
+            with mock.patch.object(server.ssh_runner, "fetch_host_key", return_value=presented):
+                status, res, _ = request("POST", f"/api/devices/{dev}/hostkey", {"fingerprint": "SHA256:new"})
+            self.assertEqual(status, 200, res)
+            with mock.patch.object(workflows.MANAGER, "start") as start:
+                sched._start_scheduled(wf, "schedule: test")
+                start.assert_called_once()
+        finally:
+            database.delete_workflow(wid)
+            database.delete_device(dev)
+
+
 if __name__ == "__main__":
     unittest.main()

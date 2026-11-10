@@ -9,6 +9,7 @@ import glob
 import ipaddress
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -17,7 +18,7 @@ import socket
 import subprocess
 import time
 import urllib.request
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import database
 
@@ -271,6 +272,29 @@ def _decode_value(tag: int, raw: bytes) -> Any:
     if tag in _EXCEPTION_TAGS:
         return _EXCEPTION_TAGS[tag]
     return raw.hex()
+
+
+_NUMERIC_TEXT = re.compile(r"-?\d{1,20}(\.\d{1,10})?", re.ASCII)
+
+
+def _snmp_number(value: Any) -> Any:
+    """A column that should be a number: the number, numeric text as a number, anything else None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str) and _NUMERIC_TEXT.fullmatch(value):
+        return float(value) if "." in value else int(value)
+    return None
+
+
+def _numeric_columns(row: Optional[Dict[str, Any]], columns: Iterable[str]) -> Optional[Dict[str, Any]]:
+    """A copy of a table row with the named columns passed through _snmp_number."""
+    if row is None:
+        return None
+    return {**row, **{key: _snmp_number(row.get(key)) for key in columns if key in row}}
 
 
 def build_snmp_packet(
@@ -1102,6 +1126,14 @@ UNIFI_RADIO_COLS = {2: "name", 3: "band", 4: "rx_packets", 5: "tx_packets", 6: "
 UNIFI_VAP_COLS = {2: "bssid", 4: "channel", 6: "ssid", 7: "name", 8: "clients", 9: "band",
                   10: "rx_bytes", 16: "tx_bytes", 21: "tx_power_dbm", 22: "up", 23: "usage"}
 
+# Columns that are numbers by definition. A device can answer any of them with text, so they are
+# made numbers (or None) before anything uses or stores them.
+IF_NUMERIC_COLUMNS = ("if_type", "mtu", "speed_bps32", "admin", "oper", "in_octets32", "in_discards", "in_errors",
+                      "out_octets32", "out_discards", "out_errors", "in_octets", "in_ucast", "out_octets",
+                      "out_ucast", "speed_mbps")
+UNIFI_RADIO_NUMERIC = ("rx_packets", "tx_packets", "util_pct", "util_rx_pct", "util_tx_pct", "other_bss_pct")
+UNIFI_VAP_NUMERIC = ("channel", "clients", "rx_bytes", "tx_bytes", "tx_power_dbm")
+
 QNAP_DISK = "1.3.6.1.4.1.24681.1.3.11.1"
 QNAP_VOLUME = "1.3.6.1.4.1.24681.1.3.17.1"
 HR_STORAGE = "1.3.6.1.2.1.25.2.3.1"
@@ -1406,7 +1438,7 @@ class TableCollector:
         rows: Dict[str, Dict[str, Any]] = {}
         rate_metrics: Dict[str, float] = {}
         for idx in indexes:
-            r = {key: cols[key].get(idx) for key in IF_COLUMNS}
+            r = _numeric_columns({key: cols[key].get(idx) for key in IF_COLUMNS}, IF_NUMERIC_COLUMNS)
             # Prefer 64-bit counters and ifHighSpeed, fall back to the 32-bit ifTable columns.
             if r["in_octets"] is None:
                 r["in_octets"] = r["in_octets32"]
@@ -1422,7 +1454,7 @@ class TableCollector:
             r["label"] = r["name"] or r["descr"] or idx
             r["kind"] = classify_interface(r["label"], r["if_type"])
 
-            prev = previous.get(idx)
+            prev = _numeric_columns(previous.get(idx), IF_NUMERIC_COLUMNS)
             if prev:
                 seconds = self.now - prev["updated_at"]
                 ceiling = (r["speed_mbps"] or 0) * 1_000_000 or None
@@ -1514,14 +1546,16 @@ class TableCollector:
 
         radios = {}
         for idx in radio_cols.get(2, {}):
-            radios[idx] = {name: radio_cols.get(col, {}).get(idx) for col, name in UNIFI_RADIO_COLS.items()}
+            radios[idx] = _numeric_columns({name: radio_cols.get(col, {}).get(idx)
+                                            for col, name in UNIFI_RADIO_COLS.items()}, UNIFI_RADIO_NUMERIC)
         database.replace_device_table(self.device["id"], "radios", radios, self.now)
 
         previous = database.get_device_table(self.device["id"], "ssids")
         ssids = {}
         for idx in vap_cols.get(6, {}):
-            row = {name: vap_cols.get(col, {}).get(idx) for col, name in UNIFI_VAP_COLS.items()}
-            prev = previous.get(idx)
+            row = _numeric_columns({name: vap_cols.get(col, {}).get(idx)
+                                    for col, name in UNIFI_VAP_COLS.items()}, UNIFI_VAP_NUMERIC)
+            prev = _numeric_columns(previous.get(idx), UNIFI_VAP_NUMERIC)
             if prev:
                 seconds = self.now - prev["updated_at"]
                 row["rx_bps"] = _rate_bps(row["rx_bytes"], prev.get("rx_bytes"), seconds)

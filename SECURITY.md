@@ -29,4 +29,5 @@ Each release's `home_monitor.sh` is signed. The public key is in `deploy/release
 ```bash
 ssh-keygen -Y verify -f deploy/release-signers -I release@home-monitor -n home-monitor-release -s home_monitor.sh.sig < home_monitor.sh
 ```
+The fingerprint of the release key is `SHA256:VfgS3MkxWYcs7WXOVRScDX29tjA3pWXCf5d4VwDByQQ`.
 The in-app updater makes the same check before it installs anything.

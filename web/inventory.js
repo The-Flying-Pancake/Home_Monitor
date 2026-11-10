@@ -57,14 +57,14 @@ function renderInventory() {
       : r.known ? "" : '<span class="status-pill status-warn">new</span> ';
     return `<tr class="${r.known || r.hushed ? "" : "inv-new"}">
       <td class="text-cell">${pill}<strong>${escapeHtml(title || "Unnamed")}</strong>
-        ${r.device_id ? `<a class="dim" href="#/device/${r.device_id}">monitored</a>` : ""}${sub ? `<div class="dim inv-sub">${escapeHtml(sub)}</div>` : ""}</td>
+        ${r.device_id ? `<a class="dim" href="#/device/${escapeHtml(r.device_id)}">monitored</a>` : ""}${sub ? `<div class="dim inv-sub">${escapeHtml(sub)}</div>` : ""}</td>
       <td class="mono-cell">${escapeHtml(r.mac)}${r.private ? ' <span class="dim" title="A private (randomised) address: phones and laptops use these to hide their real one">private</span>' : ""}</td>
       <td class="mono-cell">${escapeHtml(r.ip || "-")}</td>
       <td class="text-cell">${escapeHtml(r.where_seen || "-")}</td>
       <td class="text-cell">${r.ssid ? escapeHtml(r.ssid) : '<span class="dim">-</span>'}</td>
       <td class="text-cell">${escapeHtml(r.vendor || "-")}</td>
-      <td data-sort="${r.first_seen}" class="dim">${escapeHtml(formatAgo(r.first_seen))}</td>
-      <td data-sort="${r.last_seen}" class="dim">${escapeHtml(formatAgo(r.last_seen))}</td>
+      <td data-sort="${escapeHtml(r.first_seen)}" class="dim">${escapeHtml(formatAgo(r.first_seen))}</td>
+      <td data-sort="${escapeHtml(r.last_seen)}" class="dim">${escapeHtml(formatAgo(r.last_seen))}</td>
       <td class="actions-cell">${!r.known && !r.hushed ? `<button type="button" class="btn btn-small" data-perm="devices.manage" data-inv-known="${escapeHtml(r.mac)}" title="Known: no longer new (works while it is offline too)">Known</button> ` : ""}${!r.device_id && r.ip ? `<button type="button" class="btn btn-small" data-perm="devices.manage" data-inv-monitor="${escapeHtml(r.mac)}">Monitor</button> ` : ""}<button type="button" class="btn btn-small" data-perm="devices.manage" data-inv-edit="${escapeHtml(r.mac)}">Edit</button></td>
     </tr>`;
   }).join(""), invData.rows.length ? "Nothing matches." : "Nothing seen yet: the inventory fills as the switches and the gateway are polled.", 9);
@@ -144,11 +144,11 @@ function invWifiAlertHtml(r) {
     <label for="inv-wifi-alert">Weak Wi-Fi signal</label>
     <div class="form-row">
       <select id="inv-wifi-alert">
-        <option value=""${mode === "" ? " selected" : ""}>Report it as usual (below ${usual} dBm)</option>
+        <option value=""${mode === "" ? " selected" : ""}>Report it as usual (below ${escapeHtml(usual)} dBm)</option>
         <option value="line"${mode === "line" ? " selected" : ""}>Report it only below a line of its own</option>
         <option value="off"${mode === "off" ? " selected" : ""}>Never report it</option>
       </select>
-      <span class="inv-wifi-line${mode === "line" ? "" : " hidden"}"><input type="number" id="inv-wifi-line" min="-95" max="-40" step="1" value="${line}"> dBm</span>
+      <span class="inv-wifi-line${mode === "line" ? "" : " hidden"}"><input type="number" id="inv-wifi-line" min="-95" max="-40" step="1" value="${escapeHtml(line)}"> dBm</span>
     </div>
     <div class="dim form-hint">For a device that is always weak: the access point's weak-signal problem (and its Telegram message) leaves it out, or waits for its own line. It still shows on the Wi-Fi page.</div>
   </div>`;
@@ -222,7 +222,7 @@ function editQuietNetworks() {
   const nets = (invData.ssids || []).map(s => s.ssid);
   (invData.quiet_ssids || []).forEach(q => { if (!nets.some(n => n.toLowerCase() === q.toLowerCase())) nets.push(q); });
   const quiet = new Set((invData.quiet_ssids || []).map(q => q.toLowerCase()));
-  const count = s => (invData.ssids || []).find(x => x.ssid === s)?.count || 0;
+  const count = s => Number((invData.ssids || []).find(x => x.ssid === s)?.count || 0);
   const back = document.createElement("div");
   back.className = "modal-backdrop dialog-backdrop";
   back.innerHTML = `<form class="modal dialog inv-editor" role="dialog" aria-modal="true">

@@ -191,6 +191,40 @@ class CredentialTestTests(unittest.TestCase):
         self.assertNotIn("pw-test-secret", repr(body))
         self.assertEqual(request("POST", "/api/credentials/99999/test", {"device_id": self.dev})[0], 404)
 
+    def user(self, name, permissions):
+        from tests.helpers import session_cookie
+        status, res, _ = request("POST", "/api/users", {"username": name, "password": "credential test passphrase",
+                                                        "role": "custom", "permissions": permissions})
+        self.assertEqual(status, 201, res)
+        _, _, headers = request("POST", "/api/auth/login", {"username": name, "password": "credential test passphrase"},
+                                session=False)
+        self.addCleanup(database.delete_user, name)
+        return {"Cookie": f"{server.auth.SESSION_COOKIE}={session_cookie(headers)}"}
+
+    def test_credential_test_password_needs_manage(self):
+        who = self.user("ct-edit-use", ["automation.edit", "credentials.use"])
+        with mock.patch.object(server.ssh_runner, "run_command") as ssh, \
+                mock.patch.object(server.database, "get_credential_secret", wraps=database.get_credential_secret) as secret:
+            status, res, _ = request("POST", f"/api/credentials/{self.cred}/test", {"device_id": self.dev},
+                                     headers=who, session=False)
+        self.assertEqual(status, 403, res)
+        self.assertIn("Manage credentials", res["error"])
+        ssh.assert_not_called()
+        secret.assert_not_called()                                    # refused before the secret is decrypted
+
+    def test_credential_test_needs_use(self):
+        who = self.user("ct-manage-only", ["credentials.manage"])
+        with server.auth.SESSIONS.lock:
+            for sess in server.auth.SESSIONS.sessions.values():
+                if sess["username"] == "ct-manage-only":
+                    sess["tier2_until"] = sess["tier3_until"] = 0
+        with mock.patch.object(server.ssh_runner, "run_command") as ssh:
+            status, res, _ = request("POST", f"/api/credentials/{self.cred}/test", {"device_id": self.dev},
+                                     headers=who, session=False)
+        self.assertEqual(status, 403, res)
+        self.assertNotEqual(res.get("auth"), "confirm")              # refused before any password prompt
+        ssh.assert_not_called()
+
 
 class EventTriggerTests(unittest.TestCase):
     """ "When something happens": validation, plain words, and when a run starts."""

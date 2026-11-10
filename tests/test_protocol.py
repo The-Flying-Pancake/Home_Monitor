@@ -2,6 +2,7 @@
 
 import unittest
 from datetime import datetime
+from unittest import mock
 
 from tests import _env  # noqa: F401
 
@@ -116,6 +117,102 @@ class HostTableTests(unittest.TestCase):
         self.assertEqual(p.split_software("7-Zip 24.08 (x64)")["name"], "7-Zip (x64)")
         self.assertEqual(p.split_software("Microsoft .NET Host FX Resolver - 8.0.33")["version"], "8.0.33")
         self.assertEqual(p.split_software("NordVPN"), {"name": "NordVPN", "version": "", "arch": ""})
+
+
+class NumericColumnTests(unittest.TestCase):
+    """A device can answer any SNMP column with text. Number columns must stay numbers or None."""
+
+    def collector(self):
+        c = p.TableCollector({"id": 1, "ip_address": "192.0.2.1"}, None, 1, 0)
+        c.now = 1000.0
+        return c
+
+    def interface_row(self, **over):
+        return {**{key: 1 for key in p.IF_COLUMNS}, "descr": "eth0", "name": "eth0", "mac": "aa", "alias": "", **over}
+
+    def run_interfaces(self, row, previous=None):
+        cols = {oid: {"1": row[key]} for key, oid in p.IF_COLUMNS.items()}
+        stored = {}
+        with mock.patch.object(p.TableCollector, "walk", lambda self, oid: cols[oid]), \
+                mock.patch.object(p.database, "get_device_table", return_value=previous or {}), \
+                mock.patch.object(p.database, "record_metrics"), mock.patch.object(p.database, "add_event"), \
+                mock.patch.object(p.database, "replace_device_table",
+                                  side_effect=lambda dev, table, rows, now: stored.update(rows)):
+            result = self.collector().collect_interfaces()
+        return result, stored["1"]
+
+    def test_text_in_interface_numbers_is_dropped(self):
+        ok, row = self.run_interfaces(self.interface_row(mtu="<b>", in_errors=7))
+        self.assertTrue(ok)
+        self.assertIsNone(row["mtu"])
+        self.assertEqual(row["in_errors"], 7)
+        self.assertEqual(row["name"], "eth0")
+
+    def test_numeric_text_is_kept(self):
+        self.assertEqual(p._snmp_number("1500"), 1500)
+        self.assertEqual(p._snmp_number("-12.5"), -12.5)
+        self.assertIsNone(p._snmp_number(True))
+        self.assertIsNone(p._snmp_number("1" * 21))
+        self.assertIsNone(p._snmp_number("12\n"))
+        self.assertIsNone(p._snmp_number(p.NO_SUCH_OBJECT))
+        self.assertIsNone(p._snmp_number(float("nan")))
+
+    def test_text_speed_is_not_multiplied(self):
+        prev = {"1": {"updated_at": 900.0, "in_octets": 1, "out_octets": 1, "speed_mbps": 1000}}
+        ok, row = self.run_interfaces(self.interface_row(speed_mbps="x" * 4096, speed_bps32=None), prev)
+        self.assertTrue(ok)
+        self.assertIsNone(row["speed_mbps"])
+
+    def test_old_stored_text_does_not_break_the_poll(self):
+        prev = {"1": {"updated_at": 900.0, "in_octets": "<i>", "out_octets": "<i>", "in_errors": "x", "speed_mbps": "y"}}
+        ok, row = self.run_interfaces(self.interface_row(), prev)
+        self.assertTrue(ok)
+        self.assertIsNone(row["in_bps"])
+        self.assertIsNone(row["out_bps"])
+        self.assertIsNone(row["in_errors_delta"])
+
+    def run_wireless(self, radio, vap, previous=None):
+        stored = {}
+
+        def walk(_self, oid):
+            source = radio if oid == p.UNIFI_RADIO else vap
+            return {f"{col}.1": value for col, value in source.items()}
+
+        with mock.patch.object(p.TableCollector, "walk", walk), \
+                mock.patch.object(p.database, "get_device_table", return_value=previous or {}), \
+                mock.patch.object(p.database, "replace_device_table",
+                                  side_effect=lambda dev, table, rows, now: stored.__setitem__(table, rows)):
+            ok = self.collector().collect_wireless()
+        return ok, stored
+
+    def wireless(self):
+        radio = {col: "<b>" for col in p.UNIFI_RADIO_COLS}
+        radio[2], radio[3] = "ra0", "ng"
+        vap = {col: "<b>" for col in p.UNIFI_VAP_COLS}
+        vap[2], vap[6], vap[7], vap[9], vap[23] = "aa:bb", "home", "ath0", "ng", "guest"
+        return radio, vap
+
+    def test_wireless_numbers_are_numbers(self):
+        radio, vap = self.wireless()
+        vap[8] = 12
+        ok, stored = self.run_wireless(radio, vap, {"1": {"updated_at": 900.0, "rx_bytes": "<i>", "tx_bytes": 1}})
+        self.assertTrue(ok)
+        for key in p.UNIFI_RADIO_NUMERIC:
+            self.assertIsNone(stored["radios"]["1"][key])
+        row = stored["ssids"]["1"]
+        self.assertEqual(row["clients"], 12)
+        for key in set(p.UNIFI_VAP_NUMERIC) - {"clients"}:
+            self.assertIsNone(row[key])
+        self.assertIsNone(row["rx_bps"])
+
+    def test_wireless_text_columns_are_unchanged(self):
+        radio, vap = self.wireless()
+        ok, stored = self.run_wireless(radio, vap)
+        self.assertTrue(ok)
+        self.assertEqual((stored["radios"]["1"]["name"], stored["radios"]["1"]["band"]), ("ra0", "ng"))
+        row = stored["ssids"]["1"]
+        self.assertEqual((row["ssid"], row["bssid"], row["usage"], row["name"], row["band"]),
+                         ("home", "aa:bb", "guest", "ath0", "ng"))
 
 
 class CronTests(unittest.TestCase):

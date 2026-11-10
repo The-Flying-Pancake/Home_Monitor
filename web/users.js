@@ -30,7 +30,7 @@ function renderUsers() {
   const roles = Object.fromEntries(usersData.roles.map(r => [r.id, r.label]));
   const rows = usersData.users.map(u => {
     const status = u.disabled ? `<span class="status-pill status-err">Blocked</span>`
-      : u.sessions ? `<span class="status-pill status-ok">Signed in</span> <span class="dim">${u.sessions} session${u.sessions > 1 ? "s" : ""}</span>`
+      : u.sessions ? `<span class="status-pill status-ok">Signed in</span> <span class="dim">${escapeHtml(u.sessions)} session${u.sessions > 1 ? "s" : ""}</span>`
       : `<span class="status-pill status-unknown">Signed out</span>`;
     return `<tr>
       <td class="text-cell"><strong>${escapeHtml(u.username)}</strong>${u.you ? ' <span class="ack-tag">you</span>' : ""}
@@ -38,12 +38,12 @@ function renderUsers() {
       <td class="text-cell">${escapeHtml(roles[u.role] || u.role)}${u.two_factor ? ' <span class="ack-tag" title="Two-factor authentication is on">2FA</span>' : ""}</td>
       <td class="text-cell users-access">${escapeHtml(userAccessText(u))}</td>
       <td class="text-cell">${status}</td>
-      <td data-sort="${u.last_login || 0}">${u.last_login ? escapeHtml(formatAgo(u.last_login)) : '<span class="dim">Never</span>'}</td>
-      <td class="actions-cell">
+      <td data-sort="${escapeHtml(u.last_login || 0)}">${u.last_login ? escapeHtml(formatAgo(u.last_login)) : '<span class="dim">Never</span>'}</td>
+      <td class="actions-cell">${u.can_change ? `
         <button type="button" class="btn" data-user-edit="${escapeHtml(u.username)}">Edit</button>
         <span class="user-more">
           <button type="button" class="btn" data-user-menu="${escapeHtml(u.username)}" aria-haspopup="true" aria-label="More actions for ${escapeHtml(u.username)}">More</button>
-        </span>
+        </span>` : ""}
       </td>
     </tr>`;
   }).join("");
@@ -63,7 +63,7 @@ function openUserMenu(btn, u) {
   if (u.two_factor) items.push(["2fa-reset", "Reset two-factor authentication"]);
   if (!u.you) items.push([u.disabled ? "unblock" : "block", u.disabled ? "Unblock" : "Block"]);
   if (!u.you) items.push(["delete", "Delete user"]);
-  menu.innerHTML = items.map(([k, l]) => `<button type="button" class="user-menu-item${k === "delete" || k === "block" ? " danger" : ""}" data-user-action="${k}">${l}</button>`).join("");
+  menu.innerHTML = items.map(([k, l]) => `<button type="button" class="user-menu-item${k === "delete" || k === "block" ? " danger" : ""}" data-user-action="${escapeHtml(k)}">${escapeHtml(l)}</button>`).join("");
   btn.parentElement.appendChild(menu);
   menu.addEventListener("click", ev => {
     const b = ev.target.closest("[data-user-action]");
@@ -117,15 +117,15 @@ function userEditorHtml(u) {
   return `
     ${u ? "" : `<div class="form-row">
       <div class="form-group"><label for="ue-username">Username</label><input type="text" id="ue-username" maxlength="32" autocomplete="off" spellcheck="false"></div>
-      <div class="form-group"><label for="ue-password">Password</label><input type="password" id="ue-password" autocomplete="new-password" placeholder="At least ${usersData.min_length} characters"></div>
+      <div class="form-group"><label for="ue-password">Password</label><input type="password" id="ue-password" autocomplete="new-password" placeholder="At least ${escapeHtml(usersData.min_length)} characters"></div>
     </div>`}
     <div class="form-group"><label for="ue-display">Display name (optional)</label><input type="text" id="ue-display" maxlength="64" value="${escapeHtml(u ? u.display_name : "")}"></div>
     <div class="form-group"><label for="ue-role">Role</label>
-      <select id="ue-role">${usersData.roles.map(r => `<option value="${r.id}" ${r.id === role ? "selected" : ""}>${escapeHtml(r.label)}</option>`).join("")}</select>
+      <select id="ue-role">${usersData.roles.map(r => `<option value="${escapeHtml(r.id)}" ${r.id === role ? "selected" : ""}>${escapeHtml(r.label)}</option>`).join("")}</select>
       <div class="form-help" id="ue-role-help"></div>
     </div>
     <div class="ue-perms" id="ue-perms">${usersData.permissions.map(p => `<label class="ue-perm" title="${escapeHtml(p.help)}">
-      <input type="checkbox" value="${p.id}" ${perms.has(p.id) ? "checked" : ""}> <span><strong>${escapeHtml(p.label)}</strong><span class="dim">${escapeHtml(p.help)}</span></span></label>`).join("")}</div>
+      <input type="checkbox" value="${escapeHtml(p.id)}" ${perms.has(p.id) ? "checked" : ""}> <span><strong>${escapeHtml(p.label)}</strong><span class="dim">${escapeHtml(p.help)}</span></span></label>`).join("")}</div>
     <div class="form-group ue-scope-group" id="ue-scope-group"><label>Devices</label>
       <label class="check-label"><input type="radio" name="ue-scope" value="all" ${scope.all ? "checked" : ""}> All devices</label>
       <label class="check-label"><input type="radio" name="ue-scope" value="some" ${scope.all ? "" : "checked"}> Only the templates and devices ticked below</label>
@@ -133,7 +133,7 @@ function userEditorHtml(u) {
         <div class="ue-scope-col"><div class="dim">Templates (includes devices added later)</div>
           ${templates.map(t => `<label class="check-label"><input type="checkbox" data-scope-profile="${escapeHtml(t.id)}" ${(scope.profiles || []).includes(t.id) ? "checked" : ""}> ${escapeHtml(t.name)}</label>`).join("")}</div>
         <div class="ue-scope-col"><div class="dim">Single devices</div>
-          ${usersData.devices.map(d => `<label class="check-label"><input type="checkbox" data-scope-device="${d.id}" ${(scope.devices || []).includes(d.id) ? "checked" : ""}> ${escapeHtml(d.hostname)}</label>`).join("")}</div>
+          ${usersData.devices.map(d => `<label class="check-label"><input type="checkbox" data-scope-device="${escapeHtml(d.id)}" ${(scope.devices || []).includes(d.id) ? "checked" : ""}> ${escapeHtml(d.hostname)}</label>`).join("")}</div>
       </div>
     </div>
     <div class="form-error hidden" id="ue-error"></div>`;

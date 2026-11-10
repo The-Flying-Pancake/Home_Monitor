@@ -81,29 +81,30 @@ function setupPayload() {
 /** Monitor as: ping only, or an SNMP template (port checks are the Services step). */
 function setupProfileOptions(selected) {
   const snmpOnes = profileOptionsHtml.replace(/<option value="(ping_only|service_check)">[^<]*<\/option>/g, "");
+  const chosen = escapeHtml(selected);
   return `<option value="ping_only">Ping only</option><optgroup label="SNMP template">${snmpOnes}</optgroup>`
-    .replace(`value="${selected}"`, `value="${selected}" selected`);
+    .replace(`value="${chosen}"`, `value="${chosen}" selected`);
 }
 
 function yesNo(key, question, help) {
   const v = key === "scan" ? setupState.scan.wanted : key === "services" ? setupState.services.wanted : setupState[key].enabled;
-  return `<div class="setup-question"><div class="setup-q">${escapeHtml(question)}</div>${help ? `<div class="form-help">${help}</div>` : ""}
+  return `<div class="setup-question"><div class="setup-q">${escapeHtml(question)}</div>${help ? `<div class="form-help">${escapeHtml(help)}</div>` : ""}
     <div class="setup-yesno">
-      <button type="button" class="btn${v === true ? " btn-primary" : ""}" data-yes="${key}">Yes</button>
-      <button type="button" class="btn${v === false ? " btn-primary" : ""}" data-no="${key}">No, skip</button>
+      <button type="button" class="btn${v === true ? " btn-primary" : ""}" data-yes="${escapeHtml(key)}">Yes</button>
+      <button type="button" class="btn${v === false ? " btn-primary" : ""}" data-no="${escapeHtml(key)}">No, skip</button>
     </div></div>`;
 }
 
 function field(path, label, value, attrs = "") {
   const type = /type=/.test(attrs) ? "" : 'type="text" ';
-  return `<div class="form-group"><label>${escapeHtml(label)}</label><input ${type}data-path="${path}" value="${escapeHtml(value ?? "")}" ${attrs}></div>`;
+  return `<div class="form-group"><label>${escapeHtml(label)}</label><input ${type}data-path="${escapeHtml(path)}" value="${escapeHtml(value ?? "")}" ${attrs}></div>`;
 }
 
 /** A secret field: masked, with a Show button (a password never shows while typed). */
 function secretField(path, label, value, extra = "") {
   return `<div class="form-group"><label>${escapeHtml(label)}</label>
-    <div class="secret-input"><input type="password" data-path="${path}" value="${escapeHtml(value ?? "")}" autocomplete="new-password" spellcheck="false" ${extra}>
-    <button type="button" class="btn btn-small" data-reveal-path="${path}">Show</button></div></div>`;
+    <div class="secret-input"><input type="password" data-path="${escapeHtml(path)}" value="${escapeHtml(value ?? "")}" autocomplete="new-password" spellcheck="false" ${extra}>
+    <button type="button" class="btn btn-small" data-reveal-path="${escapeHtml(path)}">Show</button></div></div>`;
 }
 
 function stepBody(id) {
@@ -124,7 +125,7 @@ function stepBody(id) {
     case "scan": {
       const job = s.scan.job;
       const progress = job ? `<div class="setup-progress"><div style-width="${job.total ? Math.round(100 * job.done / job.total) : 0}"></div></div>
-        <div class="dim">${job.finished ? `Scanned ${job.total} addresses in ${job.seconds} s: ${job.results.length} answered.` : `Scanning ${job.done} / ${job.total}...`}</div>` : "";
+        <div class="dim">${job.finished ? `Scanned ${escapeHtml(job.total)} addresses in ${escapeHtml(job.seconds)} s: ${job.results.length} answered.` : `Scanning ${escapeHtml(job.done)} / ${escapeHtml(job.total)}...`}</div>` : "";
       const nets = s.scan.subnets.map((n, i) => `<div class="subnet-row">
           <input type="text" data-subnet="${i}" value="${escapeHtml(n)}" placeholder="192.168.1.0/24" spellcheck="false">
           ${s.scan.subnets.length > 1 ? `<button type="button" class="btn btn-small" data-subnet-del="${i}" title="Remove this subnet" aria-label="Remove">&times;</button>` : ""}
@@ -159,7 +160,7 @@ function stepBody(id) {
       if (!hosts.length) return `<p class="dim">No devices are ticked, so there is nothing to look for services on. Port and web checks can be added later from the Devices page (Add, Service).</p>`;
       const job = sv.job;
       const modes = [["common", "Common services"], ["custom", "Choose ports"], ["all", "All 65,535 ports"]].map(([k, l]) =>
-        `<button type="button" class="btn${sv.mode === k ? " active" : ""}" data-svc-mode="${k}">${l}</button>`).join("");
+        `<button type="button" class="btn${sv.mode === k ? " active" : ""}" data-svc-mode="${escapeHtml(k)}">${escapeHtml(l)}</button>`).join("");
       const rows = sv.results.flatMap(r => (r.open_ports || []).map(port => ({ r, port, key: `${r.ip}:${port}` })));
       const progress = job ? `<div class="setup-progress"><div style-width="${job.finished ? 100 : job.total ? Math.round(100 * job.done / job.total) : 0}"></div></div>
         <div class="dim">${escapeHtml(scanStatusTextFor(job, true))}</div>` : "";
@@ -235,7 +236,7 @@ function reviewBody() {
   const devices = Object.values(s.picked);
   const services = s.services.wanted ? Object.values(s.services.picked) : [];
   const card = (on, icon, title, lines) => `<div class="review-card${on ? "" : " off"}">
-      <div class="review-head"><span class="review-icon" aria-hidden="true">${on ? "✓" : "–"}</span><span class="review-emoji" aria-hidden="true">${icon}</span><strong>${escapeHtml(title)}</strong></div>
+      <div class="review-head"><span class="review-icon" aria-hidden="true">${on ? "✓" : "–"}</span><span class="review-emoji" aria-hidden="true">${escapeHtml(icon)}</span><strong>${escapeHtml(title)}</strong></div>
       <ul>${lines.map(l => `<li>${escapeHtml(l)}</li>`).join("")}</ul></div>`;
   const names = devices.slice(0, 6).map(d => d.hostname).join(", ") + (devices.length > 6 ? ` and ${devices.length - 6} more` : "");
   const cards = [

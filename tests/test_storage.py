@@ -183,5 +183,27 @@ class ProblemEngineTests(unittest.TestCase):
         database.sync_problems([], lambda k: 0, now + 600)
 
 
+class AuditRetentionTests(unittest.TestCase):
+    def test_audit_floor_and_separate_events(self):
+        now = int(time.time())
+        with database.get_connection() as conn:
+            conn.execute("INSERT INTO audit_log (timestamp, category, message, details) VALUES (?, 'floor', 'sixty days old', '');",
+                         (now - 60 * 86400,))
+            conn.execute("INSERT INTO events (timestamp, severity, event_type, message) VALUES (?, 'info', 'floortest', 'ten days old');",
+                         (now - 10 * 86400,))
+            conn.execute("INSERT INTO events (timestamp, severity, event_type, message) VALUES (?, 'info', 'floortest', 'two days old');",
+                         (now - 2 * 86400,))
+            conn.commit()
+        database.purge_expired(7, 1, 365, event_retention_days=5)
+        with database.get_connection() as conn:
+            audit = conn.execute("SELECT COUNT(*) FROM audit_log WHERE category = 'floor';").fetchone()[0]
+            events = [r[0] for r in conn.execute("SELECT message FROM events WHERE event_type = 'floortest';")]
+            conn.execute("DELETE FROM audit_log WHERE category = 'floor';")
+            conn.execute("DELETE FROM events WHERE event_type = 'floortest';")
+            conn.commit()
+        self.assertEqual(audit, 1)                    # a 1-day setting cannot go below 90 days
+        self.assertEqual(events, ["two days old"])    # events follow their own setting
+
+
 if __name__ == "__main__":
     unittest.main()

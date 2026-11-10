@@ -23,7 +23,7 @@ async function renderTwoFactor() {
     <div class="twofa-row">
       <span class="status-pill ${on ? "status-ok" : "status-warn"}">${on ? "On" : "Off"}</span>
       <span class="dim">${on
-        ? `Logging in and the most sensitive changes also ask for a code from your phone. ${twoFaState.recovery_left} recovery code${twoFaState.recovery_left === 1 ? "" : "s"} left.`
+        ? `Logging in and the most sensitive changes also ask for a code from your phone. ${escapeHtml(twoFaState.recovery_left)} recovery code${twoFaState.recovery_left === 1 ? "" : "s"} left.`
         : "Recommended: logging in and the most sensitive changes (credentials, users, SSH trust) then also ask for a code from an authenticator app."}</span>
     </div>
     <div class="twofa-actions">
@@ -43,7 +43,11 @@ function showRecoveryCodes(codes) {
   });
 }
 
-async function startTwoFactor() {
+/**
+ * The QR code and the first code, in Settings, Account (target "twofa-enrol") or on the screen that
+ * a required 2FA shows (target "enrol-body", with done called once it is on).
+ */
+async function startTwoFactor(target = "twofa-enrol", done = null) {
   let r;
   try {
     r = await api("/api/auth/2fa/start", { method: "POST", body: {} });
@@ -51,8 +55,8 @@ async function startTwoFactor() {
     showToast(err.message, "error");
     return;
   }
-  const box = document.getElementById("twofa-enrol");
-  const startBtn = document.getElementById("btn-2fa-on");
+  const box = document.getElementById(target);
+  const startBtn = done ? null : document.getElementById("btn-2fa-on");
   if (startBtn) startBtn.classList.add("hidden");
   box.innerHTML = `<div class="twofa-enrol">
       <div class="twofa-qr" id="twofa-qr"></div>
@@ -65,7 +69,7 @@ async function startTwoFactor() {
         <form id="twofa-confirm" class="twofa-confirm">
           <input type="text" id="twofa-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="123456">
           <button type="submit" class="btn btn-primary">Turn on</button>
-          <button type="button" class="btn" id="btn-2fa-cancel">Cancel</button>
+          ${done ? "" : `<button type="button" class="btn" id="btn-2fa-cancel">Cancel</button>`}
         </form>
       </div>
     </div>`;
@@ -83,21 +87,50 @@ async function startTwoFactor() {
   qr.style.borderRadius = "4px";
   document.getElementById("twofa-qr").replaceChildren(qr);
   document.getElementById("twofa-code").focus();
-  document.getElementById("btn-2fa-cancel").addEventListener("click", () => { box.innerHTML = ""; if (startBtn) startBtn.classList.remove("hidden"); });
+  if (!done) document.getElementById("btn-2fa-cancel").addEventListener("click", () => { box.innerHTML = ""; if (startBtn) startBtn.classList.remove("hidden"); });
   document.getElementById("twofa-confirm").addEventListener("submit", async ev => {
     ev.preventDefault();
     try {
       const res = await api("/api/auth/2fa/enable", { method: "POST", body: { code: document.getElementById("twofa-code").value.trim() } });
       await showRecoveryCodes(res.recovery_codes);
       showToast("Two-factor authentication is on", "success");
-      renderTwoFactor();
+      if (done) done();
+      else renderTwoFactor();
     } catch (err) {
       showToast(err.message, "error");
     }
   });
 }
 
+// Required 2FA: one setup screen shared by every request that was refused for it; they are sent
+// again once it is on. Log out goes back to the login page.
+let enrolPending = null;
+function promptEnrol() {
+  if (enrolPending) return enrolPending;
+  enrolPending = new Promise(resolve => {
+    const screen = document.getElementById("enrol-screen");
+    document.getElementById("enrol-body").innerHTML = "";
+    show(screen);
+    startTwoFactor("enrol-body", () => {
+      hide(screen);
+      document.getElementById("enrol-body").innerHTML = "";
+      resolve();
+    });
+  }).finally(() => { enrolPending = null; });
+  return enrolPending;
+}
+
+function initEnrolScreen() {
+  const out = document.getElementById("enrol-logout");
+  if (!out) return;
+  out.addEventListener("click", async () => {
+    try { await fetch("/api/auth/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); } catch (e) { /* gone already */ }
+    location.reload();
+  });
+}
+
 function initTwoFactor() {
+  initEnrolScreen();
   const box = document.getElementById("account-2fa");
   if (!box) return;
   box.addEventListener("click", async ev => {

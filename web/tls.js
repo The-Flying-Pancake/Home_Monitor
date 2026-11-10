@@ -32,6 +32,9 @@ function renderTlsSettings(fill) {
   sel.disabled = !can("settings.system");
   const pick = sel.value;
   document.getElementById("tls-mode-help").textContent = TLS_HELP[t.mode] || "";
+  const failed = document.getElementById("tls-failure");
+  failed.textContent = t.failure ? `HTTPS could not start: ${t.failure}. Logins from other computers are refused until this is fixed. Choose a certificate below or switch HTTPS off.` : "";
+  failed.classList.toggle("hidden", !t.failure);
   document.querySelectorAll("#settings-https [data-tls]").forEach(f =>
     f.classList.toggle("hidden", f.dataset.tls !== pick || !can("settings.system") || (pick === "off" && t.mode === "off")));
   document.getElementById("btn-tls-self").textContent = t.mode === "self-signed" ? "Save names" : "Use this";
@@ -57,8 +60,7 @@ function renderTlsSettings(fill) {
       <tr><td>Valid</td><td>${escapeHtml(day(c.not_before))} to ${escapeHtml(day(c.not_after))}, ${leftText}${t.mode === "self-signed" ? ", renewed automatically" : ""}</td></tr>
       <tr><td>Fingerprint (SHA-256)</td><td><code class="tls-fp">${escapeHtml(c.fingerprint)}</code></td></tr>
     </tbody></table>
-    <a class="btn" href="/api/tls/certificate" download="homelab-monitor.crt" data-tls-download>Download certificate</a>
-    ${t.active ? "" : `<div class="form-help text-err">Not in use: the certificate could not be loaded, so the monitor serves plain HTTP. See Events.</div>`}`;
+    <a class="btn" href="/api/tls/certificate" download="homelab-monitor.crt" data-tls-download>Download certificate</a>`;
 }
 
 /** After a change, move this page to the address the monitor now answers on. */

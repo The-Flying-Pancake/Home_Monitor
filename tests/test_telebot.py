@@ -109,6 +109,30 @@ class PollTests(unittest.TestCase):
         self.assertTrue(any("another chat" in m for m in audit))
         self.assertTrue(any("Answered Telegram command /status" in m for m in audit))
 
+    def test_stranger_map_is_capped(self):
+        from unittest import mock
+        bot = self.bot()
+        with mock.patch.object(telebot, "MAX_STRANGERS", 5):
+            self.queue = [update(100 + i, "/status", chat=str(5000 + i)) for i in range(20)] + [update(130, "/status")]
+            self.assertEqual(bot.poll_once(), 1)                           # the owner is still answered
+            self.assertLessEqual(len(bot._stranger_noted), 5)
+            self.assertIn("5019", bot._stranger_noted)                      # the newest are kept
+        self.assertEqual([c for c, _ in self.sent], [OWNER])
+
+    def test_stranger_noted_once_an_hour(self):
+        bot = self.bot()
+
+        def noted():
+            logs, _ = database.list_audit_filtered(q="Chat 6061", category="telegram")
+            return len(logs)
+        before = noted()
+        self.queue = [update(200, "/status", chat="6061"), update(201, "/problems", chat="6061")]
+        bot.poll_once()
+        self.queue = [update(202, "/status", chat="6061")]
+        bot.poll_once()
+        self.assertEqual(noted(), before + 1)
+        self.assertEqual(self.sent, [])
+
     def test_find_chat_only_during_a_search(self):
         bot = self.bot()
         # A stranger wrote before the search started: never picked.
@@ -159,6 +183,16 @@ class PollTests(unittest.TestCase):
         self.settings.update(telegram_commands="on", telegram_enabled="off")
         self.assertEqual(bot.poll_once(), 0)
         self.assertEqual(self.offsets, [])
+
+    def test_commands_are_attributed(self):
+        bot = self.bot()
+        self.queue = [update(20, "/status")]
+        self.assertEqual(bot.poll_once(), 1)
+        with database.get_connection() as conn:
+            row = conn.execute("SELECT actor, source FROM audit_log WHERE message LIKE 'Answered Telegram command%' "
+                               "ORDER BY id DESC LIMIT 1;").fetchone()
+        self.assertEqual(tuple(row), ("telegram", f"chat {OWNER}"))
+        self.assertEqual(database.audit_identity(), ("system", ""))
 
 
 if __name__ == "__main__":

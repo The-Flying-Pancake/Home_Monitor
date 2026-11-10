@@ -46,6 +46,8 @@ STALE_SECONDS = 300
 FIND_SECONDS = 120           # Find my chat: how long after the button a message to the bot counts
 BACKOFF_SECONDS = (15, 30, 60, 120, 300)
 MAX_LINES = 60
+# Other chats remembered so each is audited at most once an hour. Far more than ever write to a private bot.
+MAX_STRANGERS = 200
 SEVERITY_MARK = {"critical": "🔴", "high": "🟠", "warning": "🟡", "info": "🔵"}
 STATE_WORD = {"online": "up", "offline": "down", "degraded": "degraded"}
 
@@ -429,6 +431,18 @@ class Bot:
         self.find_since = 0.0
         self.last_chat = None
 
+    def _note_stranger(self, chat_id: str, now: float) -> bool:
+        """True when a command from another chat should be audited: once an hour per chat. At most
+        MAX_STRANGERS chats are remembered: when full, those older than an hour go, then the oldest."""
+        if now - self._stranger_noted.get(chat_id, 0) <= 3600:
+            return False
+        if chat_id not in self._stranger_noted and len(self._stranger_noted) >= MAX_STRANGERS:
+            self._stranger_noted = {k: t for k, t in self._stranger_noted.items() if now - t <= 3600}
+            while len(self._stranger_noted) >= MAX_STRANGERS:
+                del self._stranger_noted[min(self._stranger_noted, key=self._stranger_noted.get)]
+        self._stranger_noted[chat_id] = now
+        return True
+
     def start(self) -> None:
         if self.thread is None:
             self.thread = threading.Thread(target=self._loop, name="telebot", daemon=True)
@@ -478,16 +492,18 @@ class Bot:
             if not text.startswith("/"):
                 continue
             if from_chat != chat:
-                if now - self._stranger_noted.get(from_chat, 0) > 3600:
-                    self._stranger_noted[from_chat] = now
+                if self._note_stranger(from_chat, now):
                     database.add_audit("telegram", "Ignored a Telegram command from another chat", f"Chat {from_chat[:24]}")
                 continue
             if now - float(msg.get("date") or 0) > STALE_SECONDS:
                 continue
-            reply = answer(text, s)
+            # Anything a command records names Telegram and the chat.
+            with database.audit_context("telegram", f"chat {from_chat[:24]}"):
+                reply = answer(text, s)
+                if reply is not None:
+                    database.add_audit("telegram", f"Answered Telegram command {text.split()[0][:40]}", text[:80])
             if reply is None:
                 continue
-            database.add_audit("telegram", f"Answered Telegram command {text.split()[0][:40]}", text[:80])
             try:
                 self.sender(token, chat, reply)
                 answered += 1

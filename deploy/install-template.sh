@@ -54,6 +54,7 @@ TIMEZONE=""                   # blank: same as this Proxmox host (workflow sched
 # SNMP inside the container, so the monitor can watch its own host
 SNMP_COMMUNITY="public"
 SNMP_ALLOW=""                 # blank: only the container itself (its own address and 127.0.0.1)
+# SNMP_ALLOW: addresses or networks, IPv4 or IPv6, separated by spaces.
 
 PORT=8080                     # web interface port
 
@@ -71,29 +72,39 @@ NTP_SERVER=""
 #   RESTORE="no"      fresh install: you create the first account in the browser
 #   RESTORE="latest"  restore the newest backup from the source below while installing
 RESTORE="no"
+# yes: RESTORE="latest" may restore a backup that cannot be proven unchanged. Leave this at no unless
+# you are restoring older backups on purpose.
+RESTORE_UNVERIFIED="no"
 # Backups through Syncthing: the NFS export holding this container's Syncthing identity
 # (cert.pem, key.pem, config.xml) and the folder Syncthing keeps the backups in.
 SYNCTHING_KEYS_NFS=""         # e.g. 192.168.1.10:/Share/SyncThingKeys/Monitor
 SYNCTHING_FOLDER="/mnt/Syncthing/Monitor"
 # Or backups on a plain NFS share (used when SYNCTHING_KEYS_NFS is blank)
 BACKUP_NFS=""                 # e.g. 192.168.1.10:/Share/Backups/Monitor
-# A passphrase that seals the vault key inside every backup (12 characters or more). Blank: the key
-# travels in the backup as it is, so whoever can read the backup share can open the stored passwords
-# and keys. Set: a restore needs it (a rebuild with RESTORE="latest" takes it from here). It is kept
-# on the container for the daily backup, readable by root only.
+# A passphrase that seals the vault key inside every backup and proves each backup unchanged
+# (12 characters or more). Blank: backups that leave the container (Syncthing, a share) go without
+# the key, so a rebuild from them cannot use the stored passwords, and no backup can be proven
+# unchanged. Set: a restore needs it (a rebuild with RESTORE="latest" takes it from here). It is kept
+# on the container for the daily backup, readable by root only. On an installed box, set or change
+# it with /root/backup-passphrase.sh.
 BACKUP_PASSPHRASE=""
 
-# Who may reach the container's SSH and web page. Blank: any private address (10.x, 172.16-31.x,
-# 192.168.x and local IPv6). Or a list such as "192.168.1.0/24 192.168.10.5". Everything else coming
-# in is dropped, apart from Syncthing and DHCP. Not used with --local.
+# Who may reach the container's SSH and web page. Blank on a new install: any private address (10.x,
+# 172.16-31.x, 192.168.x and local IPv6). Or a list such as "192.168.1.0/24 192.168.10.5". Everything
+# else coming in is dropped, apart from Syncthing and DHCP. Not used with --local.
+# On an upgrade a blank value keeps what this box already uses. A different value is asked about.
+# To go back to every private address after setting a list, write them out:
+# 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7 fe80::/10
 ADMIN_NET=""
 # Root SSH login with a key instead of the password: a public key line, or a file on this host such
 # as /root/.ssh/id_ed25519.pub. Set: password logins over SSH are switched off (the Proxmox console
-# still takes the password). Not used with --local.
+# still takes the password). Blank: at a terminal the installer offers to take one. Not used with --local.
+# On an upgrade a blank value keeps what this box already uses. A different value is asked about.
 ROOT_SSH_KEY=""
 # 1: an unprivileged container, the safer kind: root inside it is not root on this host. It cannot
 # mount NFS itself, so this host copies the Syncthing identity and backups in, and other NFS shares
 # are passed in as mount points (see the guide). 0: privileged, the container mounts NFS itself.
+# The installer asks at a terminal, with this as the answer Enter keeps.
 UNPRIVILEGED=0
 
 # <<< SETTINGS
@@ -102,12 +113,13 @@ set -euo pipefail
 
 TEMPLATE_SERIES="ubuntu-24.04-standard"
 # nesting: systemd sandboxing in Ubuntu 24.04 containers; mount=nfs only for a privileged one.
-FEATURES="nesting=1,mount=nfs"
-[[ "${UNPRIVILEGED:-0}" == 1 ]] && FEATURES="nesting=1"
+set_features() { FEATURES="nesting=1,mount=nfs"; [[ "${UNPRIVILEGED:-0}" == 1 ]] && FEATURES="nesting=1"; return 0; }
+set_features
 APP_DIR="/opt/homelab-monitor"
 DATA_DIR="/var/lib/homelab-monitor"
 KEY_DIR="/etc/homelab-monitor"
 INSTALL_DIR="/etc/homelab-monitor-install"   # root's own: install.conf, layout and the backup passphrase
+SAFE_DIR="/var/lib/homelab-monitor-safe"      # root only: the safety copies made before an upgrade, restore or undo
 NEW_DIR="/root/.hm-new"                       # the new build while upgrading or restoring (root only)
 PAYLOAD_SHA256="__PAYLOAD_SHA256__"
 SERVICE_USER="homelab-monitor"
@@ -139,11 +151,11 @@ for arg in "$@"; do
     *) echo "Unknown option $arg (use --local, --rebuild, --upgrade, --check, --restore, --preview, --demo, --report or --help)" >&2; exit 1 ;;
   esac
 done
+# The box's own settings (settings.env, written by every install and upgrade): only these names, plain characters.
+set_re='^(CTID|HOSTNAME|PORT|ADMIN_NET|SNMP_ALLOW|SSH_KEY_LINE|UNPRIVILEGED|SYNCTHING_KEYS_NFS|SYNCTHING_FOLDER|BACKUP_NFS|TARGET)="([A-Za-z0-9 ._:/@+=,-]*)"$'
 if [[ -n "$RUN_HERE" ]]; then
-  # The box's own settings (written by every install and upgrade): only these names, plain characters.
   SETTINGS_ENV="${HM_SETTINGS_ENV:-/etc/homelab-monitor-install/settings.env}"
   [[ -f "$SETTINGS_ENV" ]] || { echo "No recorded settings at $SETTINGS_ENV: upgrade once with home_monitor.sh from the Proxmox host first." >&2; exit 1; }
-  set_re='^(CTID|HOSTNAME|PORT|ADMIN_NET|SNMP_ALLOW|SSH_KEY_LINE|UNPRIVILEGED|SYNCTHING_KEYS_NFS|SYNCTHING_FOLDER|BACKUP_NFS|TARGET)="([A-Za-z0-9 ._:/@+=,-]*)"$'
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" =~ $set_re ]] && printf -v "${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
   done < "$SETTINGS_ENV"
@@ -167,17 +179,70 @@ fi
 bad_setting() { echo "$1" >&2; exit 1; }
 [[ -z "$BACKUP_PASSPHRASE" || ${#BACKUP_PASSPHRASE} -ge 12 ]] || bad_setting "BACKUP_PASSPHRASE: 12 characters or more, or blank."
 [[ "$UNPRIVILEGED" == 0 || "$UNPRIVILEGED" == 1 ]] || bad_setting "UNPRIVILEGED: 0 or 1."
+RESTORE_UNVERIFIED="${RESTORE_UNVERIFIED,,}"
+[[ "$RESTORE_UNVERIFIED" == yes || "$RESTORE_UNVERIFIED" == no ]] || bad_setting "RESTORE_UNVERIFIED: yes or no."
 DEMO="${DEMO,,}"
 [[ "$DEMO" == yes || "$DEMO" == no ]] || bad_setting "DEMO: yes or no."
-net_re='^(([0-9]{1,3}[.]){3}[0-9]{1,3}(/([0-9]|[12][0-9]|3[0-2]))?|[0-9A-Fa-f:]+(/[0-9]{1,3})?)$'
-for net in ${ADMIN_NET//,/ }; do
-  [[ "$net" =~ $net_re ]] || bad_setting "ADMIN_NET: addresses or networks such as 192.168.1.0/24, separated by spaces ($net is not one)."
-done
+# ADMIN_NET and SNMP_ALLOW go into the firewall rules and snmpd.conf: strict IPv4 or IPv6 addresses
+# or networks only, in plain bash (Python may not be on the machine yet).
+# >>> net checks
+valid_net4() {
+  local a="$1" o
+  if [[ "$a" == */* ]]; then [[ "${a#*/}" =~ ^(0|[1-9]|[12][0-9]|3[0-2])$ ]] || return 1; a="${a%/*}"; fi
+  [[ "$a" =~ ^([0-9]{1,3})[.]([0-9]{1,3})[.]([0-9]{1,3})[.]([0-9]{1,3})$ ]] || return 1
+  for o in "${BASH_REMATCH[@]:1}"; do [[ "$o" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( o <= 255 )) || return 1; done
+}
+valid_net6() {
+  local a="$1" body g n=0 IFS=:; local -a groups
+  if [[ "$a" == */* ]]; then [[ "${a#*/}" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( ${a#*/} <= 128 )) || return 1; a="${a%/*}"; fi
+  [[ "$a" =~ ^[0-9A-Fa-f:]+$ && "$a" == *:* && "$a" != *:::* ]] || return 1
+  body="${a//::/}"; (( ${#a} - ${#body} <= 2 )) || return 1
+  [[ "$a" != :[!:]* && "$a" != *[!:]: ]] || return 1
+  read -r -a groups <<<"$a"
+  for g in "${groups[@]}"; do [[ -z "$g" ]] && continue; (( ${#g} <= 4 )) || return 1; n=$((n + 1)); done
+  if [[ "$a" == *::* ]]; then (( n <= 7 )); else (( n == 8 )); fi
+}
+valid_net() { if [[ "$1" == *:* ]]; then valid_net6 "$1"; else valid_net4 "$1"; fi; }
+net_words() {   # a list by spaces or commas, one per line; a value of several lines can never pass
+  local w; local -a t
+  [[ "$1" != *$'\n'* ]] || { echo "(several lines)"; return 0; }
+  read -r -a t <<<"${1//,/ }"
+  for w in "${t[@]}"; do printf '%s\n' "$w"; done
+}
+# <<< net checks
+check_nets() {  # name, value: a setting in this file is refused at its first bad entry
+  local w
+  while IFS= read -r w; do
+    valid_net "$w" || bad_setting "$1: addresses or networks such as 192.168.1.0/24 or fd00::/8, separated by spaces ($w is not one)."
+  done < <(net_words "$2")
+  return 0
+}
+keep_valid_nets() {  # name, value: the good entries, single spaces; bad ones are named on stderr and left out
+  local w; local -a good=()
+  while IFS= read -r w; do
+    if valid_net "$w"; then good+=("$w"); else echo "Ignoring $w in the recorded $1: it is not an address or network." >&2; fi
+  done < <(net_words "$2")
+  printf '%s' "${good[*]}"
+}
+if [[ -n "$RUN_HERE" ]]; then
+  # Recorded by an older, looser build: a bad entry is dropped rather than stopping Update in the app.
+  ADMIN_NET="$(keep_valid_nets ADMIN_NET "$ADMIN_NET")"; SNMP_ALLOW="$(keep_valid_nets SNMP_ALLOW "$SNMP_ALLOW")"
+else
+  check_nets ADMIN_NET "$ADMIN_NET"; check_nets SNMP_ALLOW "$SNMP_ALLOW"
+  ADMIN_NET="$(keep_valid_nets ADMIN_NET "$ADMIN_NET")"; SNMP_ALLOW="$(keep_valid_nets SNMP_ALLOW "$SNMP_ALLOW")"
+fi
+key_re='^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh[.]com|sk-ecdsa-sha2-nistp256@openssh[.]com) [A-Za-z0-9+/=]+( [ A-Za-z0-9@._+:-]*)?$'
+# A public key line, or a file on this host holding one: sets SSH_KEY_LINE, or returns 1 and leaves it.
+# The setting and the key pasted at the installer's question are checked by this one function.
+parse_key() {
+  local line
+  if [[ -f "$1" ]]; then line="$(grep -m1 -E '^(ssh-|ecdsa-|sk-)' "$1" || true)"; else line="$1"; fi
+  [[ "$line" =~ $key_re ]] || return 1
+  SSH_KEY_LINE="$line"
+}
 SSH_KEY_LINE=""
 if [[ -n "$ROOT_SSH_KEY" ]]; then
-  if [[ -f "$ROOT_SSH_KEY" ]]; then SSH_KEY_LINE="$(grep -m1 -E '^(ssh-|ecdsa-|sk-)' "$ROOT_SSH_KEY" || true)"; else SSH_KEY_LINE="$ROOT_SSH_KEY"; fi
-  key_re='^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh[.]com|sk-ecdsa-sha2-nistp256@openssh[.]com) [A-Za-z0-9+/=]+( [ A-Za-z0-9@._+:-]*)?$'
-  [[ "$SSH_KEY_LINE" =~ $key_re ]] || bad_setting "ROOT_SSH_KEY: a public key line (ssh-ed25519 AAAA... you@pc) or a file on this host holding one."
+  parse_key "$ROOT_SSH_KEY" || bad_setting "ROOT_SSH_KEY: a public key line (ssh-ed25519 AAAA... you@pc) or a file on this host holding one."
 fi
 
 # ------------------------------------------------------------------ look and feel
@@ -470,6 +535,9 @@ adopt_ct() {  # a rebuild keeps the container's own settings, not the ones at th
     s="$(sed -n 's/.*size=\([0-9][0-9]*\)G.*/\1/p' <<<"$v")"; [[ -n "$s" ]] && DISK_SIZE="$s"
   fi
   v="$(ct_conf "$CTID" net0)"; [[ -n "$v" ]] && KEEP_NET0="$v"
+  # The kind too: a rebuild never turns an unprivileged container into a privileged one by itself.
+  v="$(ct_conf "$CTID" unprivileged)"; [[ "$v" == 1 ]] && UNPRIVILEGED=1
+  set_features
   return 0
 }
 
@@ -558,6 +626,109 @@ show_summary() {
   return 0
 }
 
+# ------------------------------------------------------------------ the container's kind and root SSH
+# A person at the terminal is asked; anyone else gets the same warnings printed, in the log and on
+# the last screen, and is never asked. HM_TEST_ASK lets the test suite answer on a pipe.
+hm_interactive() {
+  [[ -z "${HM_NO_ASK-}" ]] || return 1
+  [[ -n "${HM_TEST_ASK-}" ]] && return 0
+  [[ -t 0 && -z "${HM_FAKE_HOST-}" ]]
+}
+SEC_NOTES=()            # one line each under "Good to know" on the last screen
+# Printed to the terminal and kept in the log as plain text (a log problem never stops the install).
+warn_head() { printf '\n  %s⚠  %s%s\n' "$YEL$B" "$1" "$R"; { printf '\n⚠  %s\n' "$1" >> "$LOG"; } 2>/dev/null || true; }
+warn_line() { printf '    %s\n' "$1"; { printf '    %s\n' "$1" >> "$LOG"; } 2>/dev/null || true; }
+warn_privileged() {  # new or upgrade
+  warn_head "This container is privileged."
+  warn_line "Root inside a privileged container is close to root on this Proxmox host, so if someone broke"
+  warn_line "into the monitor's container they could reach the host too."
+  warn_line "Privileged is only needed so the container can mount NFS shares itself."
+  warn_line "With an unprivileged container this host mounts the NFS shares and copies backups and the"
+  warn_line "Syncthing identity in instead."
+  if [[ "$1" == upgrade ]]; then
+    warn_line "To change it: set UNPRIVILEGED=1 at the top of this file, then run --rebuild with RESTORE=\"latest\"."
+  elif ! hm_interactive; then
+    warn_line "Set UNPRIVILEGED=1 at the top of this file to use it."
+  fi
+  return 0
+}
+warn_password() {  # new or upgrade
+  warn_head "Root can log in to the container over SSH with a password."
+  warn_line "It is allowed from: ${ADMIN_NET:-every private address}."
+  warn_line "Each connection gets 3 tries (MaxAuthTries 3) and each address can open 10 new connections a minute."
+  warn_line "To use a key instead, set ROOT_SSH_KEY at the top of this file to your public key."
+  [[ "$1" == upgrade ]] && warn_line "Then run the upgrade again: password logins over SSH are switched off."
+  return 0
+}
+choose_kind() {  # Enter (or the end of the input) keeps the kind from the settings
+  local a def=1
+  [[ "$UNPRIVILEGED" == 1 ]] && def=2
+  echo
+  say "What kind of container?"
+  say "  1  Privileged (default; the container mounts NFS shares itself)"
+  say "  2  Unprivileged (safer; this Proxmox host mounts NFS shares and copies backups and the Syncthing identity in)"
+  while :; do
+    read -r -p "  Kind, 1 or 2 [${def}]: " a || a=""
+    a="${a%$'\r'}"; a="${a:-$def}"
+    case "$a" in
+      1) UNPRIVILEGED=0; break ;;
+      2) UNPRIVILEGED=1; break ;;
+    esac
+    say "${YEL}Type 1 or 2.${R}"
+  done
+  set_features
+}
+# A new install or a rebuild: after the questions, before the summary. One typed ACCEPT covers both
+# warnings; a pasted key takes the password warning away.
+container_choices() {
+  local a need=0
+  hm_interactive && choose_kind
+  if [[ "$UNPRIVILEGED" != 1 ]]; then
+    warn_privileged new; need=1
+    SEC_NOTES+=("Privileged container: root in it is close to root on the Proxmox host.")
+  fi
+  if [[ -z "$SSH_KEY_LINE" ]]; then
+    warn_password new
+    if hm_interactive; then
+      while :; do
+        read -r -p "  Paste a public key to use it instead, or press Enter to keep the password: " a || a=""
+        a="${a%$'\r'}"
+        [[ -z "$a" ]] && break
+        if parse_key "$a"; then ROOT_SSH_KEY="$a"; say "${GRN}Root will log in over SSH with that key only.${R}"; break; fi
+        say "${YEL}That is not a public key line (ssh-ed25519 AAAA... you@pc) or a file holding one.${R}"
+      done
+    fi
+    if [[ -z "$SSH_KEY_LINE" ]]; then
+      need=1
+      SEC_NOTES+=("Root can log in over SSH with a password from ${ADMIN_NET:-every private address}.")
+    fi
+  fi
+  if (( need )) && hm_interactive; then
+    echo
+    read -r -p "  Type ACCEPT to carry on with the above: " a || a=""
+    [[ "$a" == "ACCEPT" ]] || die "Cancelled. Nothing was changed."
+  fi
+  echo
+  return 0
+}
+# An upgrade only prints the warnings: the kind was chosen at install and an upgrade cannot change it.
+# The container's own sshd_config is read, as the owner may have changed it by hand.
+upgrade_warnings() {
+  local kind="$UNPRIVILEGED"
+  [[ "$TARGET" == container ]] || return 0
+  [[ -n "$RUN_HERE" ]] || kind="$(ct_conf "$CTID" unprivileged)"
+  [[ "$kind" == 1 ]] || warn_privileged upgrade
+  if [[ -z "$SSH_KEY_LINE" ]] && pct exec "$CTID" -- grep -qE '^\s*PermitRootLogin\s+yes' /etc/ssh/sshd_config 2>/dev/null; then
+    warn_password upgrade
+  fi
+  return 0
+}
+print_sec_notes() {
+  local n
+  for n in "${SEC_NOTES[@]}"; do printf '      %-9s %s\n' "Security" "$n"; done
+  return 0
+}
+
 # ------------------------------------------------------------------ preview (changes nothing)
 if [[ "$MODE" == "preview" ]]; then
   clear 2>/dev/null || true
@@ -566,6 +737,10 @@ if [[ "$MODE" == "preview" ]]; then
   echo
   DISK_STORAGE="${DISK_STORAGE:-local-lvm}"; TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
   show_summary
+  if [[ "$TARGET" == container ]]; then
+    [[ "$UNPRIVILEGED" == 1 ]] || warn_privileged new
+    [[ -n "$SSH_KEY_LINE" ]] || warn_password new
+  fi
   echo
   if [[ "$TARGET" == "local" ]]; then
     say "${D}With --local nothing asks for a password: your own logins stay as they are.${R}"
@@ -602,10 +777,72 @@ wait_for_ct() {
   return 1
 }
 
+# ------------------------------------------------------------------ the box's own settings win
+# An upgrade, a restore or a rebuild from the Proxmox host rewrites the firewall and settings.env from
+# this file. A freshly downloaded file has these blank, so they must never silently widen who may
+# reach the box: what the box recorded (settings.env) is read first. Blank here keeps it. A different
+# value is asked about at a terminal, and otherwise the recorded one is kept with a note. The record
+# was written by root in the container, so it is checked like any other input.
+note_line() { say "$1"; { printf '%s\n' "$1" >> "$LOG"; } 2>/dev/null || true; }
+same_form() {  # two lists with the same entries in any order
+  [[ "$(net_words "$1" | sort -u | tr '\n' ' ')" == "$(net_words "$2" | sort -u | tr '\n' ' ')" ]]
+}
+settle() {  # name shown, value in this file, recorded value -> SETTLED
+  local name="$1" file="$2" rec="$3" a
+  SETTLED="$rec"
+  [[ -z "$file" ]] && return 0
+  if [[ "$name" == ROOT_SSH_KEY ]]; then [[ "$file" == "$rec" ]] && { SETTLED="$file"; return 0; }
+  else same_form "$file" "$rec" && { SETTLED="$file"; return 0; }; fi
+  if hm_interactive; then
+    echo
+    printf '  %-34s %s\n' "${name} in this file:" "$file" "${name} this box was set with:" "${rec:-(blank)}"
+    read -r -p "  Type yes to use the value from this file. Press Enter to keep the one on the box: " a || a=""
+    if [[ "${a,,}" == yes ]]; then SETTLED="$file"; return 0; fi
+    note_line "${name}: kept the value this box uses."
+  else
+    note_line "${name}: this file differs from what the box uses, so the box's value was kept. Run this at a terminal to change it."
+    SEC_NOTES+=("${name}: this file differs from what the box uses, so the box's value was kept.")
+  fi
+  return 0
+}
+reconcile_recorded() {
+  local line rec_admin="" rec_snmp="" rec_key="" have=0 v
+  [[ "$TARGET" == container && -z "$RUN_HERE" ]] || return 0
+  if [[ "$MODE" != rebuild ]]; then
+    # An upgrade and a restore never change the kind: the container's own config is the truth.
+    v="$(ct_conf "$CTID" unprivileged)"
+    if [[ "$v" != 1 && "$UNPRIVILEGED" == 1 ]]; then
+      note_line "This container is privileged and UNPRIVILEGED=1 in this file does not change that. An upgrade never changes the kind of a container: use --rebuild."
+      SEC_NOTES+=("UNPRIVILEGED=1 in this file was not applied: an upgrade never changes the kind (use --rebuild).")
+    fi
+    if [[ "$v" == 1 ]]; then UNPRIVILEGED=1; else UNPRIVILEGED=0; fi
+    set_features
+    pct status "${CTID}" 2>/dev/null | grep -q running || pct start "${CTID}" >> "$LOG" 2>&1 || true
+    wait_for_ct || true
+  elif ! pct status "${CTID}" 2>/dev/null | grep -q running; then
+    note_line "CT ${CTID} is not running, so its recorded settings could not be read: the values in this file are used."
+    return 0
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ $set_re ]] || continue
+    have=1
+    case "${BASH_REMATCH[1]}" in
+      ADMIN_NET) rec_admin="$(keep_valid_nets ADMIN_NET "${BASH_REMATCH[2]}")" ;;
+      SNMP_ALLOW) rec_snmp="$(keep_valid_nets SNMP_ALLOW "${BASH_REMATCH[2]}")" ;;
+      SSH_KEY_LINE) v="${BASH_REMATCH[2]}"; [[ "$v" =~ $key_re ]] && rec_key="$v" ;;
+    esac
+  done < <(pct exec "${CTID}" -- cat "${INSTALL_DIR}/settings.env" 2>/dev/null || true)
+  (( have )) || return 0          # installed before 0.8.0: no record, the file's values apply
+  settle ADMIN_NET "$ADMIN_NET" "$rec_admin"; ADMIN_NET="$SETTLED"
+  settle SNMP_ALLOW "$SNMP_ALLOW" "$rec_snmp"; SNMP_ALLOW="$SETTLED"
+  settle ROOT_SSH_KEY "$SSH_KEY_LINE" "$rec_key"; SSH_KEY_LINE="$SETTLED"; ROOT_SSH_KEY="$SETTLED"
+  return 0
+}
+
 push_app() {
   # Files go through /root (root only) in the container, never a shared /tmp another user could prepare.
   pct push "${CTID}" "$PAYLOAD" /root/.hm-app.tar.gz
-  pct exec "${CTID}" -- bash -lc "set -e; rm -rf ${APP_DIR}.new; mkdir -p ${APP_DIR}.new; tar -xzf /root/.hm-app.tar.gz -C ${APP_DIR}.new; rm -f /root/.hm-app.tar.gz; rm -rf ${APP_DIR}.old; [ -d ${APP_DIR} ] && mv ${APP_DIR} ${APP_DIR}.old || true; mv ${APP_DIR}.new ${APP_DIR}; chown -R root:root ${APP_DIR}; chmod -R go-w ${APP_DIR}"
+  pct exec "${CTID}" -- bash -lc "set -e; rm -rf ${APP_DIR}.new; mkdir -p ${APP_DIR}.new; tar -xzf /root/.hm-app.tar.gz -C ${APP_DIR}.new; rm -f /root/.hm-app.tar.gz; rm -rf ${APP_DIR}.old; [ -d ${APP_DIR} ] && mv ${APP_DIR} ${APP_DIR}.old || true; mv ${APP_DIR}.new ${APP_DIR}; chown -hR root:root ${APP_DIR}; chmod -R go-w ${APP_DIR}"
 }
 
 # ------------------------------------------------------------------ upgrade
@@ -617,6 +854,7 @@ if [[ "$MODE" == "upgrade" || "$MODE" == "check" || "$MODE" == "restore" || "$MO
     command -v pct >/dev/null || die "Not a Proxmox host (pct not found). Installed on this machine with --local? Then run bash $(basename "$0") --local --${MODE}"
     find_monitor_ct
     pct status "${CTID}" >/dev/null 2>&1 || die "CT ${CTID} has the tag ${HM_TAG} but Proxmox does not know it (pct status)."
+    if [[ "$MODE" == upgrade || "$MODE" == restore ]]; then reconcile_recorded; fi
   fi
   # The rest happens after the helper files below are written (see "run the upgrade").
 fi
@@ -676,6 +914,8 @@ if [[ "$TARGET" == "local" && "$MODE" == "install" ]]; then
   say "  • Installed: the monitor service, snmpd (read-only, this machine only), nftables, Syncthing"
   say "    (off until you use it) and a daily backup. The system journal is capped at 200 MB."
   say "  • Your logins, passwords and SSH settings are left as they are."
+  say "  • ${YEL}No inbound firewall:${R} --local does not add one. The web page (port ${PORT}) and SNMP (UDP 161)"
+  say "    can be reached by anything that can reach this machine.$([[ -z "$SNMP_ALLOW" ]] && echo " SNMP only answers this machine itself.")"
   [[ -n "$NTP_SERVER" ]] || say "  • ${YEL}Time:${R} internet time servers are blocked too. Unless this machine already uses one on your"
   [[ -n "$NTP_SERVER" ]] || say "    network, set NTP_SERVER at the top of this file first (2FA codes need a correct clock)."
   echo
@@ -703,6 +943,7 @@ if [[ "$TARGET" == "container" && ( "$MODE" == "install" || "$MODE" == "rebuild"
   if [[ "$MODE" == "rebuild" ]]; then
     find_monitor_ct
     adopt_ct
+    reconcile_recorded
   else
     existing="$(tagged_cts | tr '\n' ' ')"
     if [[ -n "${existing// }" ]]; then
@@ -794,6 +1035,7 @@ if [[ "$TARGET" == "container" && ( "$MODE" == "install" || "$MODE" == "rebuild"
     BRIDGE="$(sed -n 's/.*bridge=\([^,]*\).*/\1/p' <<<"$NET0")"; VLAN_TAG="$(sed -n 's/.*tag=\([^,]*\).*/\1/p' <<<"$NET0")"
   fi
 
+  container_choices
   show_summary
   echo
 
@@ -862,7 +1104,8 @@ if [[ "$MODE" == "install" || "$MODE" == "rebuild" ]]; then
   s_app() { push_app; }
   s_services() { install_services; }
   s_restore() {
-    pct exec "${CTID}" -- /root/restore.sh --latest
+    local unverified=0; [[ "$RESTORE_UNVERIFIED" == yes ]] && unverified=1
+    pct exec "${CTID}" -- env HM_RESTORE_UNVERIFIED="$unverified" /root/restore.sh --latest
     pct exec "${CTID}" -- cat /var/lib/homelab-monitor/restored-from > "$STATE/restored" 2>/dev/null || true
   }
   s_web() {
@@ -1016,11 +1259,17 @@ tools)
     [[ -n "$allow" ]] && allow="${allow}/32"
   fi
   backup_file /etc/snmp/snmpd.conf
+  # IPv6 entries (with a colon) need rocommunity6 and an agent listening on udp6 too.
+  read -r -a nets <<<"$allow"
+  agent="udp:161"
+  for net in "${nets[@]}"; do [[ "$net" == *:* ]] && agent="udp:161,udp6:161"; done
   {
     echo "# Written by the Homelab Monitor installer: read-only SNMP for this container itself"
-    echo "agentAddress udp:161"
+    echo "agentAddress ${agent}"
     echo "view   hmmonitor  included   .1"
-    for net in $allow; do echo "rocommunity  ${community} ${net} -V hmmonitor"; done
+    for net in "${nets[@]}"; do
+      if [[ "$net" == *:* ]]; then echo "rocommunity6 ${community} ${net} -V hmmonitor"; else echo "rocommunity  ${community} ${net} -V hmmonitor"; fi
+    done
     echo "rocommunity  ${community} 127.0.0.1 -V hmmonitor"
     echo "sysName $(hostname)"
     echo "sysServices 72"
@@ -1132,7 +1381,10 @@ EnvironmentFile=-${KEY_DIR}/setup.env
 ExecStart=/usr/bin/python3 ${APP_DIR}/server.py
 Restart=on-failure
 RestartSec=5
-RestartSec=5
+# Sized for the default 1 GB container. A larger install can raise these with systemctl edit.
+MemoryHigh=640M
+MemoryMax=768M
+TasksMax=512
 # ping needs a raw socket; nothing else is granted.
 AmbientCapabilities=CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_RAW
@@ -1266,6 +1518,10 @@ if [[ -n "${ADMIN_NET// }" ]]; then
 else
   ADMIN4=(10.0.0.0/8 172.16.0.0/12 192.168.0.0/16); ADMIN6=(fc00::/7 fe80::/10)
 fi
+# SNMP from SNMP_ALLOW: IPv6 entries only ever go under ip6 saddr.
+SNMP4=(); SNMP6=()
+read -r -a SNMP_NETS <<<"$SNMP_ALLOW"
+for net in "${SNMP_NETS[@]}"; do if [[ "$net" == *:* ]]; then SNMP6+=("$net"); else SNMP4+=("$net"); fi; done
 nft_list() { local IFS=,; printf '%s' "$*"; }
 {
   echo "# Written by home_monitor.sh ${VERSION}: what may reach this container. Loaded by hm-ingress.service."
@@ -1291,8 +1547,8 @@ nft_list() { local IFS=,; printf '%s' "$*"; }
     echo "    ip6 saddr { $(nft_list "${ADMIN6[@]}") } tcp dport 22 ct state new update @ssh6 { ip6 saddr limit rate over 10/minute } drop"
     echo "    ip6 saddr { $(nft_list "${ADMIN6[@]}") } tcp dport { 22, ${PORT} } accept"
   fi
-  # shellcheck disable=SC2086
-  [[ -n "${SNMP_ALLOW// }" ]] && echo "    ip saddr { $(nft_list ${SNMP_ALLOW//,/ }) } udp dport 161 accept"
+  if (( ${#SNMP4[@]} )); then echo "    ip saddr { $(nft_list "${SNMP4[@]}") } udp dport 161 accept"; fi
+  if (( ${#SNMP6[@]} )); then echo "    ip6 saddr { $(nft_list "${SNMP6[@]}") } udp dport 161 accept"; fi
   echo "    limit rate 6/minute log prefix \"hm-ingress-drop \" counter drop"
   echo "  }"
   echo "}"
@@ -1435,13 +1691,17 @@ cat > "$FILES/restore.sh" <<"EOF"
 # Restores a Homelab Monitor backup into this container.
 #   /root/restore.sh            asks where the backups are (the source set in home_monitor.sh first) and which one
 #   /root/restore.sh --latest   no questions: the newest backup from the source set in home_monitor.sh
-# Backups carry the vault key, the database and the site settings; the site settings are applied
-# (NFS mounts, Syncthing identity) and the service starts. Older backups made with a vault
-# passphrase ask for it once.
+# The backup is copied somewhere private first and checked against the backup passphrase: one
+# that cannot be proven unchanged shows its accounts and needs UNVERIFIED typed (--latest refuses it
+# unless HM_RESTORE_UNVERIFIED=1, which RESTORE_UNVERIFIED="yes" in home_monitor.sh sets). One
+# whose key is nowhere needs FORGET typed: its stored secrets are cleared. Then the site settings
+# are applied (NFS mounts, Syncthing identity) and the service starts. Older backups made with a
+# vault passphrase ask for it once.
 set -Eeuo pipefail
 DATA=/var/lib/homelab-monitor
 APP=/opt/homelab-monitor
 KEY=/etc/homelab-monitor/vault.key
+SAFE=/var/lib/homelab-monitor-safe
 CONF=/etc/homelab-monitor-install/install.conf
 [[ -f "$CONF" ]] || CONF=/etc/homelab-monitor/install.conf      # before 0.7.0
 log(){ printf '  %s\n' "$*"; }
@@ -1474,7 +1734,7 @@ from_syncthing() {
 from_nfs() {
   if [[ "$UNPRIVILEGED" == 1 ]]; then
     # An unprivileged container cannot mount NFS: the Proxmox host copied the newest backup in.
-    BACKUP_DIR="$DATA/backups/from-share"
+    BACKUP_DIR="$SAFE/from-share"
     log "Unprivileged container: using the backups the Proxmox host copied into $BACKUP_DIR"
     return
   fi
@@ -1529,10 +1789,72 @@ choose_backup() {
 
 choose_source
 choose_backup
+NAME="$(basename "$ARCHIVE")"
+# Everything below works on a private copy: the file cannot change between the checks and the restore.
+WORK="$(mktemp -d /root/.hm-restore.XXXXXX)"
+trap 'rm -rf "$WORK"' EXIT
+COPY="$WORK/backup.tar.gz"
+python3 $APP/sitectl.py take "$ARCHIVE" --to "$COPY" >/dev/null || { log "This backup could not be copied. Nothing was restored."; exit 1; }
+pass=""; FLAGS=()
+sitectl_pass() {  # sitectl with the typed passphrase on stdin when there is one, else the one kept here
+  if [[ -n "$pass" ]]; then printf '%s\n' "$pass" | python3 $APP/sitectl.py "$@" --passphrase-stdin
+  else python3 $APP/sitectl.py "$@"; fi
+}
+check() { set +e; out="$(sitectl_pass check-auth "$COPY" --key "$KEY" "${FLAGS[@]}" 2>&1)"; rc=$?; set -e; }
+show() { grep -v '^HM_AUTH=' <<<"$out" | sed 's/^ERROR: //; s/^/  /' || true; }
+ask_pass() {
+  (( rc == 4 )) || return 0
+  if (( LATEST )); then show; log "The backup passphrase kept here does not open this backup. Nothing was restored."; exit 1; fi
+  for attempt in 1 2 3; do
+    read -rsp "  Backup passphrase for this backup: " pass; echo
+    check
+    (( rc == 4 )) || return 0
+  done
+}
+check
+ask_pass
+if (( rc == 7 && ! LATEST )) && grep -q '^HM_AUTH=unverified-tagged' <<<"$out"; then
+  # Made before the passphrase was changed? The older one proves it.
+  echo "  This backup's tag does not match the passphrase. It may be from before the passphrase was changed."
+  read -rsp "  An older backup passphrase (or press Enter to skip): " older; echo
+  if [[ -n "$older" ]]; then
+    before="$pass"; pass="$older"; check
+    if (( rc == 7 )); then pass="$before"; check; fi
+  fi
+  unset older
+fi
+if (( rc == 7 )); then
+  echo; show; echo
+  if (( LATEST )); then
+    if [[ "${HM_RESTORE_UNVERIFIED-0}" != 1 ]]; then
+      log 'RESTORE="latest" refused this backup because it cannot be proven unchanged. Nothing was restored. To use it'
+      log 'anyway, set RESTORE_UNVERIFIED="yes" at the top of home_monitor.sh and run it again, or run /root/restore.sh at a terminal.'
+      exit 1
+    fi
+    log 'RESTORE_UNVERIFIED is yes: restoring it anyway.'
+  else
+    read -rp "  Type UNVERIFIED to restore it anyway: " confirm
+    [[ "$confirm" == "UNVERIFIED" ]] || { echo "  Cancelled."; exit 0; }
+  fi
+  FLAGS+=(--accept-unverified); check; ask_pass
+fi
+if (( rc == 8 )); then
+  echo; show; echo
+  if (( LATEST )); then
+    [[ "${HM_RESTORE_UNVERIFIED-0}" == 1 ]] || { log "Nothing was restored: no usable key for this backup."; exit 1; }
+  else
+    read -rp "  Type FORGET to restore it without them: " confirm
+    [[ "$confirm" == "FORGET" ]] || { echo "  Cancelled."; exit 0; }
+  fi
+  FLAGS+=(--forget-secrets); check; ask_pass
+fi
+if (( rc != 0 )); then
+  show; log "Nothing was restored; the monitor runs on the data it had. See the reason above."; exit 1
+fi
 if (( ! LATEST )); then
-  echo; echo "  You chose: $(basename "$ARCHIVE")"
+  echo; echo "  You chose: $NAME"
   echo "  Site settings in it (applied after the restore; a line starting with ! is refused):"
-  python3 $APP/sitectl.py site-of "$ARCHIVE" | sed 's/^/    /' || true
+  python3 $APP/sitectl.py site-of "$COPY" | sed 's/^/    /' || true
   read -rp "  Type RESTORE to replace this monitor's data with it: " confirm
   [[ "$confirm" == "RESTORE" ]] || { echo "  Cancelled."; exit 0; }
 fi
@@ -1540,18 +1862,10 @@ fi
 systemctl stop homelab-monitor || true
 # The restore checks the backup against this build first (a newer, damaged or unmigratable one is
 # refused with the current data untouched): then the monitor simply starts again on what it had.
-# A key sealed with a backup passphrase opens with the one kept here, or the one typed (exit 4).
 set +e
-python3 $APP/sitectl.py restore "$ARCHIVE" --data "$DATA" --key "$KEY"; rc=$?
-if (( rc == 4 && ! LATEST )); then
-  for attempt in 1 2 3; do
-    read -rsp "  Backup passphrase for this backup's key: " pass; echo
-    printf '%s\n' "$pass" | python3 $APP/sitectl.py restore "$ARCHIVE" --data "$DATA" --key "$KEY" --passphrase-stdin; rc=$?
-    (( rc == 4 )) || break
-  done
-  unset pass
-fi
+sitectl_pass restore "$COPY" --data "$DATA" --key "$KEY" --record-name "$NAME" "${FLAGS[@]}"; rc=$?
 set -e
+pass=""
 if (( rc != 0 )); then
   [[ -f "$DATA/monitor.db" ]] && systemctl start homelab-monitor || true
   log "Nothing was restored; the monitor runs on the data it had. See the reason above."
@@ -1565,23 +1879,54 @@ if [[ ! -s "$KEY" ]]; then
     for attempt in 1 2 3; do
       read -rsp "  This older backup needs its vault passphrase, or paste the key line from vault.key: " pass; echo
       if [[ "$pass" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
-        install -m 0600 /dev/null "$KEY"; printf '%s\n' "$pass" > "$KEY"; unset pass; break
+        printf '%s\n' "$pass" | python3 $APP/sitectl.py put-key --key "$KEY" >/dev/null && { unset pass; break; }
       fi
       if printf '%s\n' "$pass" | python3 $APP/sitectl.py derive-key --data "$DATA" --key "$KEY"; then unset pass; break; fi
     done
     unset pass
   fi
 fi
-chown -R homelab-monitor:homelab-monitor "$DATA" /etc/homelab-monitor
+chown -hR homelab-monitor:homelab-monitor "$DATA" /etc/homelab-monitor
 if [[ -f "$DATA/site-restored.json" ]]; then
   log "Applying the site settings from the backup (NFS mounts, Syncthing)…"
   python3 $APP/sitectl.py apply-site "$DATA/site-restored.json" || log "Some site settings could not be applied; see above."
 fi
-basename "$ARCHIVE" > "$DATA/restored-from"
 # A restored install is already set up: no setup code needed.
 rm -f /etc/homelab-monitor/setup.env
 systemctl start homelab-monitor
 log "Restore complete. Log in with the account from the backup."
+EOF
+
+cat > "$FILES/backup-passphrase.sh" <<"EOF"
+#!/usr/bin/env bash
+# backup-passphrase.sh: sets or changes the backup passphrase. With one, every backup carries a tag
+# that proves it unchanged and the vault key travels sealed with it, so backups that leave this box
+# keep the key. Read hidden, passed on stdin (never on a command line), kept in
+# /etc/homelab-monitor-install/backup-passphrase (root only). A sealed backup is made straight away.
+set -Eeuo pipefail
+DATA=/var/lib/homelab-monitor
+APP=/opt/homelab-monitor
+[[ $EUID -eq 0 ]] || { echo "Run as root"; exit 1; }
+. /root/.hm-look.sh
+hm_banner "Backup passphrase"
+printf '  Keep this passphrase in a password manager, apart from the backups. Without it a sealed\n'
+printf '  backup cannot be opened.\n\n'
+while :; do
+  read -rsp "  New backup passphrase (12 or more characters): " p1; echo
+  read -rsp "  Once more: " p2; echo
+  if [[ "$p1" != "$p2" ]]; then printf '  %sThey did not match. Try again.%s\n' "$YEL" "$R"; continue; fi
+  if (( ${#p1} < 12 )); then printf '  %sAt least 12 characters, please.%s\n' "$YEL" "$R"; continue; fi
+  break
+done
+if ! printf '%s\n' "$p1" | python3 "$APP/sitectl.py" set-passphrase --data "$DATA"; then
+  unset p1 p2; hm_fail "The passphrase was not saved (see the message above)."
+fi
+unset p1 p2
+/root/backup.sh || hm_fail "The passphrase is saved, but the first sealed backup failed: run /root/backup.sh to see why."
+hm_box "$GRN" "✔  Backup passphrase set and a sealed backup made"
+printf '  Backups you already have stay as they are until the daily clean-up removes them, with the\n'
+printf "  newest 7 kept. Copies on your NAS or in Syncthing's history may still hold the key in the\n"
+printf '  clear, so remove them there if you want them gone now.\n\n'
 EOF
 
 # Shared look for the two account helpers below (same wordmark as the installer).
@@ -1649,17 +1994,23 @@ if [[ "$mfa" == "2fa" ]]; then
   read -rp "  Also turn off 2FA for $name (lost phone and recovery codes)? [y/N] " off
   [[ "${off,,}" == y* ]] && extra=(--reset-2fa)
 fi
+rule_off=0
+if [[ "$(python3 "$APP/sitectl.py" require-2fa --data "$DATA" 2>/dev/null)" != "off" ]]; then
+  read -rp "  Also stop requiring 2FA for everyone on this monitor (no phone to set it up with)? [y/N] " stop
+  [[ "${stop,,}" == y* ]] && { extra+=(--no-2fa-rule); rule_off=1; }
+fi
 # Stopped while the database is written as root, then ownership put back: the service user must
 # own every database file (including the WAL) or it cannot open them.
 systemctl stop homelab-monitor
 if printf '%s\n' "$pw1" | python3 "$APP/sitectl.py" reset-password --data "$DATA" --user "$name" "${extra[@]}"; then ok=1; else ok=0; fi
 unset pw1 pw2
-chown -R homelab-monitor:homelab-monitor "$DATA"
+chown -hR homelab-monitor:homelab-monitor "$DATA"
 systemctl start homelab-monitor
 (( ok )) || hm_fail "The password was not changed (see the message above)."
 hm_box "$GRN" "✔  Password reset for $name"
 printf '  Log in at %s%s%s with the new password.%s\n' "$CYN$B" "$(hm_url)" "$R" "$R"
-[[ ${#extra[@]} -gt 0 ]] && printf '  2FA is off for %s: set it up again in Settings, Account.\n' "$name"
+[[ " ${extra[*]} " == *" --reset-2fa "* ]] && printf '  2FA is off for %s: set it up again in Settings, Account.\n' "$name"
+(( rule_off )) && printf '  2FA is no longer required. Turn it on again in Settings, Login security.\n'
 printf '  %sEvery open session was logged out. The change is in the audit log.%s\n\n' "$D" "$R"
 EOF
 
@@ -1685,8 +2036,6 @@ if (( rc != 0 )); then
   hm_fail "${msg:-Could not make a new setup code.}"
 fi
 rm -f "$err"
-chown homelab-monitor:homelab-monitor "$ENV"
-chmod 600 "$ENV"
 systemctl restart homelab-monitor
 hm_box "$GRN" "✔  New setup code ready"
 printf '  Setup code   %s%s%s\n' "$YEL$B" "$code" "$R"
@@ -1722,6 +2071,7 @@ while :; do
 4) Show monitor status
 5) Back up now
 6) Switch the web interface to plain HTTP (certificate trouble)
+7) Set or change the backup passphrase
 q) Quit
 M
   read -rp "Select: " opt
@@ -1733,8 +2083,9 @@ M
     5) /root/backup.sh ;;
     6) systemctl stop homelab-monitor
        python3 /opt/homelab-monitor/sitectl.py tls-off --data /var/lib/homelab-monitor \
-         && chown -R homelab-monitor:homelab-monitor /var/lib/homelab-monitor
+         && chown -hR homelab-monitor:homelab-monitor /var/lib/homelab-monitor
        systemctl start homelab-monitor; log "Plain HTTP now. Switch HTTPS back on in Settings, HTTPS." ;;
+    7) /root/backup-passphrase.sh ;;
     q|quit|exit) exit 0 ;;
     *) echo "Invalid choice." ;;
   esac
@@ -1750,7 +2101,7 @@ Type=oneshot
 ExecStart=/root/backup.sh
 # Writes only the data folder and the backup folder (below /mnt or /srv).
 ProtectSystem=strict
-ReadWritePaths=-/var/lib/homelab-monitor -/mnt -/srv -/var/lib/syncthing
+ReadWritePaths=-/var/lib/homelab-monitor -/var/lib/homelab-monitor-safe -/mnt -/srv -/var/lib/syncthing
 ProtectHome=read-only
 PrivateTmp=yes
 NoNewPrivileges=yes
@@ -1826,8 +2177,28 @@ install_services() {
     cd / && rm -rf \$d /root/.hm-files.tgz
     systemctl daemon-reload
     systemctl enable --now hm-egress.service hm-egress-refresh.timer homelab-monitor.service homelab-monitor-backup.timer hm-site.path hm-backup-now.path hm-update.path
-    systemctl enable hm-update-recover.service
-    $([[ "$TARGET" == container ]] && echo "systemctl enable hm-ingress.service && systemctl restart hm-ingress.service || echo 'The inbound firewall did not load (see journalctl -u hm-ingress)'")"
+    systemctl enable hm-update-recover.service"
+  load_ingress
+}
+
+# The inbound firewall (a container only): the new rules are checked with nft -c before they replace
+# the ones in force. A failed check or load never stops the install or upgrade (the monitor itself
+# works), but it is written to $STATE/ingress so the last screen says the firewall is NOT active
+# (off), or that the previous rules are still in force (kept). Arguments only, no shell string.
+load_ingress() {
+  local d=/etc/homelab-monitor-egress
+  [[ "$TARGET" == container ]] || return 0
+  if ! pct exec "${CTID}" -- /usr/sbin/nft -c -f "$d/ingress.nft.new"; then
+    echo "The inbound firewall rules did not pass the check (nft -c)."
+    if pct exec "${CTID}" -- systemctl is-active --quiet hm-ingress.service; then echo kept > "$STATE/ingress"; else echo off > "$STATE/ingress"; fi
+    return 0
+  fi
+  pct exec "${CTID}" -- mv -f "$d/ingress.nft.new" "$d/ingress.nft" || { echo off > "$STATE/ingress"; return 0; }
+  pct exec "${CTID}" -- systemctl enable hm-ingress.service || true
+  pct exec "${CTID}" -- systemctl restart hm-ingress.service && return 0
+  echo "The inbound firewall did not load (see journalctl -u hm-ingress)"
+  echo off > "$STATE/ingress"
+  return 0
 }
 
 # Shared by an install, an upgrade and a restore: units, firewall, helper scripts and root's own
@@ -1841,16 +2212,18 @@ files_into_place() {
     install -d -m 0750 -o root -g ${SERVICE_USER} ${INSTALL_DIR}
     install -m 0600 -o root -g root settings.env ${INSTALL_DIR}/settings.env
     install -m 0644 egress.nft /etc/homelab-monitor-egress/egress.nft
-    install -m 0644 ingress.nft /etc/homelab-monitor-egress/ingress.nft
+    if [ '${TARGET}' = container ]; then install -m 0644 ingress.nft /etc/homelab-monitor-egress/ingress.nft.new; else install -m 0644 ingress.nft /etc/homelab-monitor-egress/ingress.nft; fi
     install -m 0755 egress-refresh.sh /etc/homelab-monitor-egress/refresh.sh
-    install -m 0700 backup.sh restore.sh update.sh reset-admin.sh setup-code.sh /root/
+    install -m 0700 backup.sh restore.sh update.sh reset-admin.sh setup-code.sh backup-passphrase.sh /root/
+    install -d -m 0700 -o root -g root ${SAFE_DIR}
     install -m 0600 hm-look.sh /root/.hm-look.sh
     install -m 0700 update-recover.sh /root/.hm-update-recover.sh
     if [ -f install.conf ]; then install -m 0640 -o root -g ${SERVICE_USER} install.conf ${INSTALL_DIR}/install.conf;
-    elif [ -f ${KEY_DIR}/install.conf ] && [ ! -f ${INSTALL_DIR}/install.conf ]; then install -m 0640 -o root -g ${SERVICE_USER} ${KEY_DIR}/install.conf ${INSTALL_DIR}/install.conf; fi
+    elif [ -f ${KEY_DIR}/install.conf ] && [ ! -L ${KEY_DIR}/install.conf ] && [ ! -f ${INSTALL_DIR}/install.conf ]; then install -m 0640 -o root -g ${SERVICE_USER} ${KEY_DIR}/install.conf ${INSTALL_DIR}/install.conf; fi
     rm -f ${KEY_DIR}/install.conf ${KEY_DIR}/layout
     if [ -f backup-passphrase ]; then install -m 0600 -o root -g root backup-passphrase ${INSTALL_DIR}/backup-passphrase; fi
     if [ -f root-key.pub ] && [ '${TARGET}' = container ]; then bash ssh-key.sh root-key.pub; fi
+    if [ -L ${DATA_DIR}/requests ]; then rm -f ${DATA_DIR}/requests; fi
     install -d -m 0700 -o ${SERVICE_USER} -g ${SERVICE_USER} ${DATA_DIR}/requests
 CMDS
   # The layout marker: written here by an install only (an upgrade writes it once the new version answers).
@@ -1865,7 +2238,7 @@ CMDS
 #    blocking: stop with nothing changed and say how to rebuild and restore instead. --check
 #    stops here.
 # 2. repair: what the check found missing (packages, folders).
-# 3. backup: the new build's sitectl, into DATA/backups/pre-upgrade, the newest 3 kept.
+# 3. backup: the new build's sitectl, into SAFE_DIR/pre-upgrade (root only), the newest 3 kept.
 # 4. replace: new app code plus the current helper scripts, units and firewall. Data, the vault
 #    key, the setup code and install.conf stay as they are.
 # 5. health: the new version must answer within HEALTH_TRIES x 2 s. If it does not: the previous
@@ -1896,6 +2269,21 @@ result_box() {  # colour, icon, title (up to 58 characters)
   printf '  %s│%s  %s%s  %-58s%s %s│%s\n' "$1" "$R" "$B$1" "$2" "$3" "$R" "$1" "$R"
   printf '  %s╰%s╯%s\n\n' "$1" "$line" "$R"
 }
+# The inbound firewall did not load ($STATE/ingress is off): said under the heading of the last screen.
+ingress_help() {
+  local look="pct exec ${CTID} -- systemctl status hm-ingress"
+  [[ -n "$RUN_HERE" ]] && look="systemctl status hm-ingress"
+  say "The firewall that limits who can reach SSH and the web page is not running, so anything on"
+  say "your network can reach them. The reason is in the log named at the end of this screen."
+  say "Check ADMIN_NET and SNMP_ALLOW at the top of this file, then run bash $(basename "$0") --upgrade."
+  say "To look inside: ${look}"
+  echo
+}
+# The new rules failed their check while the previous ones still run: one line under "Good to know".
+ingress_kept_note() {
+  [[ "$(cat "$STATE/ingress" 2>/dev/null || true)" == kept ]] || return 0
+  printf '      %-9s %s\n' "Firewall" "the new rules failed their check, so the previous rules are still in force (see the log)"
+}
 show_findings() {  # what the upgrade check found, one line each
   local kind text what
   while IFS='|' read -r kind text what; do
@@ -1906,6 +2294,19 @@ show_findings() {  # what the upgrade check found, one line each
       BLOCK) printf '      %s✖  %s%s\n' "$RED" "$text" "$R" ;;
     esac
   done < "$STATE/precheck"
+}
+# No backup passphrase on the box: backups that leave it go without the key, and none can be proven
+# unchanged. Said at the end of an install, an upgrade and a restore, with the command that fixes it.
+passphrase_note() {
+  [[ "$MODE" == preview ]] && return 0
+  pct exec "${CTID}" -- test -f "${INSTALL_DIR}/backup-passphrase" >/dev/null 2>&1 && return 0
+  printf '  %sNo backup passphrase is set.%s Backups that leave this box go without the key that opens the
+' "$YEL$B" "$R"
+  printf '  stored passwords, and backups cannot be proven unchanged. To set one, run %s/root/backup-passphrase.sh%s
+' "$B" "$R"
+  printf '  in the %s, then keep the passphrase in your password manager.
+
+' "${TARGET/local/monitor machine}"
 }
 end_screen() {  # after the progress screen: a clean page with the wordmark
   stop_drawer
@@ -1928,8 +2329,8 @@ install_helpers() {
     systemctl restart hm-egress.service
     systemctl enable --now hm-site.path hm-backup-now.path hm-update.path
     systemctl enable hm-update-recover.service     # at boot only: an update from the app may be running now
-    $([[ "$TARGET" == container ]] && echo "systemctl enable hm-ingress.service && systemctl restart hm-ingress.service || echo 'The inbound firewall did not load (see journalctl -u hm-ingress)'")
     if [ '$1' = yes ]; then systemctl start homelab-monitor; fi"
+  load_ingress
 }
 # An unprivileged container cannot mount NFS. This host mounts the share read-only for a moment and
 # copies in what is needed: the Syncthing identity (into /root/.hm-stkeys, where sitectl takes it
@@ -1956,8 +2357,8 @@ host_share_copy() {
     # The name carries the date, so the last one sorted is the newest.
     newest="$(ls -1 "$m" 2>/dev/null | grep -E '^monitor-backup-[A-Za-z0-9._-]+[.]tar[.]gz$' | sort | tail -n 1 || true)"
     if [[ -n "$newest" ]]; then
-      pct exec "${CTID}" -- install -d -m 0700 "${DATA_DIR}/backups/from-share"
-      pct push "${CTID}" "$m/$newest" "${DATA_DIR}/backups/from-share/$newest" --perms 0600
+      pct exec "${CTID}" -- install -d -m 0700 "${SAFE_DIR}" "${SAFE_DIR}/from-share"
+      pct push "${CTID}" "$m/$newest" "${SAFE_DIR}/from-share/$newest" --perms 0600
       echo "Copied $newest in from $BACKUP_NFS"
     fi
     umount "$m"
@@ -2023,25 +2424,34 @@ if [[ "$MODE" == "upgrade" || "$MODE" == "check" ]]; then
       || { echo "Could not install ${PKGS}; nothing else was changed." > "$STATE/why"; return 1; }
   }
   s_backup() {
-    local f
-    # The passphrase this backup is sealed with is kept beside the new build: the upgrade may change it.
-    ct "if [ -f ${INSTALL_DIR}/backup-passphrase ]; then install -m 0600 ${INSTALL_DIR}/backup-passphrase ${NEW_DIR}/passphrase-before; fi" >> "$LOG" 2>&1 || true
+    local f sum
+    # Root's own folder: the app cannot read or change the copy, and it carries the key in the clear,
+    # so putting it back never depends on the backup passphrase.
     local into="pre-upgrade" keep=3
     [[ "${HM_UPDATE_BACKUP-}" == pre-update ]] && { into="pre-update"; keep=20; }   # Update: kept two days, by age
-    f="$(ct "python3 ${NEW_DIR}/sitectl.py backup --data ${DATA_DIR} --key ${KEY_DIR}/vault.key --dest ${DATA_DIR}/backups/${into} --keep ${keep}" | tail -n 1)"
+    f="$(ct "install -d -m 0700 -o root -g root ${SAFE_DIR} && python3 ${NEW_DIR}/sitectl.py backup --data ${DATA_DIR} --key ${KEY_DIR}/vault.key --dest ${SAFE_DIR}/${into} --keep ${keep} --safety --safe-dir ${SAFE_DIR}" | tail -n 1)"
     echo "$f"
-    [[ "$f" == *monitor-backup-*.tar.gz ]] || { echo "The backup before the upgrade failed; nothing was changed." > "$STATE/why"; return 1; }
+    [[ "$f" =~ ^[A-Za-z0-9._/:-]+/monitor-backup-[A-Za-z0-9._-]+[.]tar[.]gz$ ]] || { echo "The backup before the upgrade failed; nothing was changed." > "$STATE/why"; return 1; }
     echo "$f" > "$STATE/backup_file"
+    # Its checksum: putting it back checks the file is still the one made here.
+    sum="$(pct exec "${CTID}" -- sha256sum -- "$f" 2>/dev/null | awk '{print $1}')" || sum=""
+    [[ "$sum" =~ ^[0-9a-f]{64}$ ]] && echo "$sum" > "$STATE/backup_sha"
+    # Update in the app: root records the copy for Undo in its own folder (the app cannot change it).
+    if [[ "${HM_UPDATE_BACKUP-}" == pre-update ]]; then
+      pct exec "${CTID}" -- python3 "${NEW_DIR}/updatectl.py" note-backup --data "${DATA_DIR}" --file "$f" --to "${VERSION}" \
+        || { echo "The copy for undo could not be recorded; nothing was changed." > "$STATE/why"; return 1; }
+    fi
+    return 0
   }
   s_replace() {
     # app.old must mean "the code that was running": a leftover from an earlier upgrade goes first.
-    ct "chmod 0700 ${DATA_DIR}/backups/pre-upgrade ${DATA_DIR}/backups/pre-update 2>/dev/null; rm -rf ${APP_DIR}.old ${APP_DIR}.rolledback"
+    ct "rm -rf ${APP_DIR}.old ${APP_DIR}.rolledback"
     pct exec "${CTID}" -- systemctl stop homelab-monitor
     push_app
     install_helpers yes
     # Unprivileged: the Syncthing identity comes in through this host, then the site settings are applied again.
     if ct_unprivileged && [[ -n "$SYNCTHING_KEYS_NFS" ]]; then
-      host_share_copy && ct "touch ${DATA_DIR}/requests/site" || echo "The Syncthing identity could not be copied in (see above)"
+      host_share_copy && ct "python3 ${APP_DIR}/sitectl.py ask --kind site --data ${DATA_DIR}" || echo "The Syncthing identity could not be copied in (see above)"
     fi
   }
   s_health() { healthy; }
@@ -2075,6 +2485,7 @@ if [[ "$MODE" == "upgrade" || "$MODE" == "check" ]]; then
   if [[ -n "${PKGS// /}" ]]; then run_step repair s_repair; else skip_step repair; fi
   run_step backup s_backup
   BACKUP_FILE="$(cat "$STATE/backup_file")"
+  BACKUP_SHA="$(cat "$STATE/backup_sha" 2>/dev/null || true)"
   if ! run_step replace s_replace soft; then
     UPGRADE_FAILED="the new files could not be installed"
     skip_step health
@@ -2089,9 +2500,11 @@ if [[ "$MODE" == "upgrade" || "$MODE" == "check" ]]; then
     {
       ct "systemctl stop homelab-monitor || true
         if [ -d ${APP_DIR}.old ]; then rm -rf ${APP_DIR}.failed; [ -d ${APP_DIR} ] && mv ${APP_DIR} ${APP_DIR}.failed; mv ${APP_DIR}.old ${APP_DIR}; fi
-        python3 ${NEW_DIR}/sitectl.py restore ${BACKUP_FILE} --data ${DATA_DIR} --key ${KEY_DIR}/vault.key --passphrase-file ${NEW_DIR}/passphrase-before \
-          || { echo 'The new build could not restore the backup: using the previous version for it'; python3 ${APP_DIR}/sitectl.py restore ${BACKUP_FILE} --data ${DATA_DIR} --key ${KEY_DIR}/vault.key; }
-        chown -R ${SERVICE_USER}:${SERVICE_USER} ${DATA_DIR} ${KEY_DIR}
+        python3 ${NEW_DIR}/sitectl.py restore ${BACKUP_FILE} --data ${DATA_DIR} --key ${KEY_DIR}/vault.key ${BACKUP_SHA:+--expect-sha256 ${BACKUP_SHA}} \
+          || { echo 'The new build could not restore the backup: using the previous version for it'
+               if grep -q -- --expect-sha256 ${APP_DIR}/sitectl.py; then python3 ${APP_DIR}/sitectl.py restore ${BACKUP_FILE} --data ${DATA_DIR} --key ${KEY_DIR}/vault.key ${BACKUP_SHA:+--expect-sha256 ${BACKUP_SHA}}
+               else python3 ${APP_DIR}/sitectl.py restore ${BACKUP_FILE} --data ${DATA_DIR} --key ${KEY_DIR}/vault.key; fi; }
+        chown -hR ${SERVICE_USER}:${SERVICE_USER} ${DATA_DIR} ${KEY_DIR}
         systemctl start homelab-monitor"
     } >> "$LOG" 2>&1
     if healthy >> "$LOG" 2>&1; then
@@ -2107,18 +2520,29 @@ if [[ "$MODE" == "upgrade" || "$MODE" == "check" ]]; then
     exit 1
   fi
   ct "printf 'LAYOUT=%s\nVERSION=%s\n' ${LAYOUT} ${VERSION} > ${INSTALL_DIR}/layout" >> "$LOG" 2>&1
+  # Before the history is recorded, so the warnings are in the log that goes with it.
+  upgrade_warnings > "$STATE/warnings"
   record_history 1 none
   tidy_new
   rm -f "$BOOT" "$PRECHECK"; rm -rf "$FILES"
   end_screen
-  result_box "$GRN" "✔" "Upgraded to ${VERSION} and answering"
+  if [[ "$(cat "$STATE/ingress" 2>/dev/null || true)" == off ]]; then
+    result_box "$YEL" "⚠" "Upgraded to ${VERSION}, inbound firewall NOT active"
+    ingress_help
+  else
+    result_box "$GRN" "✔" "Upgraded to ${VERSION} and answering"
+  fi
   printf '  %sWhat the check found%s\n' "$B" "$R"
   show_findings
+  cat "$STATE/warnings"
   printf '\n  %sGood to know%s\n' "$B" "$R"
   printf '      %-9s %s\n' "Backup" "${BACKUP_FILE} (made just before)"
   printf '      %-9s %s\n' "Previous" "the code that ran before is kept in ${APP_DIR}.old until the next upgrade"
   printf '      %-9s %s\n' "Built" "__BUILT__"
+  ingress_kept_note
+  print_sec_notes
   printf '      %-9s %s\n\n' "Log" "$LOG"
+  passphrase_note
   exit 0
 fi
 
@@ -2157,10 +2581,10 @@ if [[ "$MODE" == "restore" ]]; then
   printf '\n  %sBackups %s can see, newest first%s\n\n' "$B" "$WHERE" "$R"
   printf '  %s  #  Made              Version     Size      Where%s\n' "$D" "$R"
   for i in "${!FOUND[@]}"; do
-    IFS='|' read -r f_path f_time f_size f_ver f_key f_where <<<"${FOUND[$i]}"
+    IFS='|' read -r f_path f_time f_size f_ver f_key f_where f_tag <<<"${FOUND[$i]}"
     kind=""
-    case "$f_path" in */pre-upgrade/*) kind=", before an upgrade" ;; */pre-restore/*) kind=", before a restore" ;; esac
-    nokey=""; [[ "$f_key" == "no key" ]] && nokey=" ${YEL}(no key)${R}"; [[ "$f_key" == "sealed key" ]] && nokey=" ${D}(passphrase)${R}"
+    case "$f_path" in */pre-upgrade/*) kind=", before an upgrade" ;; */pre-update/*) kind=", before an update" ;; */pre-restore/*) kind=", before a restore" ;; esac
+    nokey=""; [[ "$f_key" == "no key" || "$f_key" == "withheld" ]] && nokey=" ${YEL}(no key)${R}"; [[ "$f_key" == "sealed key" ]] && nokey=" ${D}(passphrase)${R}"
     printf '  %s%3d%s  %-16s  %-10s  %-8s  %s%s%s\n' "$B" $((i + 1)) "$R" "$(when "$f_time")" "${f_ver:-?}" "$(human_size "$f_size")" "$f_where" "$kind" "$nokey"
   done
   printf '  %s  0  Cancel%s\n\n' "$D" "$R"
@@ -2170,12 +2594,12 @@ if [[ "$MODE" == "restore" ]]; then
     [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#FOUND[@]} )) && break
     echo "  Type one of the numbers shown."
   done
-  IFS='|' read -r PICKED f_time f_size f_ver f_key f_where <<<"${FOUND[$((n - 1))]}"
+  IFS='|' read -r PICKED f_time f_size f_ver f_key f_where f_tag <<<"${FOUND[$((n - 1))]}"
   PICKED_NAME="$(basename "$PICKED")"
   echo
   printf '  %sThis wipes the monitor in %s (its app and all its data) and puts back%s\n' "$RED$B" "$WHERE" "$R"
   printf '  %s%s, made %s by version %s.%s\n' "$RED$B" "$PICKED_NAME" "$(when "$f_time")" "${f_ver:-?}" "$R"
-  printf '  A copy of what is there now is kept first, in %s/backups/pre-restore.\n' "$DATA_DIR"
+  printf '  A copy of what is there now is kept first, in %s/pre-restore.\n' "$SAFE_DIR"
   [[ "$TARGET" == "local" ]] || printf '  The container itself (CPU, memory, disk, network) is not changed.\n'
   [[ "$f_key" == "no key" ]] && printf '  %sThis older backup has no vault key: stored passwords stay locked until /root/restore.sh\n  is run with its passphrase.%s\n' "$YEL" "$R"
   # What the backup's site settings would do (shares, Syncthing), so nothing is applied unseen.
@@ -2187,22 +2611,65 @@ if [[ "$MODE" == "restore" ]]; then
       if [[ "$l" == '!'* ]]; then printf '    %sRefused, not applied: %s%s\n' "$YEL" "${l#!}" "$R"; else printf '    %s\n' "$l"; fi
     done
   fi
+  # Before any question: a private copy, then can it be proven unchanged, and is there a key for it?
+  # The path goes to the container as an argument, never inside a shell command.
+  if ! pct exec "${CTID}" -- python3 "${NEW_DIR}/sitectl.py" take "$PICKED" --to /root/hm-restore.tar.gz >> "$LOG" 2>&1; then
+    tidy_new; printf '\n  %s✖  This backup could not be copied for the restore. Nothing was changed.%s\n\n' "$RED$B" "$R" >&2; exit 1
+  fi
+  AUTH=()
+  if [[ "$PICKED" == "${SAFE_DIR}/"* ]]; then
+    # Root's own folder: trusted by where it is (the app cannot write there).
+    sum="$(pct exec "${CTID}" -- sha256sum -- /root/hm-restore.tar.gz 2>/dev/null | awk '{print $1}')" || sum=""
+    [[ "$sum" =~ ^[0-9a-f]{64}$ ]] && AUTH=(--expect-sha256 "$sum")
+  fi
+  RESTORE_PASS="$BACKUP_PASSPHRASE"
+  pp=(); [[ -n "$RESTORE_PASS" ]] && pp=(--passphrase-stdin)
+  check_auth() {
+    if AUTH_OUT="$(printf '%s\n' "$RESTORE_PASS" | pct exec "${CTID}" -- python3 "${NEW_DIR}/sitectl.py" check-auth /root/hm-restore.tar.gz \
+        --key "${KEY_DIR}/vault.key" "${pp[@]}" "${AUTH[@]}" 2>&1)"; then AUTH_RC=0; else AUTH_RC=$?; fi
+  }
+  show_auth() { grep -v '^HM_AUTH=' <<<"$AUTH_OUT" | sed 's/^ERROR: //; s/^/  /' || true; }
+  ask_pass() {
+    local attempt
+    for attempt in 1 2 3; do
+      (( AUTH_RC == 4 )) || return 0
+      read -r -s -p "  Backup passphrase for this backup: " RESTORE_PASS || RESTORE_PASS=""; echo
+      pp=(--passphrase-stdin); check_auth
+    done
+  }
+  check_auth
+  ask_pass
+  if (( AUTH_RC == 7 )) && grep -q '^HM_AUTH=unverified-tagged' <<<"$AUTH_OUT"; then
+    echo "  This backup's tag does not match the passphrase. It may be from before the passphrase was changed."
+    read -r -s -p "  An older backup passphrase (or press Enter to skip): " older || older=""; echo
+    if [[ -n "$older" ]]; then
+      before="$RESTORE_PASS"; RESTORE_PASS="$older"; pp=(--passphrase-stdin); check_auth
+      if (( AUTH_RC == 7 )); then RESTORE_PASS="$before"; pp=(); [[ -n "$RESTORE_PASS" ]] && pp=(--passphrase-stdin); check_auth; fi
+    fi
+    unset older
+  fi
+  if (( AUTH_RC == 7 )); then
+    echo; show_auth; echo
+    read -r -p "  Type UNVERIFIED to restore it anyway: " ok || ok=""
+    [[ "$ok" == "UNVERIFIED" ]] || { tidy_new; echo "  Nothing done."; exit 0; }
+    AUTH+=(--accept-unverified); check_auth; ask_pass
+  fi
+  if (( AUTH_RC == 8 )); then
+    echo; show_auth; echo
+    read -r -p "  Type FORGET to restore it without them: " ok || ok=""
+    [[ "$ok" == "FORGET" ]] || { tidy_new; echo "  Nothing done."; exit 0; }
+    AUTH+=(--forget-secrets); check_auth; ask_pass
+  fi
+  if (( AUTH_RC != 0 )); then
+    show_auth; tidy_new; printf '\n  %s✖  This backup cannot be restored. Nothing was changed.%s\n\n' "$RED$B" "$R" >&2; exit 1
+  fi
   read -r -p "  Type RESTORE to go ahead: " ok || ok=""
   [[ "$ok" == "RESTORE" ]] || { tidy_new; echo "  Nothing done."; exit 0; }
-  RESTORE_PASS=""
-  if [[ "$f_key" == "sealed key" ]]; then
-    RESTORE_PASS="$BACKUP_PASSPHRASE"
-    if [[ -z "$RESTORE_PASS" ]]; then
-      read -r -s -p "  Its key is sealed. Backup passphrase: " RESTORE_PASS || RESTORE_PASS=""; echo
-    fi
-  fi
-  pp=(); [[ -n "$RESTORE_PASS" ]] && pp=(--passphrase-stdin)
 
   s_verify() {
     local out
-    pct exec "${CTID}" -- cp -- "$PICKED" /root/hm-restore.tar.gz
-    pct exec "${CTID}" -- chmod 0600 /root/hm-restore.tar.gz
-    if ! out="$(printf '%s\n' "$RESTORE_PASS" | pct exec "${CTID}" -- python3 "${NEW_DIR}/sitectl.py" verify /root/hm-restore.tar.gz "${pp[@]}" 2>&1)"; then
+    if ! out="$(printf '%s\n' "$RESTORE_PASS" | pct exec "${CTID}" -- python3 "${NEW_DIR}/sitectl.py" verify /root/hm-restore.tar.gz \
+        --key "${KEY_DIR}/vault.key" "${pp[@]}" "${AUTH[@]}" 2>&1)"; then
       echo "$out"
       echo "$(grep '^ERROR' <<<"$out" | tail -n 1 | sed 's/^ERROR: //'). Nothing was changed." > "$STATE/why"
       return 1
@@ -2210,16 +2677,21 @@ if [[ "$MODE" == "restore" ]]; then
     echo "$out"
   }
   s_safety() {
-    local out
+    local out f sum
     out="$(ct "systemctl stop homelab-monitor || true
-      install -d -m 0700 ${DATA_DIR}/backups/pre-restore
-      if [ -f ${INSTALL_DIR}/backup-passphrase ]; then install -m 0600 ${INSTALL_DIR}/backup-passphrase ${NEW_DIR}/passphrase-before; fi
+      install -d -m 0700 -o root -g root ${SAFE_DIR} ${SAFE_DIR}/pre-restore
       if [ -f ${DATA_DIR}/monitor.db ]; then
-        python3 ${NEW_DIR}/sitectl.py backup --data ${DATA_DIR} --key ${KEY_DIR}/vault.key --dest ${DATA_DIR}/backups/pre-restore --keep 3 \
-          || { f=${DATA_DIR}/backups/pre-restore/files-\$(date +%Y%m%d-%H%M%S).tar.gz; tar -czf \$f --exclude=./backups -C ${DATA_DIR} . && echo \$f; }
+        python3 ${NEW_DIR}/sitectl.py backup --data ${DATA_DIR} --key ${KEY_DIR}/vault.key --dest ${SAFE_DIR}/pre-restore --keep 3 --safety --safe-dir ${SAFE_DIR} \
+          || { f=${SAFE_DIR}/pre-restore/files-\$(date +%Y%m%d-%H%M%S).tar.gz; tar -czf \$f --exclude=./backups -C ${DATA_DIR} . && echo \$f; }
       else echo none; fi")"
     echo "$out"
-    tail -n 1 <<<"$out" > "$STATE/safety"
+    f="$(tail -n 1 <<<"$out")"
+    echo "$f" > "$STATE/safety"
+    if [[ "$f" =~ ^[A-Za-z0-9._/:-]+/monitor-backup-[A-Za-z0-9._-]+[.]tar[.]gz$ ]]; then
+      sum="$(pct exec "${CTID}" -- sha256sum -- "$f" 2>/dev/null | awk '{print $1}')" || sum=""
+      [[ "$sum" =~ ^[0-9a-f]{64}$ ]] && echo "$sum" > "$STATE/safety_sha"
+    fi
+    return 0
   }
   s_wipe() {
     ct "systemctl stop homelab-monitor || true
@@ -2230,10 +2702,9 @@ if [[ "$MODE" == "restore" ]]; then
   s_rapp() { push_app; install_helpers no; }
   s_rrestore() {
     printf '%s\n' "$RESTORE_PASS" | pct exec "${CTID}" -- python3 "${APP_DIR}/sitectl.py" restore /root/hm-restore.tar.gz \
-      --data "${DATA_DIR}" --key "${KEY_DIR}/vault.key" "${pp[@]}"
-    printf '%s\n' "$PICKED_NAME" | pct exec "${CTID}" -- tee "${DATA_DIR}/restored-from" > /dev/null
+      --data "${DATA_DIR}" --key "${KEY_DIR}/vault.key" --record-name "$PICKED_NAME" "${pp[@]}" "${AUTH[@]}"
     ct "set -e
-      chown -R ${SERVICE_USER}:${SERVICE_USER} ${DATA_DIR} ${KEY_DIR}
+      chown -hR ${SERVICE_USER}:${SERVICE_USER} ${DATA_DIR} ${KEY_DIR}
       if [ -f ${DATA_DIR}/site-restored.json ]; then python3 ${APP_DIR}/sitectl.py apply-site ${DATA_DIR}/site-restored.json || echo 'Some site settings could not be applied'; fi
       printf 'LAYOUT=%s\nVERSION=%s\n' ${LAYOUT} ${VERSION} > ${INSTALL_DIR}/layout
       systemctl start homelab-monitor"
@@ -2248,6 +2719,7 @@ if [[ "$MODE" == "restore" ]]; then
   run_step verify s_verify
   run_step safety s_safety
   SAFETY="$(cat "$STATE/safety" 2>/dev/null || echo none)"
+  SAFETY_SHA="$(cat "$STATE/safety_sha" 2>/dev/null || true)"
   RESTORE_FAILED=""
   run_step wipe s_wipe soft || RESTORE_FAILED="the old app and data could not be cleared"
   if [[ -z "$RESTORE_FAILED" ]]; then run_step app s_rapp soft || RESTORE_FAILED="the fresh copy of the app could not be installed"; else skip_step app; fi
@@ -2260,9 +2732,9 @@ if [[ "$MODE" == "restore" ]]; then
     if [[ "$SAFETY" == *monitor-backup-*.tar.gz ]]; then
       {
         ct "systemctl stop homelab-monitor || true
-          [ -f ${APP_DIR}/server.py ] || { rm -rf ${APP_DIR}; cp -a ${NEW_DIR} ${APP_DIR}; rm -f ${APP_DIR}/passphrase-before; chown -R root:root ${APP_DIR}; }
-          python3 ${NEW_DIR}/sitectl.py restore ${SAFETY} --data ${DATA_DIR} --key ${KEY_DIR}/vault.key --passphrase-file ${NEW_DIR}/passphrase-before
-          chown -R ${SERVICE_USER}:${SERVICE_USER} ${DATA_DIR} ${KEY_DIR}
+          [ -f ${APP_DIR}/server.py ] || { rm -rf ${APP_DIR}; cp -a ${NEW_DIR} ${APP_DIR}; chown -hR root:root ${APP_DIR}; }
+          python3 ${NEW_DIR}/sitectl.py restore ${SAFETY} --data ${DATA_DIR} --key ${KEY_DIR}/vault.key ${SAFETY_SHA:+--expect-sha256 ${SAFETY_SHA}}
+          chown -hR ${SERVICE_USER}:${SERVICE_USER} ${DATA_DIR} ${KEY_DIR}
           systemctl start homelab-monitor"
       } >> "$LOG" 2>&1
       if healthy >> "$LOG" 2>&1; then
@@ -2325,10 +2797,16 @@ fi
 URL="${SCHEME}://${IP:-<container ip>}:${PORT}"
 clear 2>/dev/null || true
 banner
-line="$(printf '─%.0s' $(seq 1 64))"
-printf '  %s╭%s╮%s\n' "$GRN" "$line" "$R"
-printf '  %s│%s  %s✔  Your monitor is up and running%s%29s%s│%s\n' "$GRN" "$R" "$B" "$R" "" "$GRN" "$R"
-printf '  %s╰%s╯%s\n\n' "$GRN" "$line" "$R"
+INGRESS="$(cat "$STATE/ingress" 2>/dev/null || true)"
+if [[ "$INGRESS" == off ]]; then
+  result_box "$YEL" "⚠" "Running, but the inbound firewall is NOT active"
+  ingress_help
+else
+  line="$(printf '─%.0s' $(seq 1 64))"
+  printf '  %s╭%s╮%s\n' "$GRN" "$line" "$R"
+  printf '  %s│%s  %s✔  Your monitor is up and running%s%29s%s│%s\n' "$GRN" "$R" "$B" "$R" "" "$GRN" "$R"
+  printf '  %s╰%s╯%s\n\n' "$GRN" "$line" "$R"
+fi
 printf '  %sOpen it in your browser%s\n' "$B" "$R"
 printf '      %s%s%s\n' "$CYN$B" "$URL" "$R"
 if [[ "$SCHEME" == https ]]; then
@@ -2369,6 +2847,8 @@ if [[ "$TARGET" == "local" ]]; then
   printf '      %-9s as before: your own login, unchanged; the helpers below are in /root (run as root)\n' "SSH"
 elif [[ "$MODE" == "restore" ]]; then
   printf '      %-9s root@%s as before (the container was kept)\n' "SSH" "${IP:-<container ip>}"
+elif [[ -n "$SSH_KEY_LINE" ]]; then
+  printf '      %-9s root@%s with your SSH key only (password logins over SSH are off)\n' "SSH" "${IP:-<container ip>}"
 else
   printf '      %-9s root@%s with the container password you just set\n' "SSH" "${IP:-<container ip>}"
 fi
@@ -2376,7 +2856,13 @@ printf '      %-9s daily at 03:30; Settings, System shows where they go and what
 printf '      %-9s bash %s%s --upgrade  %s(keeps everything)%s;  system packages: /root/update.sh\n' "Updates" "$(basename "$0")" "$FLAG" "$D" "$R"
 printf '      %-9s /root/reset-admin.sh on the %s  %s(lost web password or 2FA)%s\n' "Login" "${TARGET/local/monitor machine}" "$D" "$R"
 printf '      %-9s Settings, HTTPS; /root/update.sh option 6 goes back to plain HTTP from the shell\n' "HTTPS"
+if [[ "$TARGET" == "local" ]]; then
+  printf '      %-9s none added for incoming traffic: port %s (the web page) and UDP 161 (SNMP) are open\n' "Firewall" "$PORT"
+fi
+ingress_kept_note
+print_sec_notes
 printf '      %-9s %s\n\n' "Log" "$LOG"
+passphrase_note
 [[ "$MODE" == "preview" ]] && printf '  %sThat was a preview. Nothing was created.%s\n\n' "$D" "$R"
 exit 0
 

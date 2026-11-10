@@ -37,7 +37,7 @@ async function loadLanSettings(kind) {
   if (kind === "pihole") {
     const devs = (lastFleet ? lastFleet[0] : null) || (await api("/api/devices").catch(() => ({ devices: [] }))).devices || [];
     document.getElementById("ph-device").innerHTML = `<option value="">The device with the Pi-hole's address</option>` +
-      devs.map(d => `<option value="${d.id}">${escapeHtml(d.hostname)} (${escapeHtml(d.ip_address)})</option>`).join("");
+      devs.map(d => `<option value="${escapeHtml(d.id)}">${escapeHtml(d.hostname)} (${escapeHtml(d.ip_address)})</option>`).join("");
     const hit = devs.find(d => d.id === L.cfg.device_id);
     L.cfg.device_name = hit ? hit.hostname : "";
   }
@@ -63,7 +63,10 @@ function renderLanSettings(kind, fill) {
   const secret = document.getElementById(L.fields.secret);
   secret.value = "";
   secret.placeholder = c.secret_set ? "Stored and hidden: leave empty to keep" : "";
-  if (kind === "pihole") document.getElementById("ph-device").value = c.device_id ? String(c.device_id) : "";
+  if (kind === "pihole") {
+    document.getElementById("ph-device").value = c.device_id ? String(c.device_id) : "";
+    phHttpWarning();
+  }
   if (kind === "unifi") api("/api/wifi").then(w => { document.getElementById("uf-never").value = (w.never || []).join(", "); }).catch(() => {});
 }
 
@@ -78,8 +81,15 @@ function lanPayload(kind) {
   return body;
 }
 
+/** Pi-hole over http:// sends the app password unencrypted: a reminder shows only then. */
+function phHttpWarning() {
+  const url = document.getElementById("ph-url").value.trim().toLowerCase();
+  document.getElementById("ph-url-http").classList.toggle("hidden", !url.startsWith("http://"));
+}
+
 function initLanSettings(kind) {
   const L = LAN[kind];
+  if (kind === "pihole") document.getElementById("ph-url").addEventListener("input", phHttpWarning);
   document.getElementById(`${L.p}-enabled`).addEventListener("change", async ev => {
     const on = ev.target.value === "on";
     try {
@@ -166,8 +176,12 @@ async function loadMaintenance() {
       <td class="text-cell">${escapeHtml(maintCovers(w))}</td><td>${escapeHtml(fmtWhen(w.start))}</td><td>${escapeHtml(fmtWhen(w.end))}</td>
       <td class="text-cell">${escapeHtml(w.note || "")}</td>
       <td><span class="status-pill ${w.state === "active" ? "status-warn" : w.state === "scheduled" ? "status-ok" : "status-unknown"}">${escapeHtml(w.state)}</span></td>
-      <td class="actions-cell">${w.state !== "ended" ? `<button type="button" class="btn btn-small" data-perm="problems.ack" data-maint-end="${w.id}">${w.state === "active" ? "End now" : "Cancel"}</button>` : ""}</td></tr>`).join("")
+      <td class="actions-cell">${w.state !== "ended" ? `<button type="button" class="btn btn-small" data-perm="problems.ack" data-maint-end="${escapeHtml(w.id)}">${w.state === "active" ? "End now" : "Cancel"}</button>` : ""}</td></tr>`).join("")
     : `<tr><td colspan="6" class="empty-cell">No maintenance windows.</td></tr>`;
+  // Only the choices this user may make: "Every device" needs access to every device.
+  const scopeSel = document.getElementById("maint-scope");
+  for (const o of scopeSel.options) o.hidden = o.disabled = !(maintData.scopes || []).includes(o.value);
+  if (scopeSel.selectedOptions[0] && scopeSel.selectedOptions[0].disabled) scopeSel.value = [...scopeSel.options].find(o => !o.disabled).value;
   maintTargets();
 }
 
@@ -292,7 +306,7 @@ function renderForecasts(detail) {
       <td class="text-cell"><strong>${escapeHtml(f.label)}</strong></td>
       <td>${f.now.toFixed(1)}%</td>
       <td>${f.per_day > 0 ? "+" : ""}${f.per_day.toFixed(2)} points</td>
-      <td data-sort="${f.days ?? 99999}">${f.days == null ? '<span class="dim">not filling</span>'
+      <td data-sort="${escapeHtml(f.days ?? 99999)}">${f.days == null ? '<span class="dim">not filling</span>'
         : f.days > 730 ? `<span class="dim">over ${Math.floor(f.days / 365)} years</span>`
         : `<span class="${f.days <= 14 ? "text-err" : f.days <= 60 ? "text-warn" : ""}">about ${f.days < 1 ? "a day" : Math.round(f.days) + " days"}</span> <span class="dim">(${new Date(f.full_on * 1000).toLocaleDateString()})</span>`}</td></tr>`).join(""), "", 4);
 }
@@ -308,12 +322,12 @@ function renderWifiClients(data) {
   document.getElementById("wifi-clients-note").textContent = `${rows.length} from UniFi, weakest first`;
   fillTable("wifi-clients-body", rows.map(c => `<tr>
       <td class="text-cell"><strong>${escapeHtml(c.name || c.mac)}</strong><div class="dim">${escapeHtml([c.ip, c.vendor].filter(Boolean).join(" · "))}</div></td>
-      <td data-sort="${c.signal ?? -999}" class="${signalClass(c.signal)}">${c.signal != null ? `${c.signal} dBm` : "-"}</td>
+      <td data-sort="${escapeHtml(c.signal ?? -999)}" class="${signalClass(c.signal)}">${c.signal != null ? `${escapeHtml(c.signal)} dBm` : "-"}</td>
       <td>${escapeHtml(c.band || "-")}</td><td>${c.channel != null ? escapeHtml(String(c.channel)) : "-"}</td>
-      <td data-sort="${c.tx_mbps ?? 0}">${c.tx_mbps != null ? `${c.tx_mbps} / ${c.rx_mbps ?? "-"} Mbps` : "-"}</td>
-      <td>${c.retries != null ? Number(c.retries).toLocaleString() : "-"}</td><td>${c.roams ?? "-"}</td>
-      <td data-sort="${c.experience ?? -1}">${c.experience != null ? `${Math.round(c.experience)}%` : "-"}</td>
-      <td data-sort="${c.uptime ?? 0}">${c.uptime != null ? escapeHtml(formatDuration(c.uptime)) : "-"}</td></tr>`).join(""), "", 9);
+      <td data-sort="${escapeHtml(c.tx_mbps ?? 0)}">${c.tx_mbps != null ? `${escapeHtml(c.tx_mbps)} / ${escapeHtml(c.rx_mbps ?? "-")} Mbps` : "-"}</td>
+      <td>${c.retries != null ? Number(c.retries).toLocaleString() : "-"}</td><td>${escapeHtml(c.roams ?? "-")}</td>
+      <td data-sort="${escapeHtml(c.experience ?? -1)}">${c.experience != null ? `${Math.round(c.experience)}%` : "-"}</td>
+      <td data-sort="${escapeHtml(c.uptime ?? 0)}">${c.uptime != null ? escapeHtml(formatDuration(c.uptime)) : "-"}</td></tr>`).join(""), "", 9);
 }
 
 let dnsDrawn = 0;
@@ -327,8 +341,8 @@ async function loadDns(isRefresh) {
     return;
   }
   fillTable("dns-up-body", data.upstreams.map(u => `<tr><td class="text-cell">${escapeHtml(u.name || "-")}</td><td>${escapeHtml(u.ip || "-")}</td>
-      <td>${u.count != null ? Number(u.count).toLocaleString() : u.share_pct != null ? `${u.share_pct}%` : "-"}</td>
-      <td>${u.response_ms != null ? `${u.response_ms} ms` : "-"}</td></tr>`).join(""), "No upstreams reported yet.", 4);
+      <td>${u.count != null ? Number(u.count).toLocaleString() : u.share_pct != null ? `${escapeHtml(u.share_pct)}%` : "-"}</td>
+      <td>${u.response_ms != null ? `${escapeHtml(u.response_ms)} ms` : "-"}</td></tr>`).join(""), "No upstreams reported yet.", 4);
   fillTable("dns-blocked-body", data.blocked.map(b => `<tr><td class="text-cell">${escapeHtml(b.domain)}</td><td>${Number(b.count).toLocaleString()}</td></tr>`).join(""),
     "Nothing blocked yet today.", 2);
   if (isRefresh && Date.now() - dnsDrawn < 60000) return;
@@ -357,14 +371,14 @@ async function loadWifi() {
   }
   const sel = document.getElementById("wifi-ap");
   const keep = sel.value;
-  sel.innerHTML = `<option value="">All access points</option>` + wifiData.aps.map(a => `<option value="${a.device_id}">${escapeHtml(a.name)}</option>`).join("");
+  sel.innerHTML = `<option value="">All access points</option>` + wifiData.aps.map(a => `<option value="${escapeHtml(a.device_id)}">${escapeHtml(a.name)}</option>`).join("");
   sel.value = wifiData.aps.some(a => String(a.device_id) === keep) ? keep : "";
   const last = wifiData.last || {};
   document.getElementById("wifi-when").textContent = last.error ? `UniFi: ${last.error}` : last.at ? `Read ${formatAgo(last.at)}` : "";
-  document.getElementById("wifi-aps").innerHTML = wifiData.aps.map(a => `<button type="button" class="wifi-ap${sel.value === String(a.device_id) ? " on" : ""}" data-wifi-ap="${a.device_id}">
-      <h4><span>${escapeHtml(a.name)}</span><a class="dim" href="#/device/${a.device_id}/wireless">open</a></h4>
+  document.getElementById("wifi-aps").innerHTML = wifiData.aps.map(a => `<button type="button" class="wifi-ap${sel.value === String(a.device_id) ? " on" : ""}" data-wifi-ap="${escapeHtml(a.device_id)}">
+      <h4><span>${escapeHtml(a.name)}</span><a class="dim" href="#/device/${escapeHtml(a.device_id)}/wireless">open</a></h4>
       <div class="wifi-ap-figs"><span><b>${Number(a.clients)}</b>devices</span><span><b class="${a.weak ? "text-warn" : ""}">${Number(a.weak)}</b>weak</span>
-        <span><b>${a.experience != null ? a.experience + "%" : "-"}</b>experience</span></div>
+        <span><b>${a.experience != null ? escapeHtml(a.experience) + "%" : "-"}</b>experience</span></div>
       <div class="dim wifi-ap-bands">${escapeHtml(Object.entries(a.bands).map(([b, n]) => `${b} ${n}`).join(" · "))}</div></button>`).join("")
     || `<div class="dim">No access point has Wi-Fi devices yet: UniFi is read once a minute, and only monitored access points are shown.</div>`;
   renderWifi();
@@ -383,13 +397,13 @@ function renderWifi() {
   fillTable("wifi-body", rows.map(c => `<tr>
       <td class="text-cell"><strong>${escapeHtml(c.name || c.mac)}</strong>${c.alert === "off" ? ' <span class="dim" title="Inventory, Edit: its weak signal is never reported">not reported</span>'
         : c.alert ? ` <span class="dim" title="Inventory, Edit: its weak signal is reported below its own line">own line ${escapeHtml(String(c.alert))} dBm</span>` : ""}<div class="dim">${escapeHtml([c.ip, c.vendor, c.ssid].filter(Boolean).join(" · "))}</div></td>
-      <td class="text-cell"><a href="#/device/${c.ap_id}/wireless">${escapeHtml(c.ap_name)}</a></td>
-      <td data-sort="${c.signal ?? -999}" class="${signalClass(c.signal)}">${c.signal != null ? `${c.signal} dBm` : "-"}</td>
+      <td class="text-cell"><a href="#/device/${escapeHtml(c.ap_id)}/wireless">${escapeHtml(c.ap_name)}</a></td>
+      <td data-sort="${escapeHtml(c.signal ?? -999)}" class="${signalClass(c.signal)}">${c.signal != null ? `${escapeHtml(c.signal)} dBm` : "-"}</td>
       <td>${escapeHtml(c.band || "-")}${c.channel ? ` <span class="dim">ch ${escapeHtml(String(c.channel))}</span>` : ""}</td>
-      <td data-sort="${c.tx_mbps ?? 0}">${c.tx_mbps != null ? `${c.tx_mbps} / ${c.rx_mbps ?? "-"} Mbps` : "-"}</td>
-      <td>${c.retries != null ? Number(c.retries).toLocaleString() : "-"}</td><td>${c.roams ?? "-"}</td>
-      <td data-sort="${c.experience ?? -1}">${c.experience != null ? `${Math.round(c.experience)}%` : "-"}</td>
-      <td data-sort="${c.uptime ?? 0}">${c.uptime != null ? escapeHtml(formatDuration(c.uptime)) : "-"}</td>
+      <td data-sort="${escapeHtml(c.tx_mbps ?? 0)}">${c.tx_mbps != null ? `${escapeHtml(c.tx_mbps)} / ${escapeHtml(c.rx_mbps ?? "-")} Mbps` : "-"}</td>
+      <td>${c.retries != null ? Number(c.retries).toLocaleString() : "-"}</td><td>${escapeHtml(c.roams ?? "-")}</td>
+      <td data-sort="${escapeHtml(c.experience ?? -1)}">${c.experience != null ? `${Math.round(c.experience)}%` : "-"}</td>
+      <td data-sort="${escapeHtml(c.uptime ?? 0)}">${c.uptime != null ? escapeHtml(formatDuration(c.uptime)) : "-"}</td>
       <td class="actions-cell">${c.blocked ? `<span class="dim" title="${escapeHtml(c.blocked)}">held back</span>`
         : `<button type="button" class="btn btn-small" data-perm="devices.manage" data-wifi-reconnect="${escapeHtml(c.mac)}">Reconnect</button>`}</td></tr>`).join(""),
     wifiData.clients.length ? "Nothing matches." : "No Wi-Fi devices yet.", 10);
@@ -467,8 +481,8 @@ async function loadPiholePage() {
     kpiCard("Blocklists", num(m("pihole.domains")), m("pihole.gravity_days") != null ? `updated ${m("pihole.gravity_days").toFixed(0)} days ago` : ""),
   ].join("");
   fillTable("ph-up-body", phData.upstreams.map(u => `<tr><td class="text-cell">${escapeHtml(u.name || "-")}</td><td>${escapeHtml(u.ip || "-")}</td>
-      <td>${u.count != null ? Number(u.count).toLocaleString() : u.share_pct != null ? `${u.share_pct}%` : "-"}</td>
-      <td>${u.response_ms != null ? `${u.response_ms} ms` : "-"}</td></tr>`).join(""), "No upstreams reported yet.", 4);
+      <td>${u.count != null ? Number(u.count).toLocaleString() : u.share_pct != null ? `${escapeHtml(u.share_pct)}%` : "-"}</td>
+      <td>${u.response_ms != null ? `${escapeHtml(u.response_ms)} ms` : "-"}</td></tr>`).join(""), "No upstreams reported yet.", 4);
   fillTable("ph-blocked-body", phData.blocked.map(b => `<tr><td class="text-cell">${escapeHtml(b.domain)}</td><td>${Number(b.count).toLocaleString()}</td></tr>`).join(""),
     "Nothing blocked yet today.", 2);
   const defs = [

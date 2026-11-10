@@ -36,7 +36,7 @@ async function renderBotBuilder(force) {
     <table class="storage-table bot-table"><thead><tr><th>Command</th><th>What it answers</th><th></th><th></th></tr></thead>
       <tbody>${botData.builtin.map(c => row(c, true)).join("")}${botData.custom.map(c => row(c, false)).join("")}</tbody></table>
     <div class="notify-actions"><button type="button" class="btn btn-primary" data-bot-add${botData.custom.length >= botData.max ? " disabled" : ""}>Add command</button>
-      <span class="dim">${botData.custom.length} of ${botData.max} of your own</span></div>`;
+      <span class="dim">${botData.custom.length} of ${escapeHtml(botData.max)} of your own</span></div>`;
 }
 
 function botOff() {
@@ -221,7 +221,7 @@ function openBotEditor(existing) {
         <div class="form-group"><label>Sort by</label><select class="bot-f-sort"></select></div>
         <label class="bot-on"><input type="checkbox" class="bot-f-desc"${c.desc ? " checked" : ""}> highest first</label>
         <div class="form-group"><label>At most <span class="dim">(lines, 0 is all)</span></label>
-          <input type="number" class="bot-f-limit" min="0" max="${botData.max_limit || 200}" value="${Number(c.limit || 0)}"></div>
+          <input type="number" class="bot-f-limit" min="0" max="${escapeHtml(botData.max_limit || 200)}" value="${Number(c.limit || 0)}"></div>
       </div>
       <div class="form-help bot-src-help"></div>
       <div class="bot-pick-group"><div class="tg-label">Covers <span class="dim bot-pick-count"></span></div>

@@ -35,7 +35,7 @@ installs with one file and backs itself up.
 | 🗺️ **Map and dashboards** | A network map that understands upstream links, and several dashboards built from tiles. |
 | 🔌 **Integrations** | Proxmox (guests, storage, start and stop), UniFi (clients, Wi-Fi, switch ports) and Pi-hole. |
 | 👥 **Users** | Roles and per-device access, two-factor authentication and an audit log. |
-| 💾 **Backups** | A daily backup with everything a rebuild needs, kept locally or synced to your NAS with Syncthing. Restore in place from the installer. |
+| 💾 **Backups** | A daily backup with everything a rebuild needs, kept locally or synced to your NAS with Syncthing. Set a backup passphrase and each backup is sealed and can prove it was not changed. Restore in place from the installer. |
 | 🔄 **Updates** | Settings, Updates installs new signed releases, keeps a backup and lets you undo the update for two days. |
 
 ## 🚀 Getting started
@@ -44,14 +44,29 @@ Everything comes in one file, `home_monitor.sh`. You download it, make it runnab
 asks a few questions and does the rest. You do not need to know Linux: copying the commands below
 is enough.
 
+> **Please read this before you install.** Home Monitor is a hobby project and comes as is, with no
+> warranty and no promise of support. It isn't built or tested for business or enterprise use, so
+> please don't rely on it for that. The installer runs as root on your Proxmox host and the app can run
+> commands on the machines you connect to it, so a mistake or a bug could damage your setup. Try it
+> somewhere you can afford to lose, keep your own backups and use it at your own discretion. If
+> something goes wrong, I may not be able to help you recover it.
+
 ### On Proxmox (recommended)
 
 1. **Open a shell on your Proxmox host.** In the Proxmox web interface, click your server's name
    under *Datacenter*, then **Shell**. (Or connect with SSH: `ssh root@<your Proxmox address>`.)
-2. **Download the installer:**
+2. **Download the installer and check that it is the real one.** Copy this whole block and paste it:
    ```bash
-   curl -fsSLO https://github.com/The-Flying-Pancake/Home_Monitor/releases/latest/download/home_monitor.sh
+   U=https://github.com/The-Flying-Pancake/Home_Monitor/releases/latest/download
+   curl -fsSLO $U/home_monitor.sh
+   curl -fsSLO $U/home_monitor.sh.sig
+   echo 'release@home-monitor namespaces="home-monitor-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKQPTSJq7103aQVXEseRIWBM/Rtm/z8tiJyBboEcd0lz' > release-signers
+   ssh-keygen -Y verify -f release-signers -I release@home-monitor -n home-monitor-release -s home_monitor.sh.sig < home_monitor.sh
    ```
+   You should see a line starting with `Good "home-monitor-release" signature`. If you see anything
+   else, please don't run the file: download it again, and if it still fails,
+   [let us know](../../issues/new?template=problem.yml). Please check the file before you change
+   anything in it, because an edited copy no longer matches its signature.
 3. **Make it runnable, then start it:**
    ```bash
    chmod +x home_monitor.sh
@@ -59,8 +74,8 @@ is enough.
    ```
    `chmod +x` marks the file as a program you are allowed to run. You only need it once.
 4. **Choose 1, Install**, then answer the questions. Pressing Enter keeps the answer shown in
-   [brackets]: the container's number, its name, its address (DHCP is fine) and whether to start
-   with demo data. Then choose a root password for the new container.
+   [brackets]: the container's number, its name, its address (DHCP is fine), whether to start with
+   demo data and the kind of container. Then choose a root password for the new container.
 5. **Open the address it shows at the end** in your browser. Type the one-time setup code it prints,
    create your administrator account and let the setup guide find the devices on your network.
 
@@ -69,19 +84,28 @@ a 20 GB disk) and tags it `homelab-monitor`, so it can find it again for upgrade
 network can reach its web page and SSH. The container itself can reach your network, package updates
 and Telegram, and nothing else.
 
+**Two things the installer will point out.** A *privileged* container is the default, and it is only
+needed if the container mounts NFS shares itself. If someone ever broke into a privileged container
+they could get close to root on your Proxmox host, so *unprivileged* is the safer pick when your
+Proxmox host can do the NFS work instead. And unless you give it an SSH key, root can log in to the
+container with a password from your own network. You can paste a public key right there to switch
+that off. If you are happy with what it shows, type `ACCEPT` and it carries on.
+
 ### On a spare computer or a virtual machine
 
 Any computer or VM with Ubuntu 22.04 or newer, or Debian 12 or newer, will do. A fresh, minimal
-install is best: the monitor sets up the firewall of the whole machine.
+install is best: the monitor limits what the whole machine can reach on the internet. It doesn't add a
+firewall for traffic coming in, so its web page and SNMP port can be reached by anything on your
+network. If that matters to you, a firewall of your own in front of it is a good idea.
 
 1. Log in to it, at its own screen or with `ssh <you>@<its address>`.
-2. Make sure `curl` is installed:
+2. Make sure `curl` and `ssh-keygen` are installed:
    ```bash
-   sudo apt update && sudo apt install -y curl
+   sudo apt update && sudo apt install -y curl openssh-client
    ```
-3. Download the installer, make it runnable and install with `--local`:
+3. Download the installer and check it with the block in step 2 above, then make it runnable and
+   install with `--local`:
    ```bash
-   curl -fsSLO https://github.com/The-Flying-Pancake/Home_Monitor/releases/latest/download/home_monitor.sh
    chmod +x home_monitor.sh
    sudo ./home_monitor.sh --local
    ```
@@ -102,11 +126,18 @@ network bridge and VLAN, a fixed address, backups to a NAS and more. Most people
 change one, open the file with `nano home_monitor.sh`, edit, save with **Ctrl+O** then **Enter**,
 leave with **Ctrl+X** and run it again.
 
-### Is my download genuine? (optional)
+### What the signature check does for you
 
-Every release is signed. The `SHA256SUMS` file next to it lists the checksums, so after downloading it
-too, `sha256sum -c SHA256SUMS --ignore-missing` should say `OK`. The release notes show how to check
-the signature itself.
+The check above proves the file is exactly what the project signed, so it catches a download that
+was changed on the way and a release file that was swapped. It can't protect you if someone takes
+over the project's GitHub account, because they could change this page and the key on it too. If
+you'd like that extra bit of safety, save this fingerprint of the release key somewhere of your own
+and compare it from time to time:
+
+`SHA256:VfgS3MkxWYcs7WXOVRScDX29tjA3pWXCf5d4VwDByQQ`
+
+The `SHA256SUMS` file only spots a damaged download, as it isn't signed. Once installed, the monitor
+checks the signature by itself before every update.
 
 ## 🔄 Updating
 
@@ -160,11 +191,12 @@ and testing it on real hardware.
 
 Ideas, fixes and pull requests are very welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-### 🙏 Good company
+### 🙏 Thank you
 
-Home Monitor is its own app, written from scratch for this project. It sits alongside some excellent
-open-source tools that many homelabs already run happily, such as
-[Uptime Kuma](https://github.com/louislam/uptime-kuma), [LibreNMS](https://www.librenms.org/),
-[Zabbix](https://www.zabbix.com/) and [n8n](https://n8n.io/). Each of them goes much deeper into its
-own job than Home Monitor tries to, so if you need one of those jobs done really well, they are well
-worth a look. Home Monitor is not affiliated with any of them.
+Home Monitor owes a lot to some excellent open-source projects.
+[Uptime Kuma](https://github.com/louislam/uptime-kuma) inspired its status pages and uptime history,
+[LibreNMS](https://www.librenms.org/) and [Zabbix](https://www.zabbix.com/) shaped its device pages
+and problem handling and [n8n](https://n8n.io/) inspired its visual workflows. The ideas came from
+admiring those tools, while the code was written for this project and none of it comes from them.
+Each one goes much deeper into its own job than Home Monitor tries to, so if you need that job done
+really well, they are well worth a look. Home Monitor is not affiliated with any of them.

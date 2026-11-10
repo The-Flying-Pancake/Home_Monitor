@@ -665,8 +665,8 @@ function drawMap() {
       l.kind === "wifi" ? "wifi" : "",
       l.hidden ? "hidden-link" : "", hot ? "hot" : "", mapSelected && !hot ? "dim" : ""].filter(Boolean).join(" ");
     html += `<g data-link="${i}" data-a="${escapeHtml(l.a)}" data-b="${escapeHtml(l.b)}" class="map-link-g${mapSelected && !hot ? " dim" : ""}">` +
-      `<path class="map-link-hit" d="${d}"></path><path class="${cls}" d="${d}"></path>` +
-      `<circle class="map-link-end" cx="${c[0][0]}" cy="${c[0][1]}" r="3"></circle><circle class="map-link-end" cx="${c[3][0]}" cy="${c[3][1]}" r="3"></circle></g>`;
+      `<path class="map-link-hit" d="${escapeHtml(d)}"></path><path class="${cls}" d="${escapeHtml(d)}"></path>` +
+      `<circle class="map-link-end" cx="${escapeHtml(c[0][0])}" cy="${escapeHtml(c[0][1])}" r="3"></circle><circle class="map-link-end" cx="${escapeHtml(c[3][0])}" cy="${escapeHtml(c[3][1])}" r="3"></circle></g>`;
     // Port tags just off each end, along the side the link leaves by; drawn above everything.
     const off = (side, p) => [p[0] + MAP_SIDES[side][0] * (MAP_SIDES[side][0] ? 26 : 0), p[1] + MAP_SIDES[side][1] * 16];
     if (route.trunk) {
@@ -687,7 +687,7 @@ function drawMap() {
     const label = n.label.length > 22 ? n.label.slice(0, 21) + "…" : n.label;
     const sub = n.port ? `${n.ip}:${n.port}` : n.ip || "";
     const kind = [MAP_KIND_LABEL[n.kind] || n.kind, n.clients ? `+${n.clients} other host${n.clients === 1 ? "" : "s"}` : ""].filter(Boolean).join("  ·  ");
-    html += `<g class="${cls}" data-node="${escapeHtml(n.key)}" transform="translate(${x},${y})">` +
+    html += `<g class="${cls}" data-node="${escapeHtml(n.key)}" transform="translate(${escapeHtml(x)},${escapeHtml(y)})">` +
       `<rect class="map-card" width="${MAP_NODE_W}" height="${MAP_NODE_H}" rx="8"></rect>` +
       `<rect class="map-stripe" x="0" y="0" width="5" height="${MAP_NODE_H}" rx="2"></rect>` +
       `<g class="map-icon" transform="translate(14,${Math.round(MAP_NODE_H / 2 - 12)})"><svg width="24" height="24" viewBox="0 0 24 24">${MAP_ICONS[n.kind] || MAP_ICONS.other}</svg></g>` +
@@ -695,7 +695,7 @@ function drawMap() {
       `<text class="map-sub" x="48" y="39">${escapeHtml(sub)}</text>` +
       `<text class="map-kind" x="48" y="54">${escapeHtml(kind)}</text>` +
       (n.problems ? `<g class="map-badge" transform="translate(${MAP_NODE_W - 14},12)"><circle r="8"></circle><text y="3.5">${Number(n.problems)}</text></g>` : "") +
-      `<title>${escapeHtml(n.label)}${n.problems ? ` (${n.problems} problem${n.problems > 1 ? "s" : ""})` : ""}</title></g>`;
+      `<title>${escapeHtml(n.label)}${n.problems ? ` (${escapeHtml(n.problems)} problem${n.problems > 1 ? "s" : ""})` : ""}</title></g>`;
   }
   svg.innerHTML = html + tags.join("");
   renderMapInfo(affected);
@@ -733,7 +733,7 @@ function renderMapInfo(affected) {
     ${n.device_id ? `<div><a class="device-link" href="#/device/${Number(n.device_id)}">Open device page</a></div>` : ""}
     ${!reachable ? `<div class="text-warn">Not connected to the gateway on this map. Draw its link in Edit mode.</div>` : ""}
     ${cutsMonitor ? `<div class="text-err">Restarting this cuts off this monitor: it cannot watch the restart and will see everything downstream as down until it comes back.</div>` : ""}
-    <div class="map-info-head">Affected by a restart: ${list.length} device${list.length === 1 ? "" : "s"}${hosts ? `, about ${hosts} other host${hosts === 1 ? "" : "s"}` : ""}</div>
+    <div class="map-info-head">Affected by a restart: ${list.length} device${list.length === 1 ? "" : "s"}${hosts ? `, about ${escapeHtml(hosts)} other host${hosts === 1 ? "" : "s"}` : ""}</div>
     <ul class="map-affected">${list.map(x => `<li>${escapeHtml(x.label)} <span class="dim">${escapeHtml(MAP_KIND_LABEL[x.kind] || x.kind)}</span></li>`).join("") || "<li class=\"dim\">Nothing downstream</li>"}</ul>
     ${unmanaged}`;
   const del = box.querySelector("[data-delete-object]");

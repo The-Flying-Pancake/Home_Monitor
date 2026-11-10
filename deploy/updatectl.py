@@ -7,6 +7,7 @@
   updatectl.py prune    --data DIR      pre-update backups older than two days are removed
   updatectl.py record   --data DIR --kind upgrade --ok 1|0 [--from V --to V --why W --log FILE --source host]
   updatectl.py recover  --data DIR      at boot: close an update or undo that a restart cut short
+  updatectl.py note-backup --data DIR --file F --to V   the installer: the copy kept for undo, into root's record
                                         add an upgrade run from the Proxmox host to the update history
 
 How an update is trusted: a release carries home_monitor.sh and home_monitor.sh.sig. The signature is checked
@@ -15,15 +16,21 @@ with ssh-keygen against release-signers, the public key built into the app that 
 The upgrade itself is home_monitor.sh's own (--update-here): check the data with the new build, back up,
 replace, wait for an answer, put everything back if it does not answer.
 
-Every update keeps its own backup in DATA/backups/pre-update, and the app that ran before stays in
-APP_DIR.old. For two days the update can be undone:
+Every update keeps its own backup in root's own folder (SAFE_DIR/pre-update, which the app cannot
+read or change), and the app that ran before stays in APP_DIR.old. For two days the update can be undone:
   code  the previous version on today's data (only when the data still suits the older version:
         an update that changed the database's layout cannot go back this way)
   all   the previous version and the data from just before the update (later changes are lost)
-Before a rollback the current state is backed up into DATA/backups/pre-rollback.
+Before a rollback the current state is backed up into SAFE_DIR/pre-rollback.
 
 Requests come from the app (an unprivileged user) as files whose content is only a time; nothing in
 them is run or trusted beyond choosing one of the fixed actions above.
+
+What root decides never comes from a file the app can write. Each update has one record in root's
+own folder (INSTALL_DIR/update-record.json, root only): the versions, when it started, and the copy
+kept for Undo with its SHA-256, written by root when the copy is made (note-backup, called by the
+installer). Undo uses only that copy and checks its checksum before anything is stopped; recovery
+at boot takes versions and the copy from the record, never from DATA/update-progress.json.
 
 What the app can read back: DATA/update-progress.json while an update runs (which step it is on),
 and the update history in INSTALL_DIR (root's folder, readable by the app's group): every update,
@@ -32,6 +39,7 @@ by the number it finds in the history, never by a name or path from the browser.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -43,13 +51,20 @@ import time
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+for _candidate in (HERE, os.path.dirname(HERE)):
+    if os.path.exists(os.path.join(_candidate, "safefile.py")) and _candidate not in sys.path:
+        sys.path.insert(0, _candidate)
+import safefile  # noqa: E402
 REPO = "The-Flying-Pancake/Home_Monitor"
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
 INSTALLER_NAMES = ("home_monitor.sh", "infra.sh")
 API_LIST = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
 APP_DIR = "/opt/homelab-monitor"
 INSTALL_DIR = "/etc/homelab-monitor-install"
+SAFE_DIR = "/var/lib/homelab-monitor-safe"      # root only: the safety copies (sitectl.py SAFE_DIR)
+LEGACY_KEEP_SECONDS = 14 * 24 * 3600             # copies from before 0.12.0 in DATA/backups age out after this
 STATE_FILE = os.path.join(INSTALL_DIR, "last-update.json")
+RECORD_NAME = "update-record.json"                # in INSTALL_DIR, root only (see the notes above)
 HISTORY_NAME, LOGS_NAME = "update-history.json", "update-logs"     # in INSTALL_DIR
 HISTORY_KEEP = 25
 LOG_LIMIT = 400 * 1024              # the end of a log is kept when it is longer
@@ -93,22 +108,11 @@ def write_result(data: str, kind: str, payload: dict) -> None:
 
 
 def write_json(data: str, name: str, payload: dict) -> None:
-    """DATA/<name> through a new randomly named file, renamed into place (links are never followed)."""
-    path = os.path.join(data, name)
-    fd, tmp = tempfile.mkstemp(prefix=f".{name}.", suffix=".new", dir=data)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(dict(payload, time=int(time.time())), f)
-        owner = os.stat(data)
-        try:
-            os.chown(tmp, owner.st_uid, owner.st_gid, follow_symlinks=False)
-        except (AttributeError, PermissionError, NotImplementedError):
-            pass
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        raise
+    """DATA/<name> through a new randomly named file in the folder opened without following links,
+    owned by the data folder's owner (set on the open file), renamed into place."""
+    data_stat = os.stat(data)
+    safefile.atomic_write(data, name, json.dumps(dict(payload, time=int(time.time()))).encode("utf-8"), 0o600,
+                          (data_stat.st_uid, data_stat.st_gid) if safefile.is_root() else None)
 
 
 def _get(url: str, limit: int, accept: str = "application/octet-stream") -> bytes:
@@ -226,21 +230,109 @@ def _write_state(state: dict) -> None:
     os.replace(tmp, STATE_FILE)
 
 
+def _record_path() -> str:
+    return os.path.join(INSTALL_DIR, RECORD_NAME)
+
+
+def _read_record() -> dict:
+    try:
+        rec = json.loads(safefile.read_regular(_record_path(), 64 * 1024))
+    except (OSError, ValueError):
+        return {}
+    return rec if isinstance(rec, dict) else {}
+
+
+def _write_record(rec: dict) -> None:
+    os.makedirs(INSTALL_DIR, exist_ok=True)
+    safefile.atomic_write(INSTALL_DIR, RECORD_NAME, json.dumps(rec, indent=1).encode("utf-8"), 0o600,
+                          (0, 0) if safefile.is_root() else None)
+
+
+def _finish_record() -> None:
+    rec = _read_record()
+    if rec.get("state") == "running":
+        _write_record(dict(rec, state="done"))
+
+
+def _sha256(path: str) -> str:
+    """The checksum of a plain file, read without following a link."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+    h = hashlib.sha256()
+    try:
+        import stat
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"{path} is not a plain file")
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    finally:
+        os.close(fd)
+    return h.hexdigest()
+
+
+def _in_safe(path: str) -> bool:
+    real, safe = (os.path.normcase(os.path.realpath(p)) for p in (path or "", SAFE_DIR))
+    return bool(path) and real.startswith(safe.rstrip(os.sep) + os.sep) and os.path.isfile(path) and not os.path.islink(path)
+
+
+def _record_backup(rec: dict) -> str:
+    """The copy the record names, when it is in root's folder and still there."""
+    backup = str(rec.get("backup") or "")
+    return backup if _in_safe(backup) and re.fullmatch(r"[0-9a-f]{64}", str(rec.get("sha256") or "")) else ""
+
+
+def note_backup(args) -> dict:
+    """Called by the installer right after it made the copy kept for Undo: root records its path and
+    checksum. The first update to a version with records runs under the older updater, which writes
+    none: then the record is made here."""
+    path = args.file
+    if not _in_safe(path) or os.path.basename(os.path.dirname(os.path.realpath(path))) != "pre-update":
+        raise UpdateError("The copy for undo is not in root's own folder")
+    rec = _read_record()
+    if rec.get("state") != "running":
+        version_tuple(args.to)
+        rec = {"from": installed_version(), "to": args.to, "started": int(time.time()), "boot": boot_id(), "state": "running"}
+    rec.update(backup=path, sha256=_sha256(path))
+    _write_record(rec)
+    return rec
+
+
 def prune(data: str, now: float = None) -> list:
-    """Pre-update and pre-rollback backups older than two days are removed; returns what went."""
+    """Pre-update and pre-rollback backups older than two days are removed (root's folder and the
+    old place in DATA/backups); copies made before 0.12.0 before an upgrade or a restore go after
+    14 days; pre-restore-* folders are kept to the newest few (sitectl.prune_pre_restore).
+    Returns what went."""
     now = time.time() if now is None else now
     gone = []
-    for sub in ("pre-update", "pre-rollback"):
-        folder = os.path.join(data, "backups", sub)
+    folders = [(os.path.join(SAFE_DIR, sub), KEEP_SECONDS) for sub in ("pre-update", "pre-rollback")]
+    folders += [(os.path.join(data, "backups", sub), KEEP_SECONDS) for sub in ("pre-update", "pre-rollback")]
+    folders += [(os.path.join(data, "backups", sub), LEGACY_KEEP_SECONDS) for sub in ("pre-upgrade", "pre-restore")]
+    for folder, keep in folders:
         try:
-            names = os.listdir(folder)
-        except OSError:
+            names = safefile.listdir(folder)                 # a link at the folder is refused
+        except (OSError, NotImplementedError):
             continue
         for name in names:
             path = os.path.join(folder, name)
-            if name.startswith("monitor-backup-") and not os.path.islink(path) and now - os.path.getmtime(path) > KEEP_SECONDS:
-                os.remove(path)
+            if (name.startswith(("monitor-backup-", "files-")) and not os.path.islink(path) and os.path.isfile(path)
+                    and now - os.path.getmtime(path) > keep):
+                safefile.unlink_in(folder, name)
                 gone.append(path)
+    rec = _read_record()
+    if rec and now - float(rec.get("started") or 0) > KEEP_SECONDS:
+        try:
+            os.remove(_record_path())                         # its two days are over
+        except OSError:
+            pass
+    try:
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import sitectl
+        gone += sitectl.prune_pre_restore([SAFE_DIR, data], now)
+    except ImportError:
+        pass
     return gone
 
 
@@ -249,10 +341,13 @@ def rollback_options(data: str, now: float = None) -> dict:
     now = time.time() if now is None else now
     state = _read_state()
     out = {"from": state.get("to_version"), "to": state.get("from_version"), "code": False, "all": False, "why": ""}
-    backup = state.get("backup") or ""
+    # The copy comes from root's record of this very update, never from a file the app can write.
+    rec = _read_record()
+    matches = bool(state) and rec.get("from") == state.get("from_version") and rec.get("to") == state.get("to_version")
+    backup = _record_backup(rec) if matches else ""
     if not state:
         out["why"] = "No update has been installed from here yet"
-    elif now - float(state.get("time") or 0) > KEEP_SECONDS or not os.path.isfile(backup):
+    elif now - float(state.get("time") or 0) > KEEP_SECONDS or not backup:
         out["why"] = "The copy kept for two days after the update has expired"
     elif installed_version(APP_DIR + ".old") != state.get("from_version") or installed_version(APP_DIR) != state.get("to_version"):
         out["why"] = "The previous version is no longer beside this one"
@@ -372,7 +467,9 @@ def install(args, runner=None) -> dict:
         if got != rel["version"]:
             raise UpdateError(f"The installer is version {got}, the release says {rel['version']}; nothing was installed")
         schema_before = _schema(db) if os.path.exists(db) else 0
-        started = time.time()
+        # Root's record of this update, before the installer runs: the copy it makes is noted in it.
+        _write_record({"from": current, "to": rel["version"], "started": int(time.time()), "boot": boot_id(),
+                       "state": "running", "backup": "", "sha256": ""})
         r = (runner or _stream)(["bash", installer, "--update-here"], capture_output=True, text=True, on_line=progress.line,
                                 env=dict(os.environ, NO_COLOR="1", HM_UPDATE_BACKUP="pre-update", HM_FROM_UPDATER="1",
                                          HM_LOG_FILE=log))
@@ -380,9 +477,11 @@ def install(args, runner=None) -> dict:
         if r.returncode != 0:
             raise UpdateError("The update did not complete and the previous version was put back. "
                               + _last_lines(output))
-        backup = _newest(os.path.join(args.data, "backups", "pre-update"), since=started - 5)
+        rec = _read_record()
+        backup = _record_backup(rec) if (rec.get("from"), rec.get("to")) == (current, got) else ""
         _write_state({"from_version": current, "to_version": got, "time": int(time.time()), "backup": backup,
                       "schema_same": os.path.exists(db) and _schema(db) == schema_before})
+        _finish_record()
         out = {"ok": True, "action": "install", "from": current, "to": got, "output": _last_lines(output, 30)}
         progress.finish(True)
         record({"kind": "update", "source": "app", "from": current, "to": got, "ok": True}, _log_text(log, output))
@@ -390,6 +489,10 @@ def install(args, runner=None) -> dict:
         return out
     except Exception as exc:
         why = str(exc) if isinstance(exc, UpdateError) else f"{type(exc).__name__}: {exc}"
+        try:
+            _finish_record()
+        except OSError:
+            pass
         progress.finish(False, why)
         record({"kind": "update", "source": "app", "from": current, "to": rel["version"], "ok": False, "error": why},
                _log_text(log, output))
@@ -513,10 +616,25 @@ def _rollback(args, runner) -> dict:
     state = _read_state()
     data, key = args.data, "/etc/homelab-monitor/vault.key"
     old, cur = APP_DIR + ".old", APP_DIR
-    sitectl = os.path.join(old, "sitectl.py")
+    rec = _read_record()
+    backup = _record_backup(rec)
+    if args.mode == "all":
+        # The copy must still be the one root recorded when it was made: checked before anything stops.
+        try:
+            same = bool(backup) and _sha256(backup) == rec.get("sha256")
+        except OSError:
+            same = False
+        if not same:
+            raise UpdateError("The copy kept for undo has changed since the update, so it was not used. Nothing was changed.")
+    # The older build's sitectl.py restores it: it is told the checksum only when it knows the option.
+    try:
+        with open(os.path.join(old, "sitectl.py"), encoding="utf-8", errors="replace") as f:
+            knows_expect = "--expect-sha256" in f.read()
+    except OSError:
+        knows_expect = False
     # The state now, kept for two days like the update's own backup.
     r = runner(["python3", os.path.join(cur, "sitectl.py"), "backup", "--data", data, "--key", key,
-                "--dest", os.path.join(data, "backups", "pre-rollback"), "--keep", "5"], capture_output=True, text=True)
+                "--dest", os.path.join(SAFE_DIR, "pre-rollback"), "--keep", "5", "--safety", "--safe-dir", SAFE_DIR], capture_output=True, text=True)
     if r.returncode != 0:
         raise UpdateError("Could not back up the current state first; nothing was changed. " + _last_lines(r.stdout + r.stderr))
     runner(["systemctl", "stop", "homelab-monitor"], capture_output=True, text=True)
@@ -525,14 +643,15 @@ def _rollback(args, runner) -> dict:
     os.rename(old, cur)
     steps = []
     if args.mode == "all":
-        r = runner(["python3", os.path.join(cur, "sitectl.py"), "restore", state["backup"], "--data", data, "--key", key,
-                    "--passphrase-file", os.path.join(INSTALL_DIR, "backup-passphrase")], capture_output=True, text=True)
+        r = runner(["python3", os.path.join(cur, "sitectl.py"), "restore", backup, "--data", data, "--key", key,
+                    "--passphrase-file", os.path.join(INSTALL_DIR, "backup-passphrase")]
+                   + (["--expect-sha256", rec["sha256"]] if knows_expect else []), capture_output=True, text=True)
         steps.append(r.stdout + r.stderr)
         if r.returncode != 0:
             _swap_back(cur, runner)
             raise UpdateError("The backup from before the update could not be restored; the current version is "
                               "running again. " + _last_lines(r.stdout + r.stderr))
-    runner(["chown", "-R", "homelab-monitor:homelab-monitor", data, "/etc/homelab-monitor"], capture_output=True, text=True)
+    runner(["chown", "-hR", "homelab-monitor:homelab-monitor", data, "/etc/homelab-monitor"], capture_output=True, text=True)
     runner(["systemctl", "start", "homelab-monitor"], capture_output=True, text=True)
     if not _answers(runner):
         _swap_back(cur, runner)
@@ -570,39 +689,29 @@ def _answers(runner, tries: int = 45) -> bool:
     return False
 
 
-def _newest(folder: str, since: float) -> str:
-    try:
-        names = [n for n in os.listdir(folder) if n.startswith("monitor-backup-")]
-    except OSError:
-        return ""
-    paths = sorted((os.path.join(folder, n) for n in names), key=os.path.getmtime)
-    return paths[-1] if paths and os.path.getmtime(paths[-1]) >= since else ""
-
-
 def _last_lines(text: str, n: int = 8) -> str:
     return "\n".join(l for l in (text or "").strip().splitlines()[-n:])
 
 
+# The app writes these: read only when they are plain files (never a link or a device that never
+# ends), and only up to a small size.
 def _request_time(data: str, kind: str) -> int:
     try:
-        with open(os.path.join(data, "requests", kind), encoding="ascii") as f:
-            return int(f.read().strip() or 0)
+        return int(safefile.read_regular(os.path.join(data, "requests", kind), 64).decode("ascii").strip() or 0)
     except (OSError, ValueError):
         return 0
 
 
 def _result_time(data: str, kind: str) -> int:
     try:
-        with open(os.path.join(data, f"{kind}.result.json"), encoding="utf-8") as f:
-            return int(json.load(f).get("time") or 0)
-    except (OSError, ValueError):
+        return int(json.loads(safefile.read_regular(os.path.join(data, f"{kind}.result.json"), 1024 * 1024)).get("time") or 0)
+    except (OSError, ValueError, AttributeError):
         return 0
 
 
 def _read_json(path: str) -> dict:
     try:
-        with open(path, encoding="utf-8") as f:
-            out = json.load(f)
+        out = json.loads(safefile.read_regular(path, 1024 * 1024))
         return out if isinstance(out, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -632,18 +741,22 @@ def recover(args, work_root: str = "/root") -> dict:
     if os.path.isdir(back) and os.path.isdir(APP_DIR):
         shutil.rmtree(back, ignore_errors=True)
     running = installed_version()
-    frm, to = str(progress.get("from") or ""), str(progress.get("to") or "")
+    # Versions and the copy come from root's record, never from the progress file (the app can write it).
+    rec = _read_record()
+    live = rec.get("state") == "running" and time.time() - float(rec.get("started") or 0) <= KEEP_SECONDS
+    frm, to = (str(rec.get("from") or ""), str(rec.get("to") or "")) if live else ("", "")
     action = "update-install" if progress.get("state") == "running" or "update-install" in asked else (asked[0] if asked else "update-install")
     if action == "update-install":
         error = (f"The update to {to or 'the new version'} was cut short: the monitor's machine restarted before it "
                  f"finished. {running or 'No version'} is installed now.")
-        if to and running == to and installed_version(old) == frm:
-            backup = _newest(os.path.join(data, "backups", "pre-update"), since=float(progress.get("started") or 0) - 5)
-            if backup:
-                # The new version is in place but was never checked: the way back stays open for two days.
-                _write_state({"from_version": frm, "to_version": to, "time": int(time.time()), "backup": backup,
-                              "schema_same": False, "interrupted": True})
-                error += f" It was not checked before the restart: if anything is wrong, Undo below puts {frm} back."
+        backup = _record_backup(rec) if live else ""
+        if to and running == to and installed_version(old) == frm and backup:
+            # The new version is in place but was never checked: the way back stays open for two days.
+            _write_state({"from_version": frm, "to_version": to, "time": int(time.time()), "backup": backup,
+                          "schema_same": False, "interrupted": True})
+            error += f" It was not checked before the restart: if anything is wrong, Undo below puts {frm} back."
+    if live:
+        _finish_record()                     # used once: a second boot or a forged signal cannot reopen it
     else:
         error = f"The undo was cut short by a restart. {running or 'No version'} is installed now."
     if notes:
@@ -702,9 +815,12 @@ def requests(args) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("requests", "check", "install", "prune", "rollback", "record", "recover"):
+    for name in ("requests", "check", "install", "prune", "rollback", "record", "recover", "note-backup"):
         p = sub.add_parser(name)
         p.add_argument("--data", required=True)
+        if name == "note-backup":
+            p.add_argument("--file", required=True)
+            p.add_argument("--to", required=True)
         if name == "rollback":
             p.add_argument("--mode", choices=("code", "all"), required=True)
         if name == "record":
@@ -729,6 +845,8 @@ def main() -> None:
             print(json.dumps(record_cmd(args), indent=2))
         elif args.cmd == "recover":
             print(json.dumps(recover(args), indent=2))
+        elif args.cmd == "note-backup":
+            print(json.dumps(note_backup(args), indent=2))
         else:
             for p in prune(args.data):
                 print(f"Removed {p}")

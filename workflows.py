@@ -358,6 +358,19 @@ def hosts_of(workflow: Dict[str, Any]) -> List[int]:
     return sorted({i for s in workflow["steps"] for i in (s.get("device_ids") or [s.get("device_id")]) if i})
 
 
+def reach_of(workflow: Dict[str, Any]) -> Dict[str, Any]:
+    """Everything a workflow touches, for device access checks: devices (its hosts and the device an
+    event trigger watches), wide mutes (every device, a group or a tag) and Proxmox guests."""
+    devices = set(hosts_of(workflow))
+    sched = workflow.get("schedule") or {}
+    if sched.get("kind") == "event" and (sched.get("when") or {}).get("device_id"):
+        devices.add(sched["when"]["device_id"])
+    mutes = sorted({(s["scope"], s.get("target") or "") for s in workflow["steps"]
+                    if s.get("type") == "mute" and s.get("scope") in ("all", "group", "tag")})
+    guests = sorted({(s["node"], s["vmid"]) for s in workflow["steps"] if s.get("type") == "pve_snapshot"})
+    return {"devices": sorted(devices), "mutes": mutes, "guests": guests}
+
+
 def next_ok(graph: Dict[str, Any], node_id: str) -> Optional[Dict[str, Any]]:
     by_id = {n["id"]: n for n in graph["nodes"]}
     to = next((e["to"] for e in graph["edges"] if e["from"] == node_id and e["kind"] == "ok"), None)

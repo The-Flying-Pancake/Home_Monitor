@@ -2,6 +2,7 @@
 
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -15,12 +16,17 @@ _httpd = None
 TEST_USER = "tester"
 TEST_PASSWORD = "correct horse battery"
 _cookie = {"value": None}
+_logged_in = {"at": 0.0}
 
 
 def start_api_server() -> None:
     """Initialises the isolated database and vault, then serves the API in a thread (no scheduler)."""
     global _httpd
     if _httpd is not None:
+        # One login serves every module. Its confirmation (auth.TIER2_SECONDS) runs out while slow
+        # suites such as the installer tests run, so a module starting later logs in afresh.
+        if time.monotonic() - _logged_in["at"] > auth.TIER2_SECONDS / 2:
+            login()
         return
     # Cheap hashes keep the suite fast; production parameters are checked in test_auth.py.
     auth.SCRYPT_N = 2 ** 10
@@ -44,6 +50,7 @@ def login() -> None:
     status, body, headers = request("POST", "/api/auth/login", {"username": TEST_USER, "password": TEST_PASSWORD}, session=False)
     assert status == 200, body
     _cookie["value"] = session_cookie(headers)
+    _logged_in["at"] = time.monotonic()
 
 
 def request(method: str, path: str, body=None, headers=None, raw: bytes = None, session: bool = True):

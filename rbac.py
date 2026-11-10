@@ -19,12 +19,25 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 PERMISSIONS = [
     ("devices.poll", "Poll devices", "Poll now, poll all and live mode on device pages."),
     ("problems.ack", "Acknowledge problems", "Acknowledge and un-acknowledge open problems."),
-    ("devices.manage", "Manage devices", "Add, edit and delete devices, watches, Fix SNMP and SSH host keys."),
+    ("devices.manage", "Manage devices",
+     "Add, edit and delete devices and watches, forget SSH host keys, copy the Fix SNMP commands and start Pi-hole, "
+     "Wi-Fi and Proxmox guest actions. The address of a device decides where commands run as a stored credential's "
+     "user, often root, on every device the user can reach. Running Fix SNMP also needs Use stored credentials."),
     ("map.edit", "Edit the map", "Add objects, draw or hide links and move nodes."),
     ("dashboard.edit", "Edit the dashboard", "Add, rename and delete dashboards; move, resize, rename, add and remove their tiles."),
-    ("automation.run", "Run workflows", "Run and cancel workflows on devices the user can reach."),
-    ("automation.edit", "Edit workflows", "Create, change and delete workflows."),
-    ("credentials.manage", "Manage credentials", "Add, change, delete and generate stored credentials."),
+    ("automation.run", "Run workflows",
+     "Start and cancel workflows and run host actions. Their commands run as the stored credential's user, often root, "
+     "on every device the user can reach. Commands also need Use stored credentials."),
+    ("automation.edit", "Edit workflows",
+     "Create, change and delete workflows. Their commands run as the stored credential's user, often root, on every "
+     "device the user can reach, also on a schedule when nobody is watching. Commands also need Use stored credentials."),
+    ("credentials.use", "Use stored credentials",
+     "Run commands on hosts as a stored credential's user, often root, on every device the user can reach: in "
+     "workflows, host actions, Fix SNMP and credential tests."),
+    ("credentials.manage", "Manage credentials",
+     "Add, change, delete and generate stored credentials and approve SSH host keys, which decides where stored "
+     "credentials are sent. Commands run as the credential's user, often root, on every device the user can reach. "
+     "A stored password can only be used by someone with this permission."),
     ("settings.alerts", "Alert rules", "Change thresholds, severities and Telegram choices."),
     ("settings.notifications", "Notification settings", "Telegram bot, chat, quiet hours and message texts."),
     ("settings.system", "System settings", "SNMP defaults, polling, retention and the setup wizard."),
@@ -36,8 +49,11 @@ PERMISSION_KEYS = [p[0] for p in PERMISSIONS]
 
 ROLES = {
     "admin": ("Administrator", "Everything, including users.", set(PERMISSION_KEYS)),
-    "operator": ("Operator", "Day to day running: poll, acknowledge, run workflows, edit the map and dashboard.",
-                 {"devices.poll", "problems.ack", "automation.run", "map.edit", "dashboard.edit", "audit.view"}),
+    "operator": ("Operator", "Day to day running: poll, acknowledge, run workflows and host actions, edit the map and "
+                             "dashboard. Host actions and workflow commands run as a stored credential's user, often "
+                             "root, on every device the Operator can reach.",
+                 {"devices.poll", "problems.ack", "automation.run", "credentials.use", "map.edit", "dashboard.edit",
+                  "audit.view"}),
     "viewer": ("Viewer", "Read only.", set()),
     "custom": ("Custom", "Exactly the permissions ticked below.", None),
 }
@@ -63,7 +79,9 @@ ROUTE_PERMISSIONS = [
     ("POST", r"/api/custom-oids", "devices.manage"),
     ("DELETE", r"/api/custom-oids/\d+", "devices.manage"),
     ("POST", r"/api/devices/\d+/fix-snmp(?:/preview)?", "devices.manage"),
-    ("POST", r"/api/devices/\d+/hostkey", "devices.manage"),
+    # A list means every one of them (all of); a tuple inside it means any one of those.
+    # Approving a host key decides where stored credentials are sent.
+    ("POST", r"/api/devices/\d+/hostkey", ["devices.manage", "credentials.manage"]),
     ("POST", r"/api/devices/\d+/ssh-setup", "devices.manage"),
     ("DELETE", r"/api/devices/\d+/hostkey", "devices.manage"),
     ("POST", r"/api/devices/\d+/poll", "devices.poll"),
@@ -84,13 +102,14 @@ ROUTE_PERMISSIONS = [
     ("PUT", r"/api/workflows/\d+", "automation.edit"),
     ("DELETE", r"/api/workflows/\d+", "automation.edit"),
     ("POST", r"/api/credentials(?:/generate)?", "credentials.manage"),
-    ("POST", r"/api/credentials/\d+/test", ("automation.edit", "credentials.manage")),
+    ("POST", r"/api/credentials/\d+/test", [("automation.edit", "credentials.manage"), "credentials.use"]),
     ("PUT", r"/api/credentials/\d+", "credentials.manage"),
     ("DELETE", r"/api/credentials/\d+", "credentials.manage"),
     ("PUT", r"/api/alert-rules", "settings.alerts"),
     ("POST", r"/api/notify/[\w-]+", "settings.notifications"),
-    # Renders sample values sent with the request; stores and reads nothing (every editor's preview).
-    ("POST", r"/api/template/render", None),
+    # The message editors' preview: renders sample values sent with the request and stores nothing.
+    # Only the editors use it: notification and bot texts in Settings and the workflow Telegram step.
+    ("POST", r"/api/template/render", ("settings.notifications", "automation.edit")),
     # POST /api/settings is checked per key (settings_permission), so any signed-in user reaches the handler.
     ("POST", r"/api/settings", None),
     ("POST", r"/api/setup/[\w/-]+", "settings.system"),
@@ -166,6 +185,8 @@ TIER_ROUTES = [
     ("PUT", r"/api/(?:pihole|unifi)/config", 2),  # stores a password
     ("PUT", r"/api/proxmox/actions", 2),          # a token that may change guests
     ("POST", r"/api/proxmox/guest", 2),           # starts, stops or restarts a guest
+    ("POST", r"/api/pihole/blocking", 2),         # every device on the network loses its ad blocking
+    ("POST", r"/api/wifi/reconnect", 2),          # drops a device off the Wi-Fi
     ("PUT", r"/api/backups/site", 2),             # where backups go, and the Syncthing identity source
     ("POST", r"/api/(?:pihole|unifi|proxmox)/test", 2),   # sends the stored secret to the stored address
     ("POST", r"/api/workflows", 2),               # saved workflows run unattended on devices
@@ -173,6 +194,33 @@ TIER_ROUTES = [
 ]
 SECRET_SETTING_TIER = 2
 _TIERS = [(m, re.compile(p), t) for m, p, t in TIER_ROUTES]
+
+# Changes that reach the whole network or objects everyone shares (the map, dashboards, groups and
+# tags): a user limited to some devices is refused, after the permission check and before any
+# password prompt. Path patterns match the whole path.
+UNSCOPED_ROUTES = [
+    ("POST", r"/api/pihole/blocking"),
+    ("POST", r"/api/wifi/reconnect"),
+    ("POST", r"/api/inventory"),
+    ("POST", r"/api/inventory/known"),
+    ("PUT", r"/api/inventory/quiet-ssids"),
+    ("PUT", r"/api/inventory/[0-9a-fA-F:.-]{12,17}"),
+    ("DELETE", r"/api/inventory/[0-9a-fA-F:.-]{12,17}"),
+    ("POST", r"/api/map/objects"),
+    ("DELETE", r"/api/map/objects/\d+"),
+    ("POST", r"/api/map/links"),
+    ("PUT", r"/api/map/positions"),
+    ("PUT", r"/api/dashboard"),
+    ("POST", r"/api/dashboards"),
+    ("DELETE", r"/api/dashboards/[a-z0-9-]+"),
+    ("PUT", r"/api/taxonomy"),
+]
+_UNSCOPED = [(m, re.compile(p)) for m, p in UNSCOPED_ROUTES]
+
+
+def needs_all_devices(method: str, path: str) -> bool:
+    """Whether this request needs access to every device."""
+    return any(m == method and rx.fullmatch(path) for m, rx in _UNSCOPED)
 
 
 def route_tier(method: str, path: str) -> int:
@@ -212,6 +260,24 @@ def scope_of(account: Dict[str, Any]) -> Optional[Dict[str, List]]:
             "devices": [int(d) for d in raw.get("devices", []) if str(d).isdigit()]}
 
 
+def scope_within(inner: Optional[Dict[str, List]], outer: Optional[Dict[str, List]],
+                 profile_of: Dict[int, str]) -> bool:
+    """Whether everything scope inner reaches is also in scope outer. None means every device.
+
+    A single device counts as inside when it is one of outer's devices or its template is one of
+    outer's templates. A template in inner must also be a template in outer: it is not expanded to
+    today's devices, because it also covers devices added later. A device id that no longer exists
+    is ignored (ids are never reused). profile_of maps device id to its template."""
+    if outer is None:
+        return True
+    if inner is None:
+        return False
+    if not set(inner["profiles"]) <= set(outer["profiles"]):
+        return False
+    return all(d in outer["devices"] or profile_of[d] in outer["profiles"]
+               for d in inner["devices"] if d in profile_of)
+
+
 class User:
     """The signed-in user as the request handler sees it."""
 
@@ -224,6 +290,8 @@ class User:
     def can(self, perm: Any) -> bool:
         if perm is None:
             return True
+        if isinstance(perm, list):
+            return all(self.can(p) for p in perm)
         if isinstance(perm, tuple):
             return any(p in self.perms for p in perm)
         return perm in self.perms

@@ -615,14 +615,21 @@ def render(cmd: Dict[str, Any], arg: str = "", now: Optional[float] = None,
     parts = []
     if cmd.get("header", "").strip():
         parts.append(fill(cmd["header"], base))
+        if parts[-1] == tpl.FALLBACK:
+            return tpl.FALLBACK
     if cmd.get("line", "").strip():
         for i in items:
             values = dict(base, **{k: v for k, v in i.items() if not k.startswith("_")})
             line = fill(cmd["line"], values)
+            # A line text too long to build stops here, rather than costing a full try per item.
+            if line == tpl.FALLBACK:
+                return tpl.FALLBACK
             if line.strip():
                 parts.append(line)
     if cmd.get("footer", "").strip():
         parts.append(fill(cmd["footer"], base))
+        if parts[-1] == tpl.FALLBACK:
+            return tpl.FALLBACK
     text = "\n".join(p for p in parts if p.strip())
     return telebot._clip(text.split("\n")) if text.strip() else "Nothing to show."
 

@@ -1,6 +1,7 @@
 """Update from the project's releases (deploy/updatectl.py): what is trusted, what is refused, the ways back."""
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -35,8 +36,9 @@ class UpdateTests(unittest.TestCase):
         for d in (self.data, self.app, self.inst, os.path.join(self.data, "requests")):
             os.makedirs(d)
         self.write(os.path.join(self.app, "server.py"), 'APP_VERSION = "0.8.0"\n')
-        self.saved = {k: getattr(updatectl, k) for k in ("APP_DIR", "INSTALL_DIR", "STATE_FILE", "SIGNERS", "_get")}
+        self.saved = {k: getattr(updatectl, k) for k in ("APP_DIR", "INSTALL_DIR", "STATE_FILE", "SIGNERS", "_get", "SAFE_DIR")}
         updatectl.APP_DIR, updatectl.INSTALL_DIR = self.app, self.inst
+        self.safe = updatectl.SAFE_DIR = os.path.join(self.tmp, "safe")
         updatectl.STATE_FILE = os.path.join(self.inst, "last-update.json")
         # A release key made for the test: signs like deploy/release.py, checked like the box does.
         self.key = os.path.join(self.tmp, "k")
@@ -115,15 +117,29 @@ class UpdateTests(unittest.TestCase):
         with self.assertRaises(updatectl.UpdateError):
             updatectl.verify_signature(f, sig)
 
+    def safe_copy(self, name="monitor-backup-20261109-100000.tar.gz", body="a backup"):
+        folder = os.path.join(self.safe, "pre-update")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        self.write(path, body)
+        return path
+
+    def record(self, **kw):
+        path = kw.pop("backup", None) or self.safe_copy()
+        rec = dict({"from": "0.7.0", "to": "0.8.0", "started": int(time.time()), "state": "done", "backup": path,
+                    "sha256": hashlib.sha256(open(path, "rb").read()).hexdigest()}, **kw)
+        self.write(os.path.join(self.inst, updatectl.RECORD_NAME), json.dumps(rec))
+        return rec
+
     def run_install(self, runner=None):
         calls = []
 
         def fake_runner(cmd, **kw):
             calls.append(cmd)
-            # home_monitor.sh --update-here makes the pre-update backup; the fake does the same.
-            folder = os.path.join(self.data, "backups", "pre-update")
-            os.makedirs(folder, exist_ok=True)
-            open(os.path.join(folder, "monitor-backup-20261109-100000.tar.gz"), "w").close()
+            # home_monitor.sh --update-here makes the pre-update backup in root's folder and notes it in
+            # root's record (note-backup); the fake does the same.
+            self.seen_record = json.load(open(os.path.join(self.inst, updatectl.RECORD_NAME)))
+            updatectl.note_backup(argparse.Namespace(data=self.data, file=self.safe_copy(), to="9.9.9"))
             return subprocess.CompletedProcess(cmd, 0, "Upgraded to 9.9.9 and answering\n", "")
         return updatectl.install(argparse.Namespace(data=self.data), runner=runner or fake_runner), calls
 
@@ -142,7 +158,30 @@ class UpdateTests(unittest.TestCase):
         state = json.load(open(updatectl.STATE_FILE))
         self.assertEqual((state["from_version"], state["to_version"]), ("0.8.0", "9.9.9"))
         self.assertTrue(state["backup"].endswith(".tar.gz"))
+        rec = json.load(open(os.path.join(self.inst, updatectl.RECORD_NAME)))
+        self.assertEqual((rec["from"], rec["to"], rec["state"]), ("0.8.0", "9.9.9", "done"))
+        self.assertRegex(rec["sha256"], r"^[0-9a-f]{64}$")
         self.assertTrue(json.load(open(os.path.join(self.data, "update.result.json")))["ok"])
+
+    def test_install_writes_the_record_before_the_installer(self):
+        self.write(os.path.join(self.inst, "settings.env"), 'PORT="8080"\n')
+        self.fake_release()
+        self.run_install()
+        self.assertEqual((self.seen_record["state"], self.seen_record["to"], self.seen_record["backup"]), ("running", "9.9.9", ""))
+
+    def test_note_backup_records_hash_for_first_update(self):
+        """The update to this version runs under the older updater, which writes no record: the
+        installer's note-backup makes it."""
+        self.write(os.path.join(self.app, "server.py"), 'APP_VERSION = "0.11.2"\n')
+        path = self.safe_copy()
+        rec = updatectl.note_backup(argparse.Namespace(data=self.data, file=path, to="0.12.0"))
+        self.assertEqual((rec["from"], rec["to"], rec["state"], rec["backup"]), ("0.11.2", "0.12.0", "running", path))
+        self.assertEqual(rec["sha256"], hashlib.sha256(b"a backup").hexdigest())
+        # Only a copy in root's own folder is recorded.
+        elsewhere = os.path.join(self.data, "backups", "pre-update", "monitor-backup-x.tar.gz")
+        self.write(elsewhere, "planted")
+        with self.assertRaises(updatectl.UpdateError):
+            updatectl.note_backup(argparse.Namespace(data=self.data, file=elsewhere, to="0.12.0"))
 
     def test_install_refuses_older_tampered_or_mislabelled(self):
         self.write(os.path.join(self.inst, "settings.env"), 'PORT="8080"\n')
@@ -164,11 +203,34 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(updatectl.prune(self.data), [old])
         self.assertTrue(os.path.exists(new))
 
+    def test_prune_covers_roots_folder_and_old_places(self):
+        """Root's folder (two days), the old places in DATA/backups (two days, or 14 for upgrade and
+        restore copies from before 0.12.0) and the pre-restore folders (newest kept)."""
+        now = time.time()
+        made = {}
+        for folder, age in ((os.path.join(self.safe, "pre-update"), 3), (os.path.join(self.safe, "pre-rollback"), 1),
+                            (os.path.join(self.data, "backups", "pre-upgrade"), 10),
+                            (os.path.join(self.data, "backups", "pre-restore"), 20)):
+            os.makedirs(folder)
+            p = os.path.join(folder, "monitor-backup-x.tar.gz")
+            open(p, "w").close()
+            os.utime(p, (now - age * 86400,) * 2)
+            made[os.path.basename(folder)] = p
+        for i, age in enumerate((1, 40)):
+            d = os.path.join(self.safe, f"pre-restore-{i}")
+            os.makedirs(d)
+            os.utime(d, (now - age * 86400,) * 2)
+        gone = updatectl.prune(self.data, now)
+        self.assertIn(made["pre-update"], gone)
+        self.assertIn(made["pre-restore"], gone)
+        self.assertTrue(os.path.exists(made["pre-rollback"]))
+        self.assertTrue(os.path.exists(made["pre-upgrade"]))
+        self.assertEqual(sorted(os.listdir(self.safe)), ["pre-restore-0", "pre-rollback", "pre-update"])
+
     def test_rollback_options(self):
         self.assertFalse(updatectl.rollback_options(self.data)["all"])
         self.write(os.path.join(self.app + ".old", "server.py"), 'APP_VERSION = "0.7.0"\n')
-        backup = os.path.join(self.data, "b.tar.gz")
-        open(backup, "w").close()
+        backup = self.record()["backup"]
         state = {"from_version": "0.7.0", "to_version": "0.8.0", "time": int(time.time()), "backup": backup, "schema_same": True}
         self.write(updatectl.STATE_FILE, json.dumps(state))
         o = updatectl.rollback_options(self.data)
@@ -185,10 +247,58 @@ class UpdateTests(unittest.TestCase):
         self.assertFalse(o["all"] or o["code"])
         self.assertIn("expired", o["why"])
 
+    def test_rollback_options_need_a_matching_record(self):
+        self.write(os.path.join(self.app + ".old", "server.py"), 'APP_VERSION = "0.7.0"\n')
+        state = {"from_version": "0.7.0", "to_version": "0.8.0", "time": int(time.time()), "schema_same": True,
+                 "backup": os.path.join(self.data, "backups", "pre-update", "planted.tar.gz")}
+        self.write(state["backup"], "planted by the app")
+        self.write(updatectl.STATE_FILE, json.dumps(state))
+        self.assertFalse(updatectl.rollback_options(self.data)["all"])          # no record: the app's file is not used
+        self.record(**{"from": "0.6.0"})
+        self.assertFalse(updatectl.rollback_options(self.data)["all"])          # another update's record
+        self.record()
+        self.assertTrue(updatectl.rollback_options(self.data)["all"])
+
+    def test_rollback_refuses_a_changed_backup(self):
+        self.write(os.path.join(self.app + ".old", "server.py"), 'APP_VERSION = "0.7.0"\n')
+        rec = self.record()
+        self.write(updatectl.STATE_FILE, json.dumps({"from_version": "0.7.0", "to_version": "0.8.0", "time": int(time.time()),
+                                                     "backup": "", "schema_same": False}))
+        self.write(rec["backup"], "changed after the update")
+        calls = []
+        with self.assertRaises(updatectl.UpdateError) as e:
+            updatectl.rollback(argparse.Namespace(data=self.data, mode="all"),
+                               runner=lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+        self.assertIn("has changed since the update", str(e.exception))
+        self.assertEqual(calls, [])                                       # nothing stopped, nothing backed up
+        self.assertEqual(updatectl.installed_version(self.app), "0.8.0")
+
+    def test_rollback_all_checks_the_copy_with_the_older_sitectl(self):
+        """Undo restores with the previous build's sitectl.py: given the checksum only when it knows it."""
+        rec = self.record()
+        for knows, text in ((True, "p.add_argument('--expect-sha256')\n"), (False, "# 0.11.2\n")):
+            shutil.rmtree(self.app + ".old", ignore_errors=True)
+            self.write(os.path.join(self.app + ".old", "server.py"), 'APP_VERSION = "0.7.0"\n')
+            self.write(os.path.join(self.app + ".old", "sitectl.py"), text)
+            self.write(os.path.join(self.app, "server.py"), 'APP_VERSION = "0.8.0"\n')
+            self.write(updatectl.STATE_FILE, json.dumps({"from_version": "0.7.0", "to_version": "0.8.0",
+                                                         "time": int(time.time()), "backup": "", "schema_same": False}))
+            calls = []
+
+            def runner(cmd, **kw):
+                calls.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            updatectl.rollback(argparse.Namespace(data=self.data, mode="all"), runner=runner)
+            restore = next(c for c in calls if "restore" in c)
+            self.assertIn(rec["backup"], restore)
+            self.assertEqual("--expect-sha256" in restore, knows)
+            if knows:
+                self.assertEqual(restore[restore.index("--expect-sha256") + 1], rec["sha256"])
+            self.assertIn(["chown", "-hR", "homelab-monitor:homelab-monitor", self.data, "/etc/homelab-monitor"], calls)
+
     def test_rollback_code_swaps_back_and_keeps_data(self):
         self.write(os.path.join(self.app + ".old", "server.py"), 'APP_VERSION = "0.7.0"\n')
-        backup = os.path.join(self.data, "b.tar.gz")
-        open(backup, "w").close()
+        backup = self.record()["backup"]
         self.write(updatectl.STATE_FILE, json.dumps({"from_version": "0.7.0", "to_version": "0.8.0", "time": int(time.time()),
                                                      "backup": backup, "schema_same": True}))
         calls = []
@@ -200,6 +310,7 @@ class UpdateTests(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(updatectl.installed_version(self.app), "0.7.0")
         self.assertIn("pre-rollback", calls[0])                       # the state now is backed up first
+        self.assertIn(os.path.join(self.safe, "pre-rollback") + " --keep 5 --safety", calls[0])   # into root's own folder
         self.assertFalse(any("restore" in c for c in calls))           # today's data stays
         self.assertFalse(updatectl.rollback_options(self.data)["all"])  # done once
 
@@ -316,12 +427,11 @@ class UpdateTests(unittest.TestCase):
         self.assertFalse(updatectl.read_history()[0]["ok"])
         self.assertEqual(self.recover()[0]["action"], "nothing")       # a second boot finds nothing to do
 
-    def test_recover_keeps_the_way_back_when_the_new_version_was_never_checked(self):
+    def test_recover_uses_the_root_record(self):
+        """Replaces the way-back test that read the progress file: versions and the copy come from root's record."""
         self.write(os.path.join(self.app, "server.py"), 'APP_VERSION = "9.9.9"\n')
         self.write(os.path.join(self.app + ".old", "server.py"), 'APP_VERSION = "0.8.0"\n')
-        folder = os.path.join(self.data, "backups", "pre-update")
-        os.makedirs(folder)
-        open(os.path.join(folder, "monitor-backup-20261109-100000.tar.gz"), "w").close()
+        self.record(**{"from": "0.8.0", "to": "9.9.9", "state": "running", "started": int(time.time()) - 60})
         self.ask("update-install", time.time() - 120)
         self.progress(current="health", steps={"health": "run"})
         work = os.path.join(self.tmp, "root", "hm-update-abc")
@@ -334,6 +444,58 @@ class UpdateTests(unittest.TestCase):
         self.assertFalse(os.path.exists(work))                          # the cut-short download is cleared
         log = open(os.path.join(self.inst, "update-logs", f"{updatectl.read_history()[0]['id']}.log"), encoding="utf-8").read()
         self.assertIn("waiting", log)
+        self.assertEqual(json.load(open(os.path.join(self.inst, updatectl.RECORD_NAME)))["state"], "done")
+
+    def cut_update(self):
+        self.write(os.path.join(self.app, "server.py"), 'APP_VERSION = "9.9.9"\n')
+        self.write(os.path.join(self.app + ".old", "server.py"), 'APP_VERSION = "0.8.0"\n')
+        self.ask("update-install", time.time() - 120)
+        self.progress(current="health", steps={"health": "run"})
+
+    def test_recover_ignores_a_forged_progress_file(self):
+        """No record: the versions and start time in the app's progress file are never used."""
+        self.cut_update()
+        self.progress(**{"from": "0.1.0", "to": "6.6.6", "started": int(time.time())})
+        self.safe_copy()
+        out, _ = self.recover()
+        self.assertFalse(os.path.exists(updatectl.STATE_FILE))
+        self.assertNotIn("6.6.6", out["error"])
+        self.assertFalse(updatectl.rollback_options(self.data)["all"])
+
+    def test_recover_ignores_a_planted_backup(self):
+        """Cut before the copy was made: a newer file in the old folder (or root's) is not taken up."""
+        self.cut_update()
+        rec = {"from": "0.8.0", "to": "9.9.9", "started": int(time.time()) - 60, "state": "running", "backup": "", "sha256": ""}
+        self.write(os.path.join(self.inst, updatectl.RECORD_NAME), json.dumps(rec))
+        self.write(os.path.join(self.data, "backups", "pre-update", "monitor-backup-20991231-000000.tar.gz"), "planted")
+        self.safe_copy("monitor-backup-20991231-000000.tar.gz")
+        out, _ = self.recover()
+        self.assertFalse(os.path.exists(updatectl.STATE_FILE))
+        self.assertNotIn("Undo", out["error"])
+
+    def test_recover_cannot_reopen_a_used_record(self):
+        self.cut_update()
+        self.record(**{"from": "0.8.0", "to": "9.9.9", "state": "done"})
+        self.recover()
+        self.assertFalse(os.path.exists(updatectl.STATE_FILE))
+
+    def test_recover_ignores_an_expired_record(self):
+        self.cut_update()
+        self.record(**{"from": "0.8.0", "to": "9.9.9", "state": "running", "started": int(time.time()) - 3 * 86400})
+        self.recover()
+        self.assertFalse(os.path.exists(updatectl.STATE_FILE))
+
+    def test_request_reader_does_not_follow_a_link(self):
+        target = os.path.join(self.tmp, "elsewhere")
+        self.write(target, str(int(time.time()) + 999))
+        link = os.path.join(self.data, "requests", "update-install")
+        if os.name != "posix":
+            self.skipTest("following links is a POSIX matter (checked on Linux)")
+        os.symlink(target, link)
+        self.assertEqual(updatectl._request_time(self.data, "update-install"), 0)
+        os.remove(link)
+        os.mkfifo(link)                                      # a file that never ends is not waited on
+        self.assertEqual(updatectl._request_time(self.data, "update-install"), 0)
 
     def test_recover_finishes_a_cut_short_undo(self):
         shutil.rmtree(self.app)

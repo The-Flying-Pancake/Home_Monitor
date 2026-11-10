@@ -526,6 +526,17 @@ class PiholeTests(unittest.TestCase):
     def setUp(self):
         pihole.SESSION.clear()
 
+    def test_pihole5_share_pct_is_a_number(self):
+        def fake(cfg, query):
+            if query == "summaryRaw":
+                return {"status": "enabled"}
+            if query == "getForwardDestinations":
+                return {"forward_destinations": {"a|192.0.2.1": 12.5, "b|192.0.2.2": "<img>", "c|192.0.2.3": True, "d|192.0.2.4": None}}
+            return {}
+        with mock.patch.object(pihole, "_v5_get", side_effect=fake):
+            ups = {u["name"]: u["share_pct"] for u in pihole._collect_v5({}, time.time())["upstreams"]}
+        self.assertEqual(ups, {"a": 12.5, "b": None, "c": None, "d": None})
+
     def test_v6(self):
         httpd, base = serve(Pihole6)
         try:

@@ -33,6 +33,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -131,6 +132,72 @@ def _askpass_helper(work: str) -> str:
     return helper
 
 
+def _read_capped(pipe, keep: List[bytes]) -> None:
+    """Reads a pipe to its end, keeping only the first MAX_OUTPUT bytes. The rest is read and dropped,
+    so the child never blocks on a full pipe and its real exit code is kept."""
+    kept = 0
+    try:
+        while True:
+            chunk = pipe.read1(65536)
+            if not chunk:
+                break
+            if kept < MAX_OUTPUT:
+                part = chunk[:MAX_OUTPUT - kept]
+                keep.append(part)
+                kept += len(part)
+    except (OSError, ValueError):
+        pass
+
+
+def _feed(pipe, data: bytes) -> None:
+    try:
+        pipe.write(data)
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
+def _capture(args: List[str], env: Dict[str, str], timeout: float,
+             input_data: Optional[bytes] = None) -> "tuple[Optional[int], bytes, bytes, bool]":
+    """Runs a child with its output read while it streams, each pipe capped at MAX_OUTPUT.
+
+    Returns (returncode, stdout, stderr, timed_out). On a timeout the child is killed and the output
+    read so far is returned. One reader thread per pipe: selectors do not work on Windows pipes.
+    """
+    proc = subprocess.Popen(args, stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, shell=False)
+    out: List[bytes] = []
+    err: List[bytes] = []
+    threads = [threading.Thread(target=_read_capped, args=(proc.stdout, out), daemon=True),
+               threading.Thread(target=_read_capped, args=(proc.stderr, err), daemon=True)]
+    if input_data is not None:
+        threads.append(threading.Thread(target=_feed, args=(proc.stdin, input_data), daemon=True))
+    for t in threads:
+        t.start()
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        proc.kill()
+        proc.wait()
+    for t in threads:
+        t.join(2.0 if timed_out else None)
+    # A pipe still held open by a stray grandchild is left to its daemon reader: closing it here would
+    # wait on the reader's lock.
+    for pipe, reader in ((proc.stdout, threads[0]), (proc.stderr, threads[1])):
+        if not reader.is_alive():
+            try:
+                pipe.close()
+            except OSError:
+                pass
+    return (None if timed_out else proc.returncode), b"".join(out), b"".join(err), timed_out
+
+
 def run_command(host: str, port: int, credential: Dict[str, Any], command: str,
                 approved_keys: List[Dict[str, str]], timeout: int, input_data: Optional[bytes] = None) -> Dict[str, Any]:
     """Runs one command on one host. Returns exit code, output and timing.
@@ -173,18 +240,15 @@ def run_command(host: str, port: int, credential: Dict[str, Any], command: str,
                      "-o", "NumberOfPasswordPrompts=1"]
         # The command is one argv element; OpenSSH hands it to the remote login shell.
         args += ["--", host, command]
-        try:
-            stdin = {"input": input_data} if input_data is not None else {"stdin": subprocess.DEVNULL}
-            proc = subprocess.run(args, capture_output=True, timeout=timeout, env=env, shell=False, **stdin)
-        except subprocess.TimeoutExpired as exc:
-            return {"status": "timeout", "exit_code": None,
-                    "stdout": (exc.stdout or b"")[:MAX_OUTPUT].decode("utf-8", "replace"),
+        returncode, out, err, timed_out = _capture(args, env, timeout, input_data)
+        if timed_out:
+            return {"status": "timeout", "exit_code": None, "stdout": out.decode("utf-8", "replace"),
                     "stderr": f"Timed out after {timeout} s", "duration": time.time() - started}
-        stdout = proc.stdout[:MAX_OUTPUT].decode("utf-8", "replace")
-        stderr = proc.stderr[:MAX_OUTPUT].decode("utf-8", "replace")
+        stdout = out.decode("utf-8", "replace")
+        stderr = err.decode("utf-8", "replace")
         # ssh itself exits 255 on connection, authentication or host-key failure.
-        status = "error" if proc.returncode == 255 and not stdout else "completed"
-        return {"status": status, "exit_code": proc.returncode, "stdout": stdout, "stderr": stderr,
+        status = "error" if returncode == 255 and not stdout else "completed"
+        return {"status": status, "exit_code": returncode, "stdout": stdout, "stderr": stderr,
                 "duration": time.time() - started}
     finally:
         shutil.rmtree(work, ignore_errors=True)

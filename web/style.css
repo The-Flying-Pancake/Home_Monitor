@@ -1239,9 +1239,14 @@ tr:hover .row-select, .row-select:checked { opacity: 1; }
 .lacks-devices-manage [data-perm~="devices.manage"], .lacks-map-edit [data-perm~="map.edit"],
 .lacks-dashboard-edit [data-perm~="dashboard.edit"], .lacks-automation-run [data-perm~="automation.run"],
 .lacks-automation-edit [data-perm~="automation.edit"], .lacks-credentials-manage [data-perm~="credentials.manage"],
+.lacks-credentials-use [data-perm~="credentials.use"],
 .lacks-settings-alerts [data-perm~="settings.alerts"], .lacks-settings-notifications [data-perm~="settings.notifications"],
 .lacks-settings-system [data-perm~="settings.system"], .lacks-audit-view [data-perm~="audit.view"],
+.lacks-audit-sensitive [data-perm~="audit.sensitive"],
 .lacks-users-manage [data-perm~="users.manage"] { display: none !important; }
+.scoped [data-unscoped] { display: none !important; }
+/* Said instead of the Review host key button to those who cannot approve a key. */
+body:not(.lacks-credentials-manage) .hk-ask { display: none; }
 
 /* --- Event log filters and pager --- */
 .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }

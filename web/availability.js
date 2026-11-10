@@ -48,16 +48,16 @@ function beatBar(beats, count = AVAIL_BEATS) {
     const tip = b.up ? `${when}: up${isNum(b.ms) ? `, ${b.ms.toFixed(1)} ms` : ""}` : b.planned ? `${when}: down, planned maintenance` : `${when}: down`;
     stripes.push(`<span class="beat ${b.up ? "up" : b.planned ? "planned" : "down"}" title="${escapeHtml(tip)}"></span>`);
   }
-  return `<div class="beat-bar" aria-label="Last ${count} checks">${stripes.join("")}</div>`;
+  return `<div class="beat-bar" aria-label="Last ${escapeHtml(count)} checks">${stripes.join("")}</div>`;
 }
 
 const availRangeLabel = key => (AVAIL_RANGES.find(r => r[0] === key) || AVAIL_RANGES[0])[1];
-const availQuery = () => `range=${availRange}&tz=${-new Date().getTimezoneOffset()}`;
+const availQuery = () => `range=${encodeURIComponent(availRange)}&tz=${-new Date().getTimezoneOffset()}`;
 
 /** The range buttons; clicks on data-avail-range are handled in initAvailability. */
 function availRangeSeg() {
   return `<span class="seg avail-range" role="group" aria-label="Range">${AVAIL_RANGES.map(([k, l]) =>
-    `<button type="button" class="btn btn-small${k === availRange ? " active" : ""}" data-avail-range="${k}" aria-pressed="${k === availRange}">${l}</button>`).join("")}</span>`;
+    `<button type="button" class="btn btn-small${k === availRange ? " active" : ""}" data-avail-range="${escapeHtml(k)}" aria-pressed="${k === availRange}">${escapeHtml(l)}</button>`).join("")}</span>`;
 }
 
 function setAvailRange(key) {
@@ -122,8 +122,8 @@ function renderAvailability() {
   const rangeLabel = availRangeLabel(availData.range);
   document.getElementById("avail-summary").innerHTML = [
     ["up", counts.up, "Up"], ["down", counts.down, "Down"], ["pending", counts.pending, "Waiting for checks"],
-  ].map(([k, n, l]) => `<button type="button" class="stat avail-stat ${k}${availFilter === k ? " active-filter" : ""}" data-avail-filter="${k}">
-      <div class="stat-num">${n}</div><div class="stat-label">${l}</div></button>`).join("") +
+  ].map(([k, n, l]) => `<button type="button" class="stat avail-stat ${escapeHtml(k)}${availFilter === k ? " active-filter" : ""}" data-avail-filter="${escapeHtml(k)}">
+      <div class="stat-num">${escapeHtml(n)}</div><div class="stat-label">${escapeHtml(l)}</div></button>`).join("") +
     `<div class="stat avail-stat"><div class="stat-num">${escapeHtml(availPct(overall))}</div><div class="stat-label">Average uptime, ${escapeHtml(rangeLabel)}</div></div>`;
 
   const group = document.getElementById("avail-filter-group").value, tag = document.getElementById("avail-filter-tag").value;
@@ -213,7 +213,7 @@ async function loadDeviceAvailability(deviceId) {
   const incRow = i => `<tr><td>${escapeHtml(formatTime(i.started))}</td><td>${i.ended ? escapeHtml(formatTime(i.ended)) : `<span class="status-pill status-err">Ongoing</span>`}</td>
     <td>${escapeHtml(formatDuration(i.seconds))}</td></tr>`;
   // The four uptime figures double as the range buttons.
-  const chip = ([k, l]) => `<button type="button" class="avail-chip ${availClass(a.uptime[k])}${k === a.range ? " selected" : ""}" data-avail-range="${k}"
+  const chip = ([k, l]) => `<button type="button" class="avail-chip ${availClass(a.uptime[k])}${k === a.range ? " selected" : ""}" data-avail-range="${escapeHtml(k)}"
       title="Show the last ${escapeHtml(l)}" aria-pressed="${k === a.range}">${escapeHtml(availPct(a.uptime[k]))}<small>${escapeHtml(l)}</small></button>`;
   card.innerHTML = `<div class="panel-header-bar panel-header-row">Availability <span class="dim">since ${escapeHtml(formatTime(a.since || a.beats[0].t))}</span>
       <span class="topbar-spacer"></span>${availRangeSeg()}</div>

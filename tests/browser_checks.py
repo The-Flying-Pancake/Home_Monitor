@@ -120,6 +120,26 @@ def t_login(b):
     return "wrong password refused, then signed in"
 
 
+@check("Required 2FA: the setup screen covers the app, shows the QR code and Log out leaves")
+def t_forced_2fa_enrolment(b):
+    import database
+    database.set_internal_setting("require_2fa", "all")
+    try:
+        b.eval("api('/api/devices').catch(() => {}); true")
+        b.wait_for("!document.getElementById('enrol-screen').classList.contains('hidden')")
+        b.wait_for("!!document.querySelector('#enrol-body img')")
+        assert b.eval("!document.getElementById('btn-2fa-cancel')"), "Cancel shown on the required screen"
+    finally:
+        database.set_internal_setting("require_2fa", "off")
+    b.eval("document.getElementById('enrol-logout').click(); true")
+    b.wait_for("document.readyState === 'complete' && typeof loadDashboard === 'function'")
+    b.wait_for("!document.getElementById('auth-screen').classList.contains('hidden')")
+    b.eval("document.getElementById('auth-username').value = %s; document.getElementById('auth-password').value = %s;"
+           "document.getElementById('auth-submit').click(); true" % (json.dumps(UI_USER), json.dumps(UI_PASSWORD)))
+    b.wait_for("document.getElementById('auth-screen').classList.contains('hidden')")
+    return "screen over the app, QR drawn, logged out and back in"
+
+
 @check("Log out returns to the login screen")
 def t_logout(b):
     b.eval("document.getElementById('btn-logout').click(); true")
@@ -141,6 +161,40 @@ def t_login_page(b):
     b.eval("document.documentElement.dataset.auth = 'in'; true")
     assert hidden == ["hidden", "hidden"] and view == "hidden", (hidden, view)
     return "sidebar, top bar and pages hidden while signed out"
+
+
+@check("HTTPS lost: the login page has no form, only the notice")
+def t_https_lost_login(b):
+    # The status as another computer would get it while HTTPS has failed.
+    b.eval("window.__realFetch = window.fetch; window.fetch = (u, o) => String(u) === '/api/auth/status'"
+           " ? Promise.resolve(new Response(JSON.stringify({configured: true, authenticated: false, https_lost: true})))"
+           " : window.__realFetch(u, o); ensureSession(); true")
+    try:
+        b.wait_for("!document.getElementById('auth-screen').classList.contains('hidden')")
+        shown = b.eval("['auth-fields', 'auth-submit', 'auth-forgot', 'auth-https-lost']"
+                       ".map(id => !document.getElementById(id).classList.contains('hidden'))")
+        assert shown == [False, False, False, True], shown
+        title = b.eval("document.getElementById('auth-title').textContent")
+        assert title == "HTTPS is not working", title
+        assert "/root/update.sh" in b.eval("document.getElementById('auth-https-lost').textContent")
+    finally:
+        b.eval("window.fetch = window.__realFetch; httpsLost = false; const s = document.getElementById('auth-screen');"
+               " s.classList.add('hidden'); hide(document.getElementById('auth-https-lost')); show(document.getElementById('auth-submit'));"
+               " document.documentElement.dataset.auth = 'in'; if (s._resolve) s._resolve(); true")
+    return "form, button and forgot link hidden; the notice says how to get back in"
+
+
+@check("Audit log: Who and From columns")
+def t_audit_columns(b):
+    goto(b, "#/audit")
+    b.wait_for("document.querySelectorAll('#audit-table-body tr td').length > 1")
+    heads = b.eval("[...document.querySelectorAll('#tbl-audit thead th')].map(th => th.textContent)")
+    assert heads == ["Time", "Category", "Message", "Who", "From", "Details"], heads
+    cells = b.eval("document.querySelector('#audit-table-body tr').children.length")
+    assert cells == 6, cells
+    who = b.eval("[...document.querySelectorAll('#audit-table-body tr')].map(r => r.children[3].textContent)")
+    assert UI_USER in who, who
+    return "six columns, rows name who did it"
 
 
 @check("Dashboards: add one from a template, switch, rename a tile, delete it")
@@ -379,10 +433,16 @@ def t_availability(b):
     b.wait_for("!!document.querySelector('#avail-body .avail-row')")
     rows = b.eval("document.querySelectorAll('#avail-body .avail-row').length")
     assert rows == len(api("/api/availability")["devices"]), rows
-    # The scheduler adds its own checks for this (offline) device, so compare with what the API says.
-    want = next(d for d in api("/api/availability")["devices"] if d["id"] == DEV_GRAPH)["uptime"]["24h"]
-    chip = b.eval(f"document.querySelector('.avail-row[href=\"#/device/{DEV_GRAPH}\"] .avail-chip').textContent")
-    assert want is not None and chip.startswith(f"{want:.1f}") and chip.endswith("24 h"), (chip, want)
+    # The scheduler keeps adding failed checks for this (offline) device, so a second API read can
+    # already differ from the one the page drew. Compare the chip with the API answer the page drew
+    # it from, read in the same JavaScript turn (the page's 30 s refresh cannot come in between).
+    chip, page = b.eval(f"[document.querySelector('.avail-row[href=\"#/device/{DEV_GRAPH}\"] .avail-chip').textContent,"
+                        f" availData.devices.find(d => d.id === {DEV_GRAPH})]")
+    want = page["uptime"]["24h"]
+    assert want is not None and want < 100 and chip.startswith(f"{want:.1f}") and chip.endswith("24 h"), (chip, want)
+    # And that answer is the server's: no newer than a read made now, which can only have more failed checks.
+    later = next(d for d in api("/api/availability")["devices"] if d["id"] == DEV_GRAPH)["uptime"]["24h"]
+    assert later <= want, (later, want)
     goto(b, f"#/device/{DEV_GRAPH}")
     b.wait_for("!document.getElementById('detail-availability').classList.contains('hidden')")
     assert "incident" in b.eval("document.getElementById('detail-availability').textContent")
@@ -435,6 +495,25 @@ def t_settings_sidebar(b):
     b.wait_for(f"{visible}('nav-dashboard')")
     assert not b.eval(f"{visible}('settings-nav')"), "settings menu left behind"
     return "menu swapped in Settings and back on leaving"
+
+
+@check("Settings, Backups: no backup passphrase shows the warning and the command; a passphrase hides it")
+def t_backup_passphrase_bar(b):
+    goto(b, "#/settings/backups")
+    b.wait_for("!!document.getElementById('backups-panel')")
+    # The card as an installed monitor shows it (this test server is a development copy without one).
+    base = ("{installed: true, folder: '/var/lib/homelab-monitor/backups', syncthing: true, count: 0, latest: null, "
+            "total_bytes: 0, schedule: 'Daily', results: {}, pending: {}, syncthing_settings: {}, key_state: 'withheld', ")
+    got = run(b, "const d = document.createElement('div'); "
+                 f"d.innerHTML = backupsSection({base} passphrase_set: false}}); "
+                 "const bar = d.querySelector('#bk-no-passphrase'); "
+                 f"const e = document.createElement('div'); e.innerHTML = backupsSection({base} passphrase_set: true, key_state: 'sealed'}}); "
+                 "const dev = document.createElement('div'); dev.innerHTML = backupsSection(Object.assign({base} passphrase_set: false}}, {{installed: false}})); "
+                 "[!!bar && bar.textContent.includes('/root/backup-passphrase.sh'), d.textContent.includes('Left out of backups that leave this box'), "
+                 "!!e.querySelector('#bk-no-passphrase'), e.textContent.includes('Sealed with your passphrase'), "
+                 "!!dev.querySelector('#bk-no-passphrase')]")
+    assert got == [True, True, False, True, False], got
+    return "warning and command shown without a passphrase, hidden with one and on a development copy"
 
 
 @check("Updates: red number on Settings while a version waits, skip hides it; new version card, live progress and result")
@@ -937,13 +1016,21 @@ def t_host_actions(b):
         label = b.eval("document.getElementById('btn-ha-run').textContent")
         assert label == "Restart", label
         run(b, "document.getElementById('btn-close-hostact').click(); true")
+        # Copy console commands without a key: a plain warning first; Cancel copies nothing.
+        b.eval(f"window.__noAutoDialog = true; window.__ss = 'waiting'; copySshSetup({dev}, null).then(r => {{ window.__ss = r; }}); true")
+        b.wait_for("!!document.querySelector('form.dialog') && "
+                   "document.querySelector('form.dialog .modal-header').textContent.includes('turns on password login for root')", timeout=10)
+        msg = b.eval("document.querySelector('form.dialog .dialog-message').textContent")
+        assert "including as root" in msg, msg
+        run(b, "document.querySelector('form.dialog [data-dialog=cancel]').click(); window.__noAutoDialog = false; true")
+        b.wait_for("window.__ss === null")
         # Automation page: the section with its host picker.
         goto(b, "#/automation")
         b.wait_for("[...document.getElementById('ha-host-pick').options].some(o => o.textContent === 'ha-ui-host')")
         # The catalogue is in the workflow command templates too.
         b.wait_for("typeof WF_COMMAND_TEMPLATES !== 'undefined' && WF_COMMAND_TEMPLATES.some(t => t.id === 'ha_disk_usage')")
     finally:
-        b.eval("const m = document.getElementById('modal-hostact'); if (m) m.classList.add('hidden'); true")
+        b.eval("window.__noAutoDialog = false; const m = document.getElementById('modal-hostact'); if (m) m.classList.add('hidden'); true")
         api(f"/api/devices/{dev}", method="DELETE")
     return "suggested actions, preview gate, typed confirmation and the Automation section work"
 
@@ -996,6 +1083,28 @@ def t_lan_ui(b):
     run(b, "const s = document.getElementById('maint-scope'); s.value = 'tag'; s.dispatchEvent(new Event('change')); true")
     assert not b.eval("document.getElementById('maint-target-wrap').classList.contains('hidden')")
     return "new device shown and marked known, maintenance on and off from the device page, setup steps behind the switches"
+
+
+@check("Pi-hole settings: an http:// address shows a reminder that the password travels unencrypted")
+def t_pihole_http_warning(b):
+    goto(b, "#/settings/pihole")
+    b.wait_for("document.getElementById('ph-enabled').value === 'off'")
+    run(b, "const s = document.getElementById('ph-enabled'); s.value = 'on'; s.dispatchEvent(new Event('change')); true")
+    b.wait_for("!document.getElementById('ph-config').classList.contains('hidden')")
+    try:
+        typed = "{ const u = document.getElementById('ph-url'); u.value = %r; u.dispatchEvent(new Event('input')); } true"
+        hidden = "document.getElementById('ph-url-http').classList.contains('hidden')"
+        b.eval(typed % "HTTP://192.0.2.53")
+        b.wait_for("!" + hidden)
+        assert "unencrypted" in b.eval("document.getElementById('ph-url-http').textContent")
+        b.eval(typed % "https://192.0.2.53")
+        b.wait_for(hidden)
+        b.eval(typed % "")
+        b.wait_for(hidden)
+    finally:
+        run(b, "const s = document.getElementById('ph-enabled'); s.value = 'off'; s.dispatchEvent(new Event('change')); true")
+        b.wait_for("document.getElementById('ph-config').classList.contains('hidden')")
+    return "shown for http://, hidden for https:// and when empty"
 
 
 @check("Wi-Fi and Pi-hole pages appear once connected; Wi-Fi lists devices weakest first; the workflow step is offered")
@@ -1492,6 +1601,11 @@ def t_telegram_editor(b):
     b.eval("{ const ta = document.querySelector('.tg-text'); ta.value = '{if device == \"nas-01\"}{device|lower}{end}';"
            "ta.dispatchEvent(new Event('input')); } true")
     b.wait_for("document.querySelector('.tg-preview').textContent === 'nas-01'", timeout=10)
+    # A text that grows too long: the preview shows the server's message, not a local fill.
+    grow = "|replace:n:" + "n" * 20
+    b.eval("{ const ta = document.querySelector('.tg-text'); ta.value = '{device" + grow * 5 + "}';"
+           "ta.dispatchEvent(new Event('input')); } true")
+    b.wait_for("document.querySelector('.tg-preview').textContent.startsWith('This template makes the text too long')", timeout=10)
     assert b.eval("!!document.querySelector('.tg-tricks .tg-var')"), "tricks missing"
     b.eval("{ const ta = document.querySelector('.tg-text'); ta.value = 'Hi {device}'; ta.dispatchEvent(new Event('input')); } true")
     run(b, "const ta = document.querySelector('.tg-text'); ta.selectionStart = ta.selectionEnd = 0;"
@@ -1557,6 +1671,94 @@ def t_run(b):
     b.eval("document.getElementById('btn-close-wf-run').click(); window.__noAutoDialog = false; true")
     assert status in ("failed", "success"), status
     return f"status {status}: {detail.strip()[:60]}"
+
+
+@check("Without Use stored credentials: Host actions, Run command and host key approval are hidden; the run-as line shows")
+def t_credentials_use_hiding(b):
+    import database
+    dev = api("/api/devices", {"hostname": "cu-ui-host", "ip_address": "192.0.2.172", "profile_id": "linux_host"})["device_id"]
+    # Through the API: the vault key lives in the server process.
+    cred = api("/api/credentials", {"name": "cu-ui-key", "cred_type": "password", "username": "hm-ui", "secret": "cu-ui-secret"})["id"]
+    display = "getComputedStyle(document.querySelector(%r)).display"
+    try:
+        goto(b, "#/automation")
+        b.eval("loadAutomation(); true")
+        b.wait_for(f"!!(autoData && autoData.credentials.some(c => c.id === {cred}) && autoData.devices.some(d => d.id === {dev}))", timeout=10)
+        # With every permission: the run-as line names the credential's user.
+        b.eval(f"openHostActions({dev}); true")
+        b.wait_for("!document.getElementById('modal-hostact').classList.contains('hidden')")
+        run(b, f"const s = document.getElementById('ha-cred'); s.value = '{cred}'; s.dispatchEvent(new Event('change')); true")
+        line = b.eval("document.getElementById('ha-runas').textContent")
+        assert line == "Runs as hm-ui using the credential cu-ui-key.", line
+        assert b.eval(display % "#btn-ha-hostkey") != "none", "Review host key hidden from an administrator"
+        run(b, "document.getElementById('btn-close-hostact').click(); true")
+        # Without Use stored credentials and Manage credentials.
+        b.eval("window.__savedUser = currentUser; applyCurrentUser(Object.assign({}, currentUser, {permissions: "
+               "currentUser.permissions.filter(p => p !== 'credentials.use' && p !== 'credentials.manage')})); true")
+        assert b.eval("haCanRun() === false && document.getElementById('btn-detail-hostact').dataset.perm.includes('credentials.use')"), "Host actions still offered"
+        assert b.eval(display % "#wfb-palette .wfb-t-command") == "none", "Run command still in the palette"
+        assert b.eval(display % "#wfb-palette .wfb-t-wait") != "none", "other steps hidden too"
+        assert b.eval(display % "#btn-ha-hostkey") == "none", "Review host key shown"
+        assert b.eval(display % "#ha-hostkey .hk-ask") != "none", "no word on who can approve"
+        # The host key window offers no Approve button, only who can approve.
+        b.eval("window.__realApi = api; api = async () => ({approved: [], presented: {key_type: 'ssh-ed25519', fingerprint: 'SHA256:cu'}}); true")
+        b.eval(f"openHostKeys({{device_ids: [{dev}], ssh_port: 22}}); true")
+        b.wait_for("document.getElementById('hostkeys-body').textContent.includes('SHA256:cu')")
+        assert not b.eval("!!document.querySelector('#hostkeys-body [data-hk-approve]')"), "Approve offered"
+        assert "Manage credentials" in b.eval("document.getElementById('hostkeys-body').textContent")
+    finally:
+        b.eval("if (window.__realApi) { api = window.__realApi; window.__realApi = null; }"
+               "if (window.__savedUser) { applyCurrentUser(window.__savedUser); window.__savedUser = null; }"
+               "document.getElementById('modal-hostkeys').classList.add('hidden');"
+               "document.getElementById('modal-hostact').classList.add('hidden'); true")
+        database.delete_credential(cred)
+        database.delete_device(dev)
+    return "hidden without the permissions, run-as line names the user"
+
+
+@check("Limited to some devices: no map or dashboard editing, no group and tag changes, no Proxmox snapshot step or keeping everything quiet")
+def t_scoped_user_hiding(b):
+    display = "getComputedStyle(document.querySelector(%r)).display"
+    goto(b, "#/dashboard")
+    for sel in ("#dash-new", "#dash-edit", "#map-edit", "#wfb-palette .wfb-t-pve_snapshot"):
+        assert b.eval(display % sel) != "none", f"{sel} hidden from an administrator"
+    mute = ("(() => { const keep = wfb; wfb = wfb || {draft: {graph: {nodes: [], edges: []}}};"
+            " try { return wfPanelStep({id: 'm', type: 'mute', scope: 'hosts', device_ids: [], until_end: true, minutes: 60, grace_min: 5}); }"
+            " finally { wfb = keep; } })().includes('Everything')")
+    assert b.eval(mute), "Everything missing for an administrator"
+    try:
+        b.eval("window.__savedUser = currentUser; applyCurrentUser(Object.assign({}, currentUser, {scoped: true})); true")
+        for sel in ("#dash-new", "#dash-edit", "#map-edit", "#wfb-palette .wfb-t-pve_snapshot"):
+            assert b.eval(display % sel) == "none", f"{sel} shown to a limited user"
+        assert b.eval(display % "#wfb-palette .wfb-t-mute") != "none", "other steps hidden too"
+        assert not b.eval(mute), "Everything offered to a limited user"
+        goto(b, "#/settings/groups")
+        b.wait_for("!!document.querySelector('#taxonomy-settings .taxo-table')")
+        b.eval("renderTaxonomySettings(); true")
+        assert not b.eval("!!document.querySelector('#taxonomy-settings [data-taxo-rename-group]')"), "group rename offered"
+    finally:
+        b.eval("if (window.__savedUser) { applyCurrentUser(window.__savedUser); window.__savedUser = null; } true")
+        goto(b, "#/dashboard")
+    return "hidden for a limited user, shown for an administrator"
+
+
+@check("Text a device sends in a number column stays plain text on the page")
+def t_device_text_stays_text(b):
+    import database
+    keep = database.get_device_table(DEV_GRAPH, "interfaces")
+    now = int(time.time())
+    probe = '<img id="probe" src="x">'
+    try:
+        database.replace_device_table(DEV_GRAPH, "interfaces", {"1": {
+            "if_index": 1, "label": "eth1", "descr": "eth1", "kind": "port", "oper": 1, "oper_text": "up", "admin": 1,
+            "mtu": probe, "speed_mbps": 1000}}, now)
+        goto(b, f"#/device/{DEV_GRAPH}/ports")
+        b.wait_for("document.querySelectorAll('#ports-body tr').length >= 1 && document.getElementById('ports-body').textContent.includes('eth1')")
+        assert b.eval("document.getElementById('probe') === null"), "the device's text became an element"
+        assert probe in b.eval("document.getElementById('ports-body').textContent"), "the text is not shown"
+    finally:
+        database.replace_device_table(DEV_GRAPH, "interfaces", {k: {x: y for x, y in v.items() if x != "updated_at"} for k, v in keep.items()}, now)
+    return "shown as text, no element made"
 
 
 @check("Phone: every page fits the screen; the menu is a drawer that closes on a choice")
@@ -1659,7 +1861,7 @@ def main() -> int:
 
         print(f"Browser checks against {BASE} (isolated database {_env.TMP})")
         for test in (t_login, t_dashboard, t_resize, t_move, t_columns, t_graph_tile, t_content_follows, t_map, t_sort, t_groups,
-                     t_ack, t_live, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_updates, t_demo_card, t_message_rows, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_inventory_quiet, t_host_actions, t_wifi_pihole, t_guide, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_logout, t_phone, t_no_js_errors):
+                     t_ack, t_live, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_updates, t_demo_card, t_message_rows, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors):
             # HM_ONLY=t_users,t_shell runs a subset (login always runs first) while debugging.
             only = os.environ.get("HM_ONLY")
             if only and test is not t_login and test.__name__ not in only.split(","):

@@ -41,23 +41,23 @@ function updatesWhen(t) {
 /** Release notes (GitHub's text) as simple HTML: headings, lists, bold and code. Everything is escaped first. */
 function updateNotesHtml(text) {
   const inline = s => escapeHtml(s).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
-  const out = [];
+  let out = "";
   let list = false;
   for (const raw of String(text || "").split(/\r?\n/)) {
     const line = raw.trim();
     const item = /^[-*] +(.*)$/.exec(line);
     if (item) {
-      if (!list) { out.push("<ul>"); list = true; }
-      out.push(`<li>${inline(item[1])}</li>`);
+      if (!list) { out += "<ul>"; list = true; }
+      out += `<li>${inline(item[1])}</li>`;
       continue;
     }
-    if (list) { out.push("</ul>"); list = false; }
+    if (list) { out += "</ul>"; list = false; }
     const head = /^#{1,6} +(.*)$/.exec(line);
-    if (head) out.push(`<h5>${inline(head[1])}</h5>`);
-    else if (line) out.push(`<p>${inline(line)}</p>`);
+    if (head) out += `<h5>${inline(head[1])}</h5>`;
+    else if (line) out += `<p>${inline(line)}</p>`;
   }
-  if (list) out.push("</ul>");
-  return out.join("");
+  if (list) out += "</ul>";
+  return out;
 }
 
 function updateChangesHtml(check) {

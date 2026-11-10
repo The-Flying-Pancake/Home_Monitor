@@ -11,10 +11,12 @@ Steps:
        newer     written by a newer build: refused, this code would misread tables it does not know
        too old   older than database.MIN_SCHEMA_VERSION: upgrade through an intermediate build first
   3. --trial: copies the file (SQLite backup API, so a running service is no problem) with its
-     vault.json and key into a private temporary folder, runs this build's full startup migration
-     on the copy in a separate process (server.initialise), and compares before and after: the
-     copy must pass the integrity check again, carry the new version, and keep every device,
-     account, credential and workflow. The original is never opened for writing.
+     vault.json and key (never through a link) and this build's code into a new temporary folder,
+     hands the copy to the monitor's own account and runs this build's full startup migration on
+     it in a separate process as that account (server.initialise; uid and gid dropped, no other
+     groups, a minimal environment), so root never runs the app's code on data the app could
+     write. The copy must pass the integrity check again, carry the new version, and keep every
+     device, account, credential and workflow. The original is never opened for writing.
   4. Notes for what an older file carries that this build no longer has (templates that are gone,
      tables nothing reads). They are kept, never deleted: a later build may use them again.
 
@@ -59,6 +61,8 @@ def inspect(db: str) -> Dict[str, Any]:
     report: Dict[str, Any] = {"db": db, "build_schema": database.SCHEMA_VERSION, "notes": []}
     if not os.path.exists(db):
         return dict(report, verdict="damaged", message=f"No database at {db}")
+    if os.path.islink(db):
+        return dict(report, verdict="damaged", message=f"{db} is a link, so it was not opened")
     try:
         conn = _ro(db)
         try:
@@ -97,39 +101,104 @@ def inspect(db: str) -> Dict[str, Any]:
         f"this build migrates it to {database.SCHEMA_VERSION} on start"))
 
 
+MISSING_ACCOUNT = "The data check could not run as the monitor's own account: that account is missing."
+
+
+def _copy_code(dest: str) -> None:
+    """The code the trial needs: top-level *.py and profiles/ (never data, keys or other folders)."""
+    os.makedirs(dest)
+    for name in os.listdir(HERE):
+        src = os.path.join(HERE, name)
+        if name.endswith(".py") and os.path.isfile(src) and not os.path.islink(src):
+            shutil.copyfile(src, os.path.join(dest, name))
+    prof = os.path.join(HERE, "profiles")
+    if os.path.isdir(prof) and not os.path.islink(prof):
+        os.makedirs(os.path.join(dest, "profiles"))
+        for name in os.listdir(prof):
+            src = os.path.join(prof, name)
+            if name.endswith(".json") and os.path.isfile(src) and not os.path.islink(src):
+                shutil.copyfile(src, os.path.join(dest, "profiles", name))
+
+
+def _give(path: str, ids) -> None:
+    """Hands a copy to the monitor's account without following links, files first."""
+    if not ids:
+        return
+    for root, dirs, files in os.walk(path, topdown=False):
+        for n in files + dirs:
+            os.chown(os.path.join(root, n), ids[0], ids[1], follow_symlinks=False)
+    os.chown(path, ids[0], ids[1], follow_symlinks=False)
+
+
+def _trial_child() -> None:
+    """Runs inside the copy, as the monitor's account: this build's startup on the copied database,
+    then the checks, printed as one JSON line for root to read (root opens nothing the child wrote)."""
+    import server
+    server.initialise()
+    db = os.environ["MONITOR_DB_PATH"]
+    conn = _ro(db)
+    try:
+        ok = conn.execute("PRAGMA integrity_check;").fetchone()[0] == "ok"
+        version = int(conn.execute("PRAGMA user_version;").fetchone()[0])
+        after = _counts(conn, _tables(conn))
+    finally:
+        conn.close()
+    print("HM_TRIAL " + json.dumps({"ok": ok, "version": version, "after": after}))
+
+
 def trial(db: str, key: Optional[str]) -> Dict[str, Any]:
-    """Runs this build's startup migration on a private copy and checks nothing was lost."""
+    """Runs this build's startup migration on a private copy, as the monitor's own account, and checks
+    nothing was lost. The copy (database, vault.json, key and this build's code) is made by root in a
+    new folder, then handed to that account; the child process runs with its uid and gid, no other
+    groups and a minimal environment."""
+    import safefile
+    try:
+        ids = safefile.service_ids()
+    except KeyError:
+        return {"ok": False, "message": MISSING_ACCOUNT}
     work = tempfile.mkdtemp(prefix="hm-trial-")
     try:
         os.chmod(work, 0o700)
+        if os.path.islink(db):
+            return {"ok": False, "message": "The database is a link, so the trial did not run"}
         copy = os.path.join(work, "monitor.db")
         src, dst = _ro(db), sqlite3.connect(copy)
         src.backup(dst)
         src.close()
         dst.close()
+        # vault.json and the key are read without following a link (a link could point anywhere).
         meta = os.path.join(os.path.dirname(os.path.abspath(db)), "vault.json")
-        if os.path.exists(meta):
-            shutil.copy2(meta, os.path.join(work, "vault.json"))
-        # The copy gets its own key file: the trial never reads or creates a key anywhere else.
-        env = {k: v for k, v in os.environ.items() if k != "MONITOR_MASTER_KEY"}
-        env.update(MONITOR_DB_PATH=copy, MONITOR_KEY_FILE=os.path.join(work, "vault.key"))
-        if key and os.path.exists(key):
-            shutil.copy2(key, os.path.join(work, "vault.key"))
+        if os.path.lexists(meta):
+            with open(os.path.join(work, "vault.json"), "wb") as f:
+                f.write(safefile.read_regular(meta, 1024 * 1024))
+        if key and os.path.lexists(key):
+            with open(os.path.join(work, "vault.key"), "wb") as f:
+                f.write(safefile.read_regular(key, 4096))
+        _copy_code(os.path.join(work, "code"))
         conn = _ro(copy)
         before = _counts(conn, _tables(conn))
         conn.close()
-        r = subprocess.run([sys.executable, "-c", "import server; server.initialise()"], cwd=HERE, env=env,
-                           capture_output=True, text=True, timeout=600)
+        _give(work, ids)
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": os.environ.get("LANG", "C.UTF-8"), "HOME": work,
+               "PYTHONDONTWRITEBYTECODE": "1", "MONITOR_DB_PATH": copy, "MONITOR_KEY_FILE": os.path.join(work, "vault.key")}
+        if os.name == "nt":                     # Windows (the test suite): Python needs these to start and find packages
+            env.update({k: os.environ[k] for k in ("SYSTEMROOT", "APPDATA") if k in os.environ})
+        kw = {"user": ids[0], "group": ids[1], "extra_groups": []} if ids else {}
+        # Isolated from the environment and user packages (on Windows, the test suite, the user's own
+        # packages hold cryptography, so only the environment is ignored there).
+        flags = ["-I", "-B"] if os.name == "posix" else ["-E", "-B"]
+        r = subprocess.run([sys.executable, *flags, os.path.join(work, "code", "compat.py"), "trial-child"],
+                           cwd=os.path.join(work, "code"), env=env, capture_output=True, text=True, timeout=600, **kw)
         if r.returncode != 0:
             last = [l for l in (r.stderr or r.stdout).strip().splitlines() if l.strip()][-3:]
             return {"ok": False, "message": "The migration stopped: " + " | ".join(last)}
-        conn = _ro(copy)
+        lines = [l for l in (r.stdout or "").splitlines() if l.startswith("HM_TRIAL ")]
         try:
-            ok = conn.execute("PRAGMA integrity_check;").fetchone()[0] == "ok"
-            version = int(conn.execute("PRAGMA user_version;").fetchone()[0])
-            after = _counts(conn, _tables(conn))
-        finally:
-            conn.close()
+            res = json.loads(lines[-1][len("HM_TRIAL "):])
+            ok, version = bool(res["ok"]), int(res["version"])
+            after = {str(k): int(v) for k, v in dict(res["after"]).items()}
+        except (IndexError, ValueError, KeyError, TypeError):
+            return {"ok": False, "message": "The trial gave no readable answer"}
         import database
         lost = {t: (n, after.get(t, 0)) for t, n in before.items() if after.get(t, 0) < n}
         if not ok:
@@ -164,7 +233,11 @@ def main() -> None:
     p.add_argument("--key")
     p.add_argument("--trial", action="store_true")
     p.add_argument("--json", action="store_true")
+    sub.add_parser("trial-child")          # inside the trial's copy, as the monitor's account (see trial)
     args = ap.parse_args()
+    if args.cmd == "trial-child":
+        _trial_child()
+        return
     report = check(args.db, args.key, args.trial)
     if args.json:
         print(json.dumps(report))

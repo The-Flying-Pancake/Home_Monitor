@@ -97,7 +97,7 @@ function coidEditor(prefill) {
       </div>
       <div class="form-row">
         <div class="form-group"><label for="coid-kind">Type</label>
-          <select id="coid-kind">${Object.keys(COID_KIND_HELP).map(k => `<option value="${k}" ${k === p.kind ? "selected" : ""}>${k}</option>`).join("")}</select>
+          <select id="coid-kind">${Object.keys(COID_KIND_HELP).map(k => `<option value="${escapeHtml(k)}" ${k === p.kind ? "selected" : ""}>${escapeHtml(k)}</option>`).join("")}</select>
           <div class="form-help" id="coid-kind-help"></div></div>
         <div class="form-group coid-num"><label for="coid-scale">Multiply by</label><input type="number" id="coid-scale" step="any" value="${escapeHtml(p.scale)}">
           <div class="form-help">0.1 when the device reports tenths (235 = 23.5 C).</div></div>
@@ -109,7 +109,7 @@ function coidEditor(prefill) {
       <div class="form-row three coid-alert-row hidden">
         <div class="form-group"><label for="coid-op">When</label><select id="coid-op"><option value="above">Above</option><option value="below">Below</option></select></div>
         <div class="form-group"><label for="coid-value">Value</label><input type="number" id="coid-value" step="any"></div>
-        <div class="form-group"><label for="coid-sev">Severity</label><select id="coid-sev">${["info", "warning", "high", "critical"].map(s => `<option ${s === "warning" ? "selected" : ""}>${s}</option>`).join("")}</select></div>
+        <div class="form-group"><label for="coid-sev">Severity</label><select id="coid-sev">${["info", "warning", "high", "critical"].map(s => `<option ${s === "warning" ? "selected" : ""}>${escapeHtml(s)}</option>`).join("")}</select></div>
       </div>
       <div class="form-error hidden" id="coid-error"></div>
     </div>

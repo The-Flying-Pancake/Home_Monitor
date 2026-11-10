@@ -70,12 +70,19 @@ let wfb = null;
 
 function wfPill(status) {
   const [cls, text] = WF_STATUS[status] || ["status-unknown", status || "never"];
-  return `<span class="status-pill ${cls}">${escapeHtml(text)}</span>`;
+  return `<span class="status-pill ${escapeHtml(cls)}">${escapeHtml(text)}</span>`;
 }
 
 function wfHosts() { return (autoData && autoData.devices) || []; }
 function wfCreds() { return (autoData && autoData.credentials) || []; }
 function wfNames() { return Object.fromEntries(wfHosts().map(d => [d.id, d.hostname])); }
+/** A workflow with a command step logs in with a stored credential: that needs Use stored credentials. */
+function wfCanRun(w) { return can("credentials.use") || !w.steps.some(s => s.type === "command"); }
+/** The user a command step's credential logs in as, or "" when the credential is unknown. */
+function wfRunsAs(credId) {
+  const c = wfCreds().find(x => x.id === credId);
+  return c ? c.username || "root" : "";
+}
 
 async function loadWorkflows() {
   // Workflows and their run logs need Run or Edit workflows (Manage devices alone also opens this page).
@@ -91,7 +98,7 @@ async function loadWorkflows() {
     renderWorkflows();
     fillTable("wf-runs-body", r.runs.map(x => `
       <tr class="clickable-row" data-wf-run="${Number(x.id)}">
-        <td data-sort="${x.started_at}">${escapeHtml(formatTime(x.started_at))}</td>
+        <td data-sort="${escapeHtml(x.started_at)}">${escapeHtml(formatTime(x.started_at))}</td>
         <td class="text-cell">${escapeHtml(x.name)}</td>
         <td class="dim">${escapeHtml(x.trigger)}</td>
         <td>${wfPill(x.status)}</td>
@@ -119,7 +126,7 @@ function renderWorkflows() {
       <td class="text-cell">${sched}</td>
       <td>${running ? wfPill("running") : wfPill(w.last_status)}</td>
       <td class="actions-cell">
-        ${running ? `<button class="btn" data-wf-open="${Number(running)}">View run</button>` : `<button class="btn btn-primary" data-wf-start="${Number(w.id)}">Run now</button>`}
+        ${running ? `<button class="btn" data-wf-open="${Number(running)}">View run</button>` : wfCanRun(w) ? `<button class="btn btn-primary" data-wf-start="${Number(w.id)}">Run now</button>` : ""}
         ${w.steps.some(s => s.type === "command") ? `<button class="btn" data-wf-keys="${Number(w.id)}">Host keys</button>` : ""}
         <button class="btn" data-wf-edit="${Number(w.id)}">Edit</button>
         <button class="btn btn-danger" data-wf-delete="${Number(w.id)}">Delete</button>
@@ -354,7 +361,8 @@ function wfNodeSummary(n, names) {
   if (n.type === "command") {
     const hosts = (n.device_ids || []).map(id => names[id] || "?");
     const cmd = (n.command || "").split("\n").filter(Boolean).pop() || "No command yet";
-    return `${cmd.slice(0, 32)}${hosts.length ? ` on ${hosts.slice(0, 2).join(", ")}${hosts.length > 2 ? ` +${hosts.length - 2}` : ""}` : ", no host"}`;
+    const user = wfRunsAs(n.credential_id);
+    return `${cmd.slice(0, 32)}${hosts.length ? ` on ${hosts.slice(0, 2).join(", ")}${hosts.length > 2 ? ` +${hosts.length - 2}` : ""}` : ", no host"}${user ? ` as ${user}` : ""}`;
   }
   if (n.type === "wait") return `${n.seconds} s`;
   if (n.type === "telegram") return `${n.silent ? "quietly: " : ""}${(n.text || "").split("\n")[0].slice(0, 40) || "No text yet"}`;
@@ -424,7 +432,7 @@ function wfDraw(host, graph, opts) {
   const status = opts.status || {};
   const nodesBox = world.querySelector(".wfb-nodes");
   nodesBox.innerHTML = graph.nodes.map(n => {
-    const st = status[n.id] ? ` st-${status[n.id]}` : (opts.status && n.type !== "trigger" ? " st-skipped" : "");
+    const st = status[n.id] ? ` st-${escapeHtml(status[n.id])}` : (opts.status && n.type !== "trigger" ? " st-skipped" : "");
     const isSel = sel.kind === "node" && sel.id === n.id ? " selected" : "";
     const ports = opts.readonly ? "" : `
       ${n.type === "trigger" ? "" : `<span class="wfb-port wfb-in" data-port-in="${escapeHtml(n.id)}"></span>`}
@@ -459,11 +467,11 @@ function wfDrawEdges(world, graph, opts) {
     // In the run viewer a connection is "taken" when both ends ran and the source ended the matching way.
     const taken = opts.status && status[e.from] && status[e.to] && ((e.kind === "ok") === (status[e.from] === "ok"));
     const cls = `wfb-edge wfb-edge-${e.kind}${sel.kind === "edge" && sel.i === i ? " selected" : ""}${opts.status ? (taken ? " taken" : " untaken") : ""}`;
-    html += `<path class="${cls}" d="${d}"></path>`;
-    if (!opts.readonly) html += `<path class="wfb-edge-hit" data-edge="${i}" d="${d}"><title>${e.kind === "ok" ? "On success" : "On failure"}: click, then Delete to remove</title></path>`;
+    html += `<path class="${escapeHtml(cls)}" d="${escapeHtml(d)}"></path>`;
+    if (!opts.readonly) html += `<path class="wfb-edge-hit" data-edge="${i}" d="${escapeHtml(d)}"><title>${e.kind === "ok" ? "On success" : "On failure"}: click, then Delete to remove</title></path>`;
     if (e.kind === "fail" && Math.abs(x2 - x1) > 120) html += `<text class="wfb-edge-label" x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 6}">on failure</text>`;
   });
-  if (opts.tempEdge) html += `<path class="wfb-edge wfb-edge-${opts.tempEdge.kind} wfb-edge-temp" d="${opts.tempEdge.d}"></path>`;
+  if (opts.tempEdge) html += `<path class="wfb-edge wfb-edge-${escapeHtml(opts.tempEdge.kind)} wfb-edge-temp" d="${escapeHtml(opts.tempEdge.d)}"></path>`;
   svg.innerHTML = html;
 }
 
@@ -559,7 +567,7 @@ function wfPanelTrigger(n) {
     fields = time;
   } else if (s.kind === "weekly") {
     fields = `<div class="form-group"><label>On</label><div class="wfb-days">${WF_DAYS.map(([d, name]) =>
-      `<label class="wfb-day"><input type="checkbox" data-wd="${d}"${(s.weekdays || []).includes(d) ? " checked" : ""}> ${name}</label>`).join("")}</div></div>${time}`;
+      `<label class="wfb-day"><input type="checkbox" data-wd="${escapeHtml(d)}"${(s.weekdays || []).includes(d) ? " checked" : ""}> ${escapeHtml(name)}</label>`).join("")}</div></div>${time}`;
   } else if (s.kind === "monthly") {
     fields = `<div class="form-row"><div class="form-group"><label>Day of the month</label><select data-s="day" data-num="1">${
       Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}"${s.day === i + 1 ? " selected" : ""}>${i + 1}</option>`).join("")}</select></div>${time}</div>
@@ -567,7 +575,7 @@ function wfPanelTrigger(n) {
   } else if (s.kind === "interval") {
     const steps = s.unit === "hours" ? WF_HOUR_STEPS : WF_MINUTE_STEPS;
     fields = `<div class="form-row"><div class="form-group"><label>Every</label><select data-s="every" data-num="1">${
-      steps.map(v => `<option value="${v}"${s.every === v ? " selected" : ""}>${v}</option>`).join("")}</select></div>
+      steps.map(v => `<option value="${escapeHtml(v)}"${s.every === v ? " selected" : ""}>${escapeHtml(v)}</option>`).join("")}</select></div>
       <div class="form-group"><label>Unit</label><select data-s="unit">
         <option value="minutes"${s.unit === "minutes" ? " selected" : ""}>minutes</option>
         <option value="hours"${s.unit === "hours" ? " selected" : ""}>hours</option></select></div></div>`;
@@ -579,7 +587,7 @@ function wfPanelTrigger(n) {
   }
   return `<div class="wfb-panel-title">Trigger</div>
     <div class="form-group"><label>When it runs</label><select data-s="kind">${kinds.map(([k, t]) =>
-      `<option value="${k}"${s.kind === k ? " selected" : ""}>${t}</option>`).join("")}</select></div>
+      `<option value="${escapeHtml(k)}"${s.kind === k ? " selected" : ""}>${escapeHtml(t)}</option>`).join("")}</select></div>
     ${fields}
     <div class="wfb-summary">${escapeHtml(wfScheduleText(s))}</div>
     ${s.kind === "manual" ? "" : `<label class="check-label"><input type="checkbox" data-wf-active${wfb.draft.is_active ? " checked" : ""}> Enabled (${s.kind === "event" ? "it starts on its own" : "scheduled runs happen"} only while this is ticked)</label>
@@ -591,7 +599,7 @@ function wfEventFields(s) {
   const w = s.when || {};
   const info = (wfb.devInfo || {})[w.device_id];
   if (w.device_id && !info) wfLoadDevInfo(w.device_id);
-  const lasting = (label = "For at least (minutes, 0 = at once)") => `<div class="form-group"><label>${label}</label>
+  const lasting = (label = "For at least (minutes, 0 = at once)") => `<div class="form-group"><label>${escapeHtml(label)}</label>
     <input type="number" min="0" max="1440" data-ev="for_minutes" data-num="1" value="${Number(w.for_minutes || 0)}"></div>`;
   let extra = "";
   if (w.type === "metric") {
@@ -616,11 +624,11 @@ function wfEventFields(s) {
     extra = `<div class="form-row"><div class="form-group"><label>Problem</label><select data-ev="rule"><option value="">Any problem</option>${rules.map(r =>
       `<option value="${escapeHtml(r.id)}"${r.id === w.rule ? " selected" : ""}>${escapeHtml(r.label)}</option>`).join("")}</select></div>
       <div class="form-group"><label>At least</label><select data-ev="min_severity">${["info", "warning", "high", "critical"].map(v =>
-      `<option value="${v}"${(w.min_severity || "warning") === v ? " selected" : ""}>${v}</option>`).join("")}</select></div></div>`;
+      `<option value="${escapeHtml(v)}"${(w.min_severity || "warning") === v ? " selected" : ""}>${escapeHtml(v)}</option>`).join("")}</select></div></div>`;
   }
   return `<div class="form-group"><label>Device to watch</label><select data-ev="device_id" data-num="1"><option value="">Choose a device...</option>${hostOptions(w.device_id)}</select></div>
     <div class="form-group"><label>What happens</label><select data-ev="type">${WF_EVENT_TYPES.map(([k, t]) =>
-      `<option value="${k}"${w.type === k ? " selected" : ""}>${t}</option>`).join("")}</select></div>
+      `<option value="${escapeHtml(k)}"${w.type === k ? " selected" : ""}>${escapeHtml(t)}</option>`).join("")}</select></div>
     ${extra}
     <div class="form-group"><label>Then wait at least (minutes) before it can run again</label>
       <input type="number" min="1" max="1440" data-s="cooldown_minutes" data-num="1" value="${Number(s.cooldown_minutes || 30)}"></div>
@@ -686,7 +694,8 @@ function wfPanelStep(n) {
         <textarea rows="5" spellcheck="false" data-f="command" placeholder="e.g. uptime">${escapeHtml(n.command)}</textarea>
         ${tpl && tpl.note ? `<div class="form-help">${escapeHtml(tpl.note)}</div>` : ""}</div>
       <div class="form-group"><label>Credential</label>${wfCreds().length ? `<select data-f="credential_id" data-num="1">${credOptions(n.credential_id)}</select>`
-        : `<div class="text-warn">No stored credential yet. Add one under Credentials first.</div>`}</div>
+        : `<div class="text-warn">No stored credential yet. Add one under Credentials first.</div>`}
+        ${wfRunsAs(n.credential_id) ? `<div class="form-help">Runs as ${escapeHtml(wfRunsAs(n.credential_id))} on these hosts, using the credential ${escapeHtml(wfCreds().find(x => x.id === n.credential_id).name)}.</div>` : ""}</div>
       <div class="form-row">
         <div class="form-group"><label>Timeout (s)</label><input type="number" min="5" max="3600" data-f="timeout_s" value="${Number(n.timeout_s)}"></div>
         <div class="form-group"><label>SSH port</label><input type="number" min="1" max="65535" data-f="ssh_port" value="${Number(n.ssh_port)}"></div>
@@ -694,7 +703,7 @@ function wfPanelStep(n) {
       <label class="check-label"><input type="checkbox" data-f="expect_disconnect"${n.expect_disconnect ? " checked" : ""}> This restarts the host: a dropped connection means it worked</label>
       <label class="check-label"><input type="checkbox" data-f="any_exit"${n.any_exit ? " checked" : ""}> Any exit code counts as success</label>
       ${n.any_exit ? "" : `<div class="form-group"><label>Expected exit code</label><input type="number" min="0" max="255" data-f="expected_exit_code" value="${Number(n.expected_exit_code)}"></div>`}
-      ${n.credential_id && n.device_ids.length ? `<div class="wfb-test"><button type="button" class="btn btn-small" data-test-login>Test login on ${escapeHtml(names[n.device_ids[0]] || "the first host")}</button>
+      ${n.credential_id && n.device_ids.length && can("credentials.use") ? `<div class="wfb-test"><button type="button" class="btn btn-small" data-test-login>Test login on ${escapeHtml(names[n.device_ids[0]] || "the first host")}</button>
         <span class="dim" id="wfb-test-result"></span></div>` : ""}`;
   } else if (n.type === "wait") {
     body = `<div class="form-group"><label>Seconds</label><input type="number" min="1" max="3600" data-f="seconds" value="${Number(n.seconds)}"></div>`;
@@ -711,8 +720,9 @@ function wfPanelStep(n) {
     const chips = (n.device_ids || []).map((id, k) => `<span class="target-chip">${escapeHtml(names[id] || "?")}
       <button type="button" class="chip-btn" data-host-del="${k}" title="Remove">&times;</button></span>`).join(" ");
     body = `<div class="form-group"><label>Keep quiet</label><select data-f="scope">
-        ${[["hosts", "This workflow's hosts"], ["devices", "Devices I pick"], ["group", "A group"], ["tag", "A tag"], ["all", "Everything"]].map(([v, l]) =>
-          `<option value="${v}"${n.scope === v ? " selected" : ""}>${l}</option>`).join("")}</select></div>
+        ${[["hosts", "This workflow's hosts"], ["devices", "Devices I pick"], ["group", "A group"], ["tag", "A tag"], ["all", "Everything"]]
+          .filter(([v]) => v !== "all" || n.scope === "all" || !(currentUser && currentUser.scoped)).map(([v, l]) =>
+          `<option value="${escapeHtml(v)}"${n.scope === v ? " selected" : ""}>${escapeHtml(l)}</option>`).join("")}</select></div>
       ${n.scope === "devices" ? `<div class="form-group"><label>Devices</label><div class="wf-hosts">${chips || '<span class="dim">None yet</span>'}</div>
         <select data-host-add><option value="">Add device...</option>${hostOptions(null, d => !(n.device_ids || []).includes(d.id))}</select></div>` : ""}
       ${n.scope === "group" ? `<div class="form-group"><label>Group</label><select data-f="target"><option value="">Choose a group...</option>${groups.map(g =>
@@ -1026,7 +1036,7 @@ function initWorkflowCanvas() {
       <button type="button" class="btn" role="tab" data-pal-tab="steps">Steps</button><button type="button" class="btn" role="tab" data-pal-tab="templates">Templates</button></div>
     <div data-pal-steps class="wfb-pal-list">${WF_FAMILIES.map(([fam, label]) => `<div class="wfb-pal-group">${escapeHtml(label)}</div>` +
       WF_PALETTE.map((p, i) => p.fam !== fam ? "" : `
-      <div class="wfb-pal-item wfb-t-${p.type}" data-pal="${i}" title="Drag onto the canvas, or click to add after the selected step">
+      <div class="wfb-pal-item wfb-t-${escapeHtml(p.type)}"${p.type === "command" ? ' data-perm="credentials.use"' : p.type === "pve_snapshot" ? " data-unscoped" : ""} data-pal="${i}" title="Drag onto the canvas, or click to add after the selected step">
         <span class="wfb-badge">${WF_KIND[p.type].badge}</span><span><strong>${escapeHtml(p.title)}</strong><span class="dim">${escapeHtml(p.help)}</span></span>
       </div>`).join("")).join("")}</div>
     <div data-pal-tpls class="wfb-pal-list hidden"><div class="form-help">Ready-made steps for one or more hosts. Pick one, then choose its hosts on the right.</div>
@@ -1276,6 +1286,10 @@ function initWorkflows() {
       const k = wfMissingKeys(w);
       if (k.missing.length) {
         const names = wfNames();
+        if (!can("credentials.manage")) {
+          showToast(`${w.name} connects over SSH to ${k.missing.map(id => names[id] || id).join(", ")}, whose host key is not approved yet. Someone with the Manage credentials permission needs to approve it.`, "error");
+          return;
+        }
         if (await confirmDialog({ title: "Host keys not approved", message: `${w.name} connects over SSH to ${k.missing.map(id => names[id] || id).join(", ")}, whose host key is not approved yet. Review and approve it first.`, confirmLabel: "Review host keys" })) {
           openHostKeys({ device_ids: k.missing, ssh_port: k.port });
         }

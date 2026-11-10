@@ -14,6 +14,7 @@ stored credentials need the password confirmed within the last few minutes.
 import concurrent.futures
 import http.cookies
 import http.server
+import io
 import ipaddress
 import json
 import logging
@@ -102,6 +103,22 @@ def host_allowed(host_header: str) -> bool:
     own = socket.gethostname().lower()
     return name in ALLOWED_NAMES or name == own or (name.split(".")[0] == own and name.endswith((".lan", ".local", ".home", ".internal")))
 MAX_BODY_BYTES = 64 * 1024
+# Web server limits, sized for the default 1 GB container. A socket timeout alone restarts on every
+# byte, so a request also has a deadline for its request line, headers and body together.
+READ_IDLE_SECONDS = 10
+READ_TOTAL_SECONDS = 20
+WRITE_SECONDS = 60
+# A browser opens up to 6 connections per host, so 64 covers about ten busy browsers. One address
+# may hold 24 of them. This machine (health checks, the installer and shell scripts) has a few
+# more and no per-address limit, so it can still reach the monitor while the cap is full.
+MAX_CONNECTIONS = 64
+LOCAL_EXTRA_CONNECTIONS = 8
+MAX_PER_ADDRESS = 24
+BUSY_TEXT = "The monitor is busy. Please try again in a moment."
+SLOW_REQUEST_TEXT = "The request took too long to arrive. Please try again."
+# Message editor previews per session in each window of seconds.
+TEMPLATE_PREVIEW_LIMIT = 120
+TEMPLATE_PREVIEW_WINDOW = 60
 # Spelled out per kind, so a later default-src change cannot widen scripts or styles by accident.
 # img-src data: is for the 2FA QR code, shown as a data: image.
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
@@ -170,7 +187,14 @@ SETTINGS_SCHEMA = [
      "Full-resolution history. Older data is kept as hourly averages."),
     ("metric_retention_days", "retention", "Hourly trends", "int", "days", 7, 3650, "365",
      "Hourly min / avg / max kept for long-range graphs."),
-    ("audit_retention_days", "retention", "Events and audit log", "int", "days", 1, 3650, "90", ""),
+    ("audit_retention_days", "retention", "Audit log", "int", "days", database.AUDIT_RETENTION_FLOOR, 3650, "90",
+     "Who did what in the app. Kept for at least 90 days, so a change cannot be hidden by shortening this."),
+    ("event_retention_days", "retention", "Events", "int", "days", 1, 3650, "90",
+     "Device and system events shown on the Events page."),
+    ("require_2fa", "login", "Require two-factor authentication", "select:off,admins,all", "", None, None, "off",
+     "Off means each person chooses. With admins, every administrator must use it. With all, everyone must. "
+     "Anyone it covers sets it up straight after their next password. While this is on, changes that ask for the "
+     "highest confirmation need two-factor authentication for everyone. To turn it on, your own account needs it first."),
     ("update_auto_check", "updates", "Check for updates every day", "select:on,off", "", None, None, "on",
      "Looks for a new version once a day and shows a red number on Settings when one is ready. "
      "Nothing is installed until you choose to."),
@@ -269,6 +293,11 @@ class RequestError(Exception):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
+def _lockout_error(wait: float) -> RequestError:
+    """The 429 shown while a client or username is locked out after failed passwords or codes."""
+    return RequestError(429, f"Too many failed attempts. Try again in {int(wait) + 1} seconds")
 
 
 class ActionError(RequestError):
@@ -504,22 +533,34 @@ def password_credential_ids() -> set:
     return {c["id"] for c in database.list_credentials() if c["cred_type"] == "password"}
 
 
-def check_credential_use(user: Any, cred_id: Optional[int]) -> None:
-    """A stored password may log in to any address it is pointed at, so using one on an action
-    needs Manage credentials (administrators have it). SSH key credentials need nothing extra."""
+def check_password_credential(user: Any, cred_id: Optional[int]) -> None:
+    """A stored password may log in to any address it is pointed at, so using one needs Manage
+    credentials (administrators have it)."""
     if cred_id and cred_id in password_credential_ids() and not user.can("credentials.manage"):
         raise RequestError(403, "Using a stored password needs the Manage credentials permission. Use an SSH key credential instead.")
 
 
+def check_credential_use(user: Any, cred_id: Optional[int]) -> None:
+    """Logging in to a host with a stored credential needs Use stored credentials, and a password
+    credential also needs Manage credentials. The password rule is checked first."""
+    check_password_credential(user, cred_id)
+    if cred_id and not user.can("credentials.use"):
+        raise RequestError(403, "Using a stored credential needs the Use stored credentials permission.")
+
+
 def workflow_rights_problem(user: rbac.User, wf: Dict[str, Any]) -> Optional[str]:
     """Why this user may not save or run the workflow unattended, or None: a device outside their
-    device access, or a password credential without Manage credentials."""
-    if any(not user.sees_id(h) for h in workflows.hosts_of(wf)):
-        return "it uses devices outside the device access of " + user.username
+    device access, a password credential without Manage credentials, or a command step without
+    Use stored credentials. Saving, running by hand and scheduled runs all use this one rule."""
+    reach = workflow_reach_problem(user, wf)
+    if reach:
+        return reach
+    commands = [s for s in wf["steps"] if s.get("type") == "command"]
     passwords = password_credential_ids()
-    if not user.can("credentials.manage") and \
-            any(s.get("type") == "command" and s.get("credential_id") in passwords for s in wf["steps"]):
+    if not user.can("credentials.manage") and any(s.get("credential_id") in passwords for s in commands):
         return "it logs in with a stored password, which needs the Manage credentials permission"
+    if commands and not user.can("credentials.use"):
+        return "it runs commands with a stored credential, which needs the Use stored credentials permission"
     return None
 
 
@@ -543,12 +584,227 @@ def workflow_author_problem(wf: Dict[str, Any]) -> Optional[str]:
     return workflow_rights_problem(user, wf)
 
 
+def workflow_reach_problem(user: rbac.User, wf: Dict[str, Any]) -> Optional[str]:
+    """Why the workflow reaches past the user's device access, or None. Unscoped users reach everything.
+    Fail closed: a guest that is not in the Proxmox layout yet counts as outside."""
+    if user.scope is None:
+        return None
+    reach = workflows.reach_of(wf)
+    if any(not user.sees_id(h) for h in reach["devices"]):
+        return "it uses devices outside the device access of " + user.username
+    for scope, target in reach["mutes"]:
+        if scope == "all":
+            return "it keeps every device quiet, which needs access to every device"
+        if not maintenance_in_scope(user, scope, target):
+            return "it keeps a group or tag quiet that reaches outside the device access of " + user.username
+    if reach["guests"]:
+        mapped = {(g.get("node"), g.get("vmid")): g.get("device_id") for g in proxmox.layout().get("guests", [])}
+        for guest in reach["guests"]:
+            if not mapped.get(guest) or not user.sees_id(mapped[guest]):
+                return "it snapshots a Proxmox guest outside the device access of " + user.username
+    return None
+
+
 def workflows_in_scope(user: rbac.User, rows: List[Dict[str, Any]], key: str = "id") -> List[Dict[str, Any]]:
-    """Workflows (or their runs, key="workflow_id") whose devices are all inside the user's device access."""
+    """Workflows (or their runs, key="workflow_id") that stay inside the user's device access."""
     if user.scope is None:
         return rows
-    hosts = {w["id"]: workflows.hosts_of(w) for w in database.list_workflows()}
-    return [r for r in rows if all(user.sees_id(h) for h in hosts.get(r[key], []))]
+    outside = {w["id"] for w in database.list_workflows() if workflow_reach_problem(user, w)}
+    return [r for r in rows if r[key] not in outside]
+
+
+def maintenance_in_scope(user: rbac.User, scope: str, target: str) -> bool:
+    """Whether a maintenance window stays inside the user's device access. A group or tag must have
+    members and every member must be inside (the same matching the alerts use); an empty one could
+    later fill with devices the user cannot see. Every device needs access to every device."""
+    if user.scope is None:
+        return True
+    if scope == "all":
+        return False
+    if scope == "device":
+        return str(target).isdigit() and user.sees_id(int(target))
+    w = {"scope": scope, "target": str(target or "")}
+    members = [d["id"] for d in database.list_devices() if maintenance.covers(w, with_group(d))]
+    return bool(members) and all(user.sees_id(i) for i in members)
+
+
+def maintenance_view(user: rbac.User, windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The windows this user may see: those inside their device access."""
+    if user.scope is None:
+        return windows
+    return [w for w in windows if maintenance_in_scope(user, w["scope"], w["target"])]
+
+
+WORKFLOW_SCOPE_MARKER = "checked_workflow_scope"
+
+
+def check_workflow_scope() -> int:
+    """Once per database: counts saved workflows whose author is limited to some devices and that
+    would now be skipped, and tells administrators once. Nothing is changed."""
+    if database.get_all_settings().get(WORKFLOW_SCOPE_MARKER) == "1":
+        return 0
+    found = 0
+    for wf in database.list_workflows():
+        account = database.get_user(wf["saved_by"]) if wf.get("saved_by") else None
+        if account and rbac.scope_of(account) is not None and workflow_author_problem(wf):
+            found += 1
+    if found:
+        _notify_admins(f"{found} saved workflow(s) reach further than the person who saved them can now reach, so they "
+                       "will be skipped when they are due. Open them and save them again as someone allowed to run them.")
+    database.set_internal_setting(WORKFLOW_SCOPE_MARKER, "1")
+    return found
+
+
+CREDENTIALS_USE_MARKER = "migrated_credentials_use"
+# Custom users holding any of these could already log in to hosts with a stored credential
+# somewhere (workflows, host actions, Fix SNMP, the credential test), so they keep that on upgrade.
+CREDENTIALS_USE_FROM = ("automation.edit", "automation.run", "devices.manage", "credentials.manage")
+
+
+def migrate_credentials_use() -> int:
+    """Once per database: gives the new Use stored credentials permission to custom users who could
+    already use stored credentials, so nobody silently loses anything. Each grant is audited and
+    every active administrator gets one notice. Built-in roles need nothing: their permissions are
+    worked out when read. The marker stops a later grant to someone it was taken from on purpose."""
+    if database.get_all_settings().get(CREDENTIALS_USE_MARKER) == "1":
+        return 0
+    given = 0
+    for account in database.list_users():
+        if (account.get("role") or "") != "custom":
+            continue
+        perms = rbac.permissions_for(account)
+        if "credentials.use" in perms or not perms & set(CREDENTIALS_USE_FROM):
+            continue
+        database.update_user(account["username"], {"permissions": json.dumps(rbac.parse_permissions(
+            sorted(perms | {"credentials.use"})))})
+        database.add_audit("users", f"Gave {account['username']} the Use stored credentials permission",
+                           "Automatic on upgrade: they could already run or edit workflows, run Fix SNMP or test a credential")
+        given += 1
+    if given:
+        _notify_admins(f"Home Monitor now has a Use stored credentials permission. {given} user(s) who could already run or "
+                       "edit workflows, run Fix SNMP or test a credential were given it, so nothing changes for them. "
+                       "The audit log names each one. You can change this in Settings, Users.")
+    database.set_internal_setting(CREDENTIALS_USE_MARKER, "1")
+    return given
+
+
+def _notify_admins(text: str) -> None:
+    """One notice in the bell of every active administrator."""
+    for account in database.list_users():
+        if account.get("role") == "admin" and not account.get("disabled"):
+            database.add_event(None, "warning", "action", text, actor=account["username"])
+
+
+RETENTION_RAISED_DETAIL = "Automatic on upgrade: the audit log is now kept for at least 90 days"
+
+
+def migrate_retention(existing: Dict[str, str]) -> bool:
+    """Once, before the settings are filled in: events keep exactly the retention they had, and the
+    audit log is raised to the floor when it was shorter. True when it was raised. Reads the stored
+    value itself, because get_setting would already clamp it."""
+    if "event_retention_days" in existing:
+        return False
+    try:
+        days = max(1, min(3650, int(existing.get("audit_retention_days") or 90)))
+    except ValueError:
+        days = 90
+    database.set_internal_setting("event_retention_days", str(days))
+    if days >= database.AUDIT_RETENTION_FLOOR:
+        return False
+    database.update_setting("audit_retention_days", str(database.AUDIT_RETENTION_FLOOR))
+    database.add_audit("settings", f"Audit log retention raised from {days} to {database.AUDIT_RETENTION_FLOOR} days",
+                       RETENTION_RAISED_DETAIL)
+    return True
+
+
+SECURITY_NOTICE_MARKER = "notice_security_0_12"
+
+
+def security_notice(existing: Dict[str, str], has_accounts: bool, raised: bool) -> None:
+    """Once per database (Q14): tells administrators that security alerts are on and, when it applies,
+    that the audit log is now kept for at least 90 days. A fresh install has nothing to be told."""
+    if existing.get(SECURITY_NOTICE_MARKER) == "1":
+        return
+    if has_accounts:
+        parts = []
+        s = database.get_all_settings()
+        if s.get("telegram_enabled") == "on":
+            parts.append("Home Monitor now sends a Telegram alert for security events such as a new user, a changed "
+                         "credential or an approved host key. You can turn this off in Settings, Notifications.")
+        if raised:
+            parts.append("The audit log is now kept for at least 90 days.")
+        parts.append("You can also require two-factor authentication in Settings, Login security.")
+        if parts:
+            _notify_admins(" ".join(parts))
+    database.set_internal_setting(SECURITY_NOTICE_MARKER, "1")
+
+
+TWO_FACTOR_RULES = ("off", "admins", "all")
+ENROL_TEXT = "Set up two-factor authentication to continue"
+TIER3_NEEDS_2FA_TEXT = "This action needs two-factor authentication. Turn it on in Settings, Account."
+# What a person who must set up 2FA can still reach: the setup itself, the password step it asks
+# for and logging out (the status is public and answered before this check).
+ENROL_ROUTES = {("GET", "/api/auth/2fa"), ("POST", "/api/auth/2fa/start"), ("POST", "/api/auth/2fa/enable"),
+                ("POST", "/api/auth/confirm"), ("POST", "/api/auth/logout")}
+
+
+def two_factor_rule() -> str:
+    """require_2fa: off, admins or all. Read on every request, without decrypting anything."""
+    rule = database.get_plain_setting("require_2fa", "off")
+    return rule if rule in TWO_FACTOR_RULES else "off"
+
+
+def two_factor_covers(account: Dict[str, Any], rule: Optional[str] = None) -> bool:
+    """Whether the rule requires 2FA of this account (whether or not it has it)."""
+    rule = two_factor_rule() if rule is None else rule
+    return rule == "all" or (rule == "admins" and (account.get("role") or "admin") == "admin")
+
+
+def must_enrol(account: Optional[Dict[str, Any]]) -> bool:
+    """An account the rule covers that has no 2FA yet. Never while the vault is locked: no secret could
+    be stored, so nobody must be stopped at a form that cannot succeed."""
+    if not account or account.get("totp_enabled") or not VAULT.enabled:
+        return False
+    return two_factor_covers(account)
+
+
+def security_alert(key: str, who: Optional[str] = None, source: Optional[str] = None, **values: Any) -> None:
+    """A Telegram security alert (notify.SECURITY_TEXTS), naming who did it and from where (the
+    thread's audit context unless given). It never breaks the action it reports."""
+    try:
+        actor, src = database.audit_identity()
+        who = actor if who is None else who
+        NOTIFIER.security(key, who="" if who == "system" else who, source=src if source is None else source, **values)
+    except Exception:
+        log.exception("Could not queue the security alert %s", key)
+
+
+LOCKOUT_ALERT_GAP = 15 * 60
+LOCKOUT_ALERTS_PER_HOUR = 20
+_LOCKOUT = {"lock": threading.Lock(), "sent": {}, "hour": []}
+
+
+def _lockout_alert(client: str, username: Optional[str], keys: list) -> None:
+    """auth.LIMITER.on_lockout: an audit row for every lockout, and an alert at most once per target
+    every 15 minutes and 20 an hour in all. A username is named only when that account exists, so
+    made-up names cannot be pushed into the chat."""
+    account = database.get_user(username) if username and _USERNAME.fullmatch(username) else None
+    target = account["username"] if account and "user:" + username.lower() in keys else client
+    database.add_audit("auth", "Login lockout started", target)
+    now = time.time()
+    with _LOCKOUT["lock"]:
+        sent, hour = _LOCKOUT["sent"], [t for t in _LOCKOUT["hour"] if now - t < 3600]
+        _LOCKOUT["hour"] = hour
+        if now - sent.get(target, 0.0) < LOCKOUT_ALERT_GAP or len(hour) >= LOCKOUT_ALERTS_PER_HOUR:
+            return
+        sent[target] = now
+        hour.append(now)
+        for old in sorted(sent, key=sent.get)[:max(0, len(sent) - 256)]:
+            del sent[old]
+    security_alert("lockout", target=target)
+
+
+auth.LIMITER.on_lockout = _lockout_alert
 
 
 def migrate_tasks_to_workflows() -> int:
@@ -803,9 +1059,16 @@ def backup_status() -> Dict[str, Any]:
     files.sort(key=lambda f: f["time"], reverse=True)
     results = {k: _read_result(data_dir, k) for k in ("backup", "site")}
     pending = {k: _request_time(data_dir, k) > ((results[k] or {}).get("time") or 0) for k in ("backup", "site")}
+    # Root keeps the backup passphrase beside install.conf (root only: the app sees only whether it exists).
+    install_dir = os.path.dirname(os.environ.get("MONITOR_INSTALL_CONF", "") or "")
+    passphrase_set = bool(conf) and bool(install_dir) and os.path.exists(os.path.join(install_dir, "backup-passphrase"))
+    # Where the key goes in the next backup: sealed with a passphrase; without one it stays only in
+    # backups kept inside the container and is left out of those synced off the box.
+    key_state = "sealed" if passphrase_set else ("withheld" if syncthing else "clear-local")
     return {"installed": bool(conf), "folder": folder, "syncthing": syncthing, "count": len(files),
             "latest": files[0] if files else None, "total_bytes": sum(f["size"] for f in files),
-            "schedule": "Daily at 03:30, the newest 7 kept", "includes_key": True,
+            "schedule": "Daily at 03:30, the newest 7 kept",
+            "passphrase_set": passphrase_set, "key_state": key_state,
             "restore_source": conf.get("SYNCTHING_KEYS_NFS") or conf.get("BACKUP_NFS") or "",
             "data_dir": data_dir, "results": results, "pending": pending,
             "syncthing_settings": {"enabled": bool(st.get("enabled")), "keys_source": st.get("keys_source", ""),
@@ -1056,6 +1319,56 @@ def _auto_update_loop() -> None:
         except Exception:  # noqa: BLE001 (a failed check must never stop the loop)
             log.exception("Daily update check")
         time.sleep(3600)
+
+
+ALERT_SEEN_RESTORE = "alert_seen_restore"
+ALERT_SEEN_UPDATE = "alert_seen_update"
+ROOT_ALERT_MAX_AGE = 86400
+
+
+def watch_root_results(now: Optional[float] = None) -> int:
+    """Restores and updates are done by root, the restore while the monitor is stopped, so root cannot
+    record them in this database. Here each new result gets one audit row and one alert. Not part of
+    initialise(): the trial run before an update or restore calls that. Returns how many were sent."""
+    now = time.time() if now is None else now
+    s = database.get_all_settings()
+    sent = 0
+    restore = _read_result(os.path.dirname(os.path.abspath(database.DB_FILE)), "restore")
+    if restore and restore["time"]:
+        try:
+            seen = int(s.get(ALERT_SEEN_RESTORE) or 0)
+        except ValueError:
+            seen = 0
+        if restore["time"] > seen:
+            database.set_internal_setting(ALERT_SEEN_RESTORE, str(restore["time"]))
+            # A database from before this watcher has no marker: only a recent restore is news.
+            if seen or now - restore["time"] < ROOT_ALERT_MAX_AGE:
+                name = os.path.basename(str(restore.get("file") or "")) or "unknown"
+                database.add_audit("backup", f"Data restored from backup {name}", "", actor="root")
+                security_alert("restored", who="root", source="", file=name)
+                sent += 1
+    history = update_history()
+    newest = max((h["id"] for h in history), default=0)
+    marker = s.get(ALERT_SEEN_UPDATE) or ""
+    if not marker.isdigit():
+        # First run: what is already there is history, not news.
+        database.set_internal_setting(ALERT_SEEN_UPDATE, str(newest))
+        return sent
+    fresh = sorted((h for h in history if h["id"] > int(marker) and now - h["time"] < ROOT_ALERT_MAX_AGE),
+                   key=lambda h: h["id"])[-5:]
+    for h in fresh:
+        kind = (h["kind"] or "update").replace("-", " ").capitalize()
+        if h["ok"]:
+            text = f"{kind} from {h['from']} to {h['to']} finished"
+            security_alert("update_ok", who="root", source="", **{"kind": kind, "from": h["from"], "to": h["to"]})
+        else:
+            text = f"{kind} from {h['from']} to {h['to']} failed"
+            security_alert("update_failed", who="root", source="", kind=kind, to=h["to"], error=h["error"][:300] or "unknown")
+        database.add_audit("system", text, h["error"][:500], actor="root")
+        sent += 1
+    if newest > int(marker):
+        database.set_internal_setting(ALERT_SEEN_UPDATE, str(newest))
+    return sent
 
 
 def _read_result(data_dir: str, kind: str) -> Optional[Dict[str, Any]]:
@@ -2233,6 +2546,7 @@ workflows.on_finished = lambda wf, status, failed: NOTIFIER.event(
 workflows.weak_dbm = lambda: alert_policy().resolve("wifi_weak", upto="global")[0]["threshold"] or -75
 workflows.on_started = lambda wf, trigger: NOTIFIER.event("workflow_start", {"workflow": wf["name"], "trigger": trigger})
 workflows.send_telegram = NOTIFIER.message
+tls.on_failure = lambda reason: security_alert("https_failed", reason=reason)
 botcmds.wifi_view = lambda: wifi_view()
 botcmds.device_group = lambda d: device_group(d)
 
@@ -2540,7 +2854,8 @@ def second_factor_ok(username: str, code: str) -> bool:
         left = database.consume_recovery_code(username, t["recovery"][i])
         if left is None:
             return False
-        database.add_audit("auth", f"Recovery code used by {username}", f"{left} left")
+        database.add_audit("auth", f"Recovery code used by {username}", f"{left} left", actor=username)
+        security_alert("recovery_code", who=username, name=username, left=left)
         return True
     return False
 
@@ -2555,7 +2870,47 @@ def telegram_ready() -> bool:
 
 # --- HTTP Handler ---
 
-class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
+class _TimedRaw(io.RawIOBase):
+    """Socket reads with a limit per read and one for the whole request."""
+
+    def __init__(self, sock, idle: float, total: float, after: Optional[float]) -> None:
+        super().__init__()
+        self.sock = sock
+        self.idle = idle
+        self.after = after
+        self.deadline = time.monotonic() + total
+
+    def readable(self) -> bool:
+        return True
+
+    def limit(self, seconds: float) -> None:
+        """Shortens the time left, for example for a body read only so it can be dropped."""
+        self.deadline = min(self.deadline, time.monotonic() + seconds)
+
+    def readinto(self, b) -> int:
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("request took too long")
+        self.sock.settimeout(min(self.idle, left))
+        try:
+            return self.sock.recv_into(b)
+        finally:
+            # Writes (the reply) use their own timeout.
+            self.sock.settimeout(self.after)
+
+
+class _TimedRequest:
+    """Gives a request handler read limits (idle and total) and a write timeout."""
+
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(WRITE_SECONDS)
+        # The stdlib reader holds a reference that would keep the socket open: close it first.
+        self.rfile.close()
+        self.rfile = io.BufferedReader(_TimedRaw(self.connection, READ_IDLE_SECONDS, READ_TOTAL_SECONDS, WRITE_SECONDS))
+
+
+class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
     """Handles HTTP requests for static assets and REST API endpoints."""
 
     server_version = "HomelabMonitor"
@@ -2608,6 +2963,10 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
     def _scheme(self) -> str:
         return "https" if isinstance(self.connection, ssl.SSLSocket) else "http"
 
+    def _https_lost(self) -> bool:
+        """HTTPS failed and this is plain HTTP from another computer (this machine may still log in)."""
+        return bool(tls.SERVER.failure) and self._scheme() == "http" and not self.server.local_client(self.client_address)
+
     def _check_mutation(self) -> None:
         origin = self.headers.get("Origin")
         # Same-origin only: the page must have been loaded from the host this request is addressed to.
@@ -2632,7 +2991,9 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
         except ValueError:
             return
         if 0 < length <= MAX_BODY_BYTES:
-            self.connection.settimeout(2.0)
+            raw = getattr(self.rfile, "raw", None)
+            if isinstance(raw, _TimedRaw):
+                raw.limit(2.0)
             try:
                 self.rfile.read(length)
             except OSError:
@@ -2647,7 +3008,12 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             raise RequestError(400, "Invalid Content-Length")
         if length < 0 or length > MAX_BODY_BYTES:
             raise RequestError(413, "Request body too large")
-        raw = self.rfile.read(length) if length else b""
+        try:
+            raw = self.rfile.read(length) if length else b""
+        except TimeoutError:
+            self._body_read = True
+            self.close_connection = True
+            raise RequestError(408, SLOW_REQUEST_TEXT)
         self._body_read = True
         if not raw:
             return {}
@@ -2682,6 +3048,7 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
         self.token = self._session_token()
         self.session = auth.SESSIONS.get(self.token)
         self.user = None
+        self.account = None
         if (self.command, path) in PUBLIC_API:
             if self.session is not None:
                 try:
@@ -2694,19 +3061,30 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
                 raise AuthRequired(401, "Create the administrator account first", "setup")
             raise AuthRequired(401, "Log in to continue", "login")
         self._load_user()
+        # Required 2FA, decided from the account on every request: also a session opened before
+        # the rule was switched on. Only the setup, its password step and Log out stay open.
+        if must_enrol(self.account) and (self.command, path) not in ENROL_ROUTES:
+            raise AuthRequired(403, ENROL_TEXT, "enrol")
         if not path.startswith("/api/auth/") and not rbac.allowed(self.user, self.command, path):
             raise RequestError(403, "Your account does not have permission to do that")
         # Every per-device route, any method: outside the user's device access it does not exist.
         dev = re.match(r"/api/devices/(\d+)(?:/|$)", path)
         if dev and not self.user.sees_id(int(dev.group(1))):
             raise RequestError(404, "Device not found")
+        # Network-wide changes and objects everyone shares (rbac.UNSCOPED_ROUTES).
+        if self.user.scope is not None and rbac.needs_all_devices(self.command, path):
+            raise RequestError(403, "This needs access to every device.")
         tier = rbac.route_tier(self.command, path)
         if tier > 1:
-            self._require_tier(tier)
+            self._require_tier(tier, path)
 
-    def _require_tier(self, tier: int) -> None:
+    def _require_tier(self, tier: int, path: str = "") -> None:
         """Step-up check: a recent password (tier 2) or password and code (tier 3) on this session.
-        A tier 3 user without 2FA confirms with the password alone; the reply says so, to suggest 2FA."""
+        A tier 3 user without 2FA confirms with the password alone; the reply says so, to suggest 2FA.
+        While 2FA is required, tier 3 needs it for everyone (starting the setup is the way in)."""
+        if tier >= 3 and path != "/api/auth/2fa/start" and two_factor_rule() != "off" \
+                and not (self.account or {}).get("totp_enabled"):
+            raise RequestError(403, TIER3_NEEDS_2FA_TEXT)
         until = self.session.get("tier3_until" if tier >= 3 else "tier2_until", 0)
         if until >= time.time():
             return
@@ -2722,7 +3100,9 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             auth.SESSIONS.revoke_user(self.session["username"])
             self.session = None
             raise AuthRequired(401, "This account is blocked" if account else "Log in to continue", "login")
+        self.account = account
         self.user = rbac.User(account)
+        database.set_audit_context(self.user.username, self.client_address[0])
         if self.user.scope is not None:
             self.user.bind_devices(database.device_profiles())
 
@@ -2746,12 +3126,18 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             raise RequestError(403, "Your account does not have permission to do that")
 
     def _dispatch(self, handler) -> None:
+        # Every audit row this request writes names the address; the user once the session is read.
+        database.set_audit_context("anonymous", self.client_address[0])
         try:
             self._check_host()
             if self.command != "GET":
                 self._check_mutation()
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/")
+            # HTTPS should be on but failed: nothing that carries a password or a session crosses the
+            # network in the clear. The login page asks the status, which says only that it is lost.
+            if path.startswith("/api/") and self._https_lost() and (self.command, path) != ("GET", "/api/auth/status"):
+                raise RequestError(403, tls.REFUSED_TEXT)
             if path.startswith("/api/"):
                 self._require_session(path)
                 if path.startswith("/api/auth/"):
@@ -2868,6 +3254,8 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             log.exception("Unhandled error for %s %s", self.command, self.path)
             self._send_json(500, {"error": "Internal server error"})
+        finally:
+            database.clear_audit_context()
 
     def _auth_route(self, path: str) -> None:
         client = self.client_address[0]
@@ -2881,7 +3269,10 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
                                   # Forgotten password: possible when Telegram works and someone has 2FA.
                                   "recovery": account is not None and telegram_ready() and database.any_totp_user(),
                                   # The shell scripts print the address with the right scheme from this.
-                                  "https": tls.SERVER.context is not None})
+                                  "https": tls.SERVER.context is not None,
+                                  # Yes or no only: the page is public, so the reason stays in Settings.
+                                  "https_lost": self._https_lost(),
+                                  "enrol_2fa": must_enrol(self.account)})
             return
         if self.command == "GET" and path == "/api/auth/2fa":
             t = database.get_totp(self.user.username)
@@ -2901,21 +3292,24 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             if not ok:
                 auth.LIMITER.failed(client, username if known else None)
                 database.add_audit("auth", "Failed login" if path == "/api/auth/login" else "Failed password confirmation",
-                                   f"From {client}")
+                                   f"From {client}", actor=account["username"] if account else None)
                 raise RequestError(401, "Wrong username or password" if path == "/api/auth/login" else "Wrong password")
             if path == "/api/auth/login" and account.get("disabled"):
-                database.add_audit("auth", f"Blocked user {account['username']} tried to log in", f"From {client}")
+                database.add_audit("auth", f"Blocked user {account['username']} tried to log in", f"From {client}",
+                                   actor=account["username"])
                 raise RequestError(403, "This account is blocked. Ask an administrator.")
             has_2fa = database.get_totp(account["username"])["enabled"]
             if path == "/api/auth/login":
-                auth.LIMITER.succeeded(client, account["username"])
                 if has_2fa:
                     # Password right: the session waits for the authenticator code (POST /api/auth/login/mfa).
+                    # The counters stay until the code is right too, so wrong codes add up across logins.
+                    # A new challenge voids the user's earlier one.
                     challenge = auth.LOGIN_CHALLENGES.issue(account["username"], auth.CHALLENGE_SECONDS)
                     self._send_json(200, {"mfa_required": True, "challenge": challenge})
                     return
+                auth.LIMITER.succeeded(client, account["username"])
                 self._start_session(account["username"], client, tier3=True)
-                self._send_json(200, {"success": True, "username": account["username"]})
+                self._send_json(200, {"success": True, "username": account["username"], "enrol_2fa": must_enrol(account)})
                 return
             tier = _get_int(payload, "tier", 2, 2, 3)
             if tier >= 3 and has_2fa:
@@ -2934,11 +3328,12 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             username = auth.LOGIN_CHALLENGES.peek(challenge)
             if not username:
                 raise RequestError(401, "The login step expired. Enter your password again.")
-            self._check_lockout(client, username)
-            if not second_factor_ok(username, _get_str(payload, "code", max_len=16)):
-                auth.LIMITER.failed(client, username)
+            code = _get_str(payload, "code", max_len=16)
+            # Pay first: the failure is counted before the code is checked, under the limiter's lock.
+            self._reserve_attempt(client, username)
+            if not second_factor_ok(username, code):
                 auth.LOGIN_CHALLENGES.fail(challenge)
-                database.add_audit("auth", "Failed authenticator code at login", f"{username} from {client}")
+                database.add_audit("auth", "Failed authenticator code at login", f"{username} from {client}", actor=username)
                 raise RequestError(401, "Wrong or already used authenticator code")
             auth.LOGIN_CHALLENGES.drop(challenge)
             auth.LIMITER.succeeded(client, username)
@@ -2976,7 +3371,7 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
                 raise RequestError(409, "An administrator account already exists")
             changelog.mark_seen(username)
             self._set_session_cookie(auth.SESSIONS.create(username))
-            database.add_audit("auth", f"Created administrator account {username}", f"From {client}")
+            database.add_audit("auth", f"Created administrator account {username}", f"From {client}", actor=username)
             self._send_json(201, {"success": True, "username": username})
             return
 
@@ -3010,13 +3405,20 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
         """429 while this address (or this username) is locked out after failed passwords or codes."""
         wait = auth.LIMITER.locked_for(client, username)
         if wait > 0:
-            raise RequestError(429, f"Too many failed attempts. Try again in {int(wait) + 1} seconds")
+            raise _lockout_error(wait)
+
+    @staticmethod
+    def _reserve_attempt(client: str, username: Optional[str] = None) -> None:
+        """Counts one failed attempt now, or 429 while locked out (auth.LoginLimiter.reserve)."""
+        wait = auth.LIMITER.reserve(client, username)
+        if wait > 0:
+            raise _lockout_error(wait)
 
     def _start_session(self, username: str, client: str, tier3: bool) -> None:
         database.update_user(username, {"last_login": int(time.time())})
         auth.SESSIONS.revoke(self.token)
         self._set_session_cookie(auth.SESSIONS.create(username, tier3=tier3))
-        database.add_audit("auth", f"Logged in as {username}", f"From {client}")
+        database.add_audit("auth", f"Logged in as {username}", f"From {client}", actor=username)
 
     def _twofa_route(self, path: str, payload: Dict[str, Any], client: str) -> None:
         """Own 2FA: start (tier 3), enable with a first code, new recovery codes (tier 3), disable (tier 3)."""
@@ -3059,10 +3461,14 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, {"success": True, "recovery_codes": codes})
             return
         if path == "/api/auth/2fa/disable":
+            if two_factor_covers(self.account):
+                raise RequestError(409, "This monitor requires two-factor authentication for your account, so it cannot be "
+                                        "turned off here. An administrator can change that in Settings, Login security.")
             database.set_totp(name, None, False)
             n = auth.SESSIONS.revoke_user(name, except_token=self.token)
             database.add_audit("auth", f"Two-factor authentication turned off for {name}",
                                f"From {client}; {n} other session(s) logged out")
+            security_alert("twofa_off", name=name)
             self._send_json(200, {"success": True})
             return
         raise RequestError(404, "Endpoint not found")
@@ -3070,23 +3476,25 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
     def _recover_route(self, path: str, payload: Dict[str, Any], client: str) -> None:
         """Forgotten password: username and authenticator code, then a one-time code sent by Telegram.
         Without both nothing changes. Answers do not reveal whether a username exists."""
-        wait = auth.LIMITER.locked_for(client)
-        if wait > 0:
-            raise RequestError(429, f"Too many failed attempts. Try again in {int(wait) + 1} seconds")
+        self._check_lockout(client)
         if not telegram_ready():
             raise RequestError(409, "Password recovery needs Telegram notifications set up. Use /root/reset-admin.sh on the container instead.")
         username = _get_str(payload, "username", max_len=32)
         generic = "Username or authenticator code not accepted"
         known = _USERNAME.fullmatch(username) is not None
-        self._check_lockout(client, username if known else None)
         if path == "/api/auth/recover/start":
+            code = _get_str(payload, "code", max_len=16)
+            # The same guess as a login code with less needed to try it: paid for first, under one lock.
+            self._reserve_attempt(client, username if known else None)
             account = database.get_user(username) if known else None
             if not account or account.get("disabled") or not database.get_totp(username)["enabled"] \
-                    or not second_factor_ok(username, _get_str(payload, "code", max_len=16)):
-                auth.LIMITER.failed(client, username if known else None)
-                database.add_audit("auth", "Failed password recovery start", f"User {username or '?'} from {client}")
+                    or not second_factor_ok(username, code):
+                database.add_audit("auth", "Failed password recovery start", f"User {username or '?'} from {client}",
+                                   actor=account["username"] if account else None)
                 raise RequestError(401, generic)
-            code = "".join(auth.secrets.choice("0123456789") for _ in range(8))
+            # Recovery start never cleared the counters: only the charge for this right answer goes.
+            auth.LIMITER.refund(client, username)
+            code ="".join(auth.secrets.choice("0123456789") for _ in range(8))
             ticket = auth.RECOVERY_CHALLENGES.issue(username, auth.RECOVERY_CODE_SECONDS, secret=code)
             s = database.get_all_settings()
             try:
@@ -3095,9 +3503,10 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             except notify.TelegramError as exc:
                 auth.RECOVERY_CHALLENGES.drop(ticket)
                 raise RequestError(502, f"Could not send the code through Telegram: {exc}")
-            database.add_audit("auth", f"Password recovery code sent for {username}", f"From {client}")
+            database.add_audit("auth", f"Password recovery code sent for {username}", f"From {client}", actor=username)
             self._send_json(200, {"success": True, "ticket": ticket})
             return
+        self._check_lockout(client, username if known else None)
         new = _get_str(payload, "new", max_len=auth.MAX_PASSWORD_LENGTH)
         problem = auth.password_problem(new)
         if problem:
@@ -3105,12 +3514,23 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
         who = auth.RECOVERY_CHALLENGES.check(_get_str(payload, "ticket", max_len=64), _get_str(payload, "telegram_code", max_len=16))
         if not who or who != username:
             auth.LIMITER.failed(client, username if known else None)
-            database.add_audit("auth", "Failed password recovery finish", f"User {username or '?'} from {client}")
+            database.add_audit("auth", "Failed password recovery finish", f"User {username or '?'} from {client}",
+                               actor=username if known and database.get_user(username) else None)
+            raise RequestError(401, "That code is wrong or has expired")
+        # The account may have changed since the start: blocked, or 2FA turned off. Same answer as above.
+        account = database.get_user(username)
+        if not account or account.get("disabled") or not database.get_totp(username)["enabled"]:
+            auth.LIMITER.failed(client, username)
+            database.add_audit("auth", "Password recovery refused at the last step",
+                               f"User {username}: blocked or two-factor authentication off, from {client}",
+                               actor=username if account else None)
             raise RequestError(401, "That code is wrong or has expired")
         database.set_account_password(username, auth.hash_password(new))
         auth.SESSIONS.revoke_user(username)
         auth.LIMITER.succeeded(client, username)
-        database.add_audit("auth", f"Password reset by recovery for {username}", f"From {client}; their sessions logged out")
+        database.add_audit("auth", f"Password reset by recovery for {username}", f"From {client}; their sessions logged out",
+                           actor=username)
+        security_alert("recovered", who=username, name=username)
         self._send_json(200, {"success": True})
 
     # --- Users (Settings, Users; needs users.manage, checked by the route table) ---
@@ -3124,7 +3544,16 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
                 "sessions": live.get(u["username"], {}).get("sessions", 0),
                 "last_active": live.get(u["username"], {}).get("last_active"),
                 "two_factor": bool(u.get("totp_enabled")),
-                "you": u["username"] == self.user.username}
+                "you": u["username"] == self.user.username,
+                "can_change": self._can_change_user(u)}
+
+    def _can_change_user(self, u: Dict[str, Any]) -> bool:
+        """Whether this user may act on u at all (the page hides Edit and More otherwise)."""
+        try:
+            self._check_user_change(u, {})
+        except RequestError:
+            return False
+        return True
 
     def _active_admins(self, without: Optional[str] = None) -> int:
         return sum(1 for u in database.list_users()
@@ -3160,6 +3589,14 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
         fields["saved_by"] = self.user.username
         return fields
 
+    def _check_upstream(self, extra: Optional[Dict[str, Any]], before: Optional[Dict[str, Any]]) -> None:
+        """An upstream device outside the user's device access answers as if it did not exist. The
+        upstream a device already has may be kept, so an edit does not fail on a field left as it was."""
+        up = (extra or {}).get("upstream_device_id")
+        if up is None or self.user.sees_id(up) or (before and before.get("upstream_device_id") == up):
+            return
+        raise RequestError(400, "The upstream device does not exist")
+
     def _check_user_change(self, target: Optional[Dict[str, Any]], fields: Dict[str, Any]) -> None:
         """Limits on a user manager who is not an administrator: no administrator accounts, no
         permission or device access they do not hold themselves, and no changes to their own rights."""
@@ -3170,6 +3607,12 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             raise RequestError(403, "Only an administrator can change an administrator account")
         if target is not None and not rbac.permissions_for(target) <= me.perms:
             raise RequestError(403, "Only an administrator can change a user with permissions you do not have")
+        profile_of = None
+        if me.scope is not None:
+            profile_of = {d["id"]: d["profile_id"] for d in database.device_profiles()}
+        # Covers every change to a user: fields, block, password, 2FA reset, log out and delete.
+        if target is not None and me.scope is not None and not rbac.scope_within(rbac.scope_of(target), me.scope, profile_of):
+            raise RequestError(403, "Only an administrator can change a user with device access you do not have.")
         if target is not None and target["username"] == me.username and any(k in fields for k in ("role", "permissions", "device_scope")):
             raise RequestError(403, "You cannot change your own role, permissions or device access")
         if "role" in fields:
@@ -3181,8 +3624,8 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             if not granted <= me.perms:
                 raise RequestError(403, "You cannot give a permission you do not have yourself")
         if me.scope is not None and "device_scope" in fields:
-            scope = json.loads(fields["device_scope"])
-            if scope.get("all", True) or not set(scope.get("profiles", [])) <= set(me.scope["profiles"]) or not all(me.sees_id(d) for d in scope.get("devices", [])):
+            granted_scope = rbac.scope_of({"role": "custom", "device_scope": fields["device_scope"]})
+            if not rbac.scope_within(granted_scope, me.scope, profile_of):
                 raise RequestError(403, "You cannot give access to devices outside your own device access")
 
     def _users_route(self, path: str) -> None:
@@ -3221,6 +3664,9 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
                 raise RequestError(409, "A user with that name already exists")
             changelog.mark_seen(username)  # a new user starts with nothing unread
             database.add_audit("users", f"Added user {username} ({rbac.ROLES[fields['role']][0]})", f"By {self.user.username}")
+            security_alert("user_added", name=username, role=rbac.ROLES[fields["role"]][0])
+            if fields["role"] == "admin":
+                security_alert("admin_added", name=username)
             self._send_json(201, {"success": True, "user": self._user_view(database.get_user(username), live)})
             return
         target = database.get_user(name) if name else None
@@ -3241,6 +3687,11 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             what = ", ".join(k.replace("_", " ") for k in fields) or "nothing"
             database.add_audit("users", f"{'Blocked' if fields.get('disabled') else 'Changed'} user {name}",
                                f"{what}; by {self.user.username}")
+            role = fields.get("role", target.get("role"))
+            if role == "admin" and target.get("role") != "admin":
+                security_alert("admin_added", name=name)
+            elif (role != target.get("role")) or ("permissions" in fields and fields["permissions"] != target.get("permissions")):
+                security_alert("role_changed", name=name, role=rbac.ROLES.get(role, (role,))[0])
             self._send_json(200, {"success": True, "user": self._user_view(database.get_user(name), live)})
             return
         if self.command in ("POST", "DELETE") and name != self.user.username:
@@ -3260,6 +3711,7 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             database.set_totp(name, None, False)
             auth.SESSIONS.revoke_user(name, except_token=self.token if name == self.user.username else None)
             database.add_audit("users", f"Reset two-factor authentication of {name}", f"By {self.user.username}; their sessions logged out")
+            security_alert("twofa_reset", name=name)
             self._send_json(200, {"success": True})
             return
         if self.command == "POST" and action == "logout":
@@ -3275,6 +3727,7 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             database.delete_user(name)
             auth.SESSIONS.revoke_user(name)
             database.add_audit("users", f"Deleted user {name}", f"By {self.user.username}")
+            security_alert("user_deleted", name=name)
             self._send_json(200, {"success": True})
             return
         raise RequestError(404, "Endpoint not found")
@@ -3410,7 +3863,8 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, tls.public_state())
             return
         if path == "/api/maintenance":
-            self._send_json(200, {"windows": maintenance.windows(), "scopes": list(maintenance.SCOPES)})
+            scopes = [s for s in maintenance.SCOPES if s != "all" or self.user.scope is None]
+            self._send_json(200, {"windows": maintenance_view(self.user, maintenance.windows()), "scopes": scopes})
             return
         if path == "/api/inventory":
             if self.user.scope is not None:
@@ -3784,6 +4238,9 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
                 for entry in logs:
                     if entry.get("category") in SENSITIVE_AUDIT_CATEGORIES and entry.get("details"):
                         entry["details"] = "(hidden: needs the Sensitive audit details permission)"
+                    entry["source"] = ""
+                    if entry.get("category") in SENSITIVE_AUDIT_CATEGORIES:
+                        entry["actor"] = ""
             self._send_json(200, {"logs": logs, "total": total, "page": page, "per_page": per_page,
                                   "pages": max(1, -(-total // per_page)), "categories": database.audit_categories()})
             return
@@ -3904,7 +4361,9 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
                 raise RequestError(409, "The host key changed since it was shown. Review it again before approving.")
             database.approve_host_key(device["id"], presented["key_type"], presented["key_b64"], presented["fingerprint"])
             database.add_event(device["id"], "info", "ssh", f"SSH host key approved ({presented['key_type']} {presented['fingerprint']})")
-            database.add_audit("ssh", f"Approved SSH host key for {device['hostname']}", presented["fingerprint"])
+            database.add_audit("ssh", f"Approved SSH host key for {device['hostname']}",
+                               f"{presented['fingerprint']}; by {self.user.username}")
+            security_alert("key_approved", device=device["hostname"])
             self._send_json(200, {"success": True})
             return
 
@@ -3914,12 +4373,15 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
                                               fields["passphrase"], fields["public_key"])
             how = "generated key pair" if payload.get("generate") is True and fields["cred_type"] == "ssh_key" else fields["cred_type"]
             database.add_audit("credential", f"Added credential {fields['name']}", f"Type: {how}")
+            security_alert("cred_added", name=fields["name"])
             self._send_json(201, {"success": True, "id": cred_id, "public_key": fields["public_key"]})
             return
 
         match_ctest = re.fullmatch(r"/api/credentials/(\d+)/test", path)
         if match_ctest:
             # Logs in and runs `true`: proves the username, secret and host key without changing anything.
+            # The rules come before the secret is decrypted.
+            check_credential_use(self.user, int(match_ctest.group(1)))
             cred = database.get_credential_secret(int(match_ctest.group(1)))
             if not cred:
                 raise RequestError(404, "Credential not found")
@@ -3927,8 +4389,11 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             port = _get_int(payload, "ssh_port", 22, 1, 65535)
             keys = database.get_host_keys(device["id"])
             if not keys:
-                self._send_json(200, {"ok": False, "need_hostkey": True, "device_id": device["id"],
-                                      "message": f"{device['hostname']}'s SSH host key is not approved yet. Review and approve it, then test again."})
+                message = (f"{device['hostname']}'s SSH host key is not approved yet. Review and approve it, then test again."
+                           if self.user.can("credentials.manage") else
+                           f"{device['hostname']}'s SSH host key is not approved yet. Someone with the Manage credentials "
+                           "permission needs to approve it.")
+                self._send_json(200, {"ok": False, "need_hostkey": True, "device_id": device["id"], "message": message})
                 return
             r = ssh_runner.run_command(device["ip_address"], port, cred, "true", keys, 20)
             ok = r["status"] == "completed" and r["exit_code"] == 0
@@ -3945,6 +4410,9 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             ack = payload.get("acknowledged", True)
             if device_id is None or not key or not isinstance(ack, bool):
                 raise RequestError(400, "device_id, problem_key and a boolean acknowledged are required")
+            if not self.user.sees_id(device_id):
+                # Outside the user's device access the problem does not exist.
+                raise RequestError(404, "Problem is no longer open")
             note = _get_str(payload, "note", "", max_len=200)
             row = database.acknowledge_problem(device_id, key, ack, note)
             if row is None:
@@ -4080,9 +4548,10 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             wf = database.get_workflow(int(match_wf_run.group(1)))
             if not wf:
                 raise RequestError(404, "Workflow not found")
-            outside = [h for h in workflows.hosts_of(wf) if not self.user.sees_id(h)]
-            if outside:
-                raise ActionError(403, f"Workflow {wf['name']} touches devices outside your access")
+            # The same rule as saving and scheduled runs: devices, password credentials and Use stored credentials.
+            problem = workflow_rights_problem(self.user, wf)
+            if problem:
+                raise ActionError(403, f"Cannot run {wf['name']}: {problem}")
             blockers = workflows.preflight(wf)
             if blockers:
                 # Recorded as an event (notification centre); the run never starts half way.
@@ -4109,11 +4578,19 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/template/render":
             # The editors' preview: the client's sample values through the real engine (nothing stored).
+            # Typing waits for a pause before each preview, so the limit only stops scripted use.
+            if not auth.SESSIONS.allow(self.token, "tpl_preview", TEMPLATE_PREVIEW_LIMIT, TEMPLATE_PREVIEW_WINDOW):
+                raise RequestError(429, "Too many previews in a short time. Please wait a moment.")
             text = _get_str(payload, "text", "", max_len=4000)
             raw = payload.get("values") if isinstance(payload.get("values"), dict) else {}
             values = {str(k)[:64]: (v if isinstance(v, (int, float)) and not isinstance(v, bool) else str(v)[:4000])
                       for k, v in list(raw.items())[:200] if v is not None}
-            self._send_json(200, {"text": tpl.render(text, values, known=set(values))})
+            try:
+                out = tpl.render(text, values, known=set(values), strict=True)
+            except tpl.TemplateLimit:
+                raise RequestError(400, "This template makes the text too long to build. "
+                                        "Shorten it or use fewer replace or join filters.")
+            self._send_json(200, {"text": out})
             return
 
         if path == "/api/notify/bot-preview":
@@ -4221,14 +4698,31 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             # The command to paste on a host whose SSH does not let the monitor in yet (Fix SNMP, Host actions).
             device = self._require_device(int(match_sshset.group(1)))
             cred_id = _get_int(payload, "credential_id", None, 1, 2**31)
-            check_credential_use(self.user, cred_id)
-            cred = database.get_credential_secret(cred_id) if cred_id else None
+            # Nothing logs in to a host here, so Use stored credentials is not needed; a password still needs Manage credentials.
+            check_password_credential(self.user, cred_id)
+            # Public parts only: the script needs the user name and the public key, never a secret.
+            cred = database.get_credential_public(cred_id) if cred_id else None
+            no_key = "This SSH key has no public key saved, so the commands cannot be built. Add the key again or generate a new one."
+            public_key = None
+            if cred and cred["cred_type"] == "ssh_key":
+                public_key = cred.get("public_key") or None
+                if not public_key:
+                    # A key saved before public keys were kept: work it out once from the private key.
+                    secret = database.get_credential_secret(cred_id)
+                    public_key = ssh_runner.public_key_of(secret["secret"]) if secret and secret.get("secret") else None
+                if not public_key:
+                    raise RequestError(409, no_key)
             monitor_ip = snmpfix.source_address(device["ip_address"]) or monitor_address()
             if not monitor_ip:
                 raise RequestError(409, "Could not work out this monitor's address towards the host")
-            script = snmpfix.ssh_setup_script(monitor_ip, (cred or {}).get("username") or "root", (cred or {}).get("public_key"))
+            try:
+                script = snmpfix.ssh_setup_script(monitor_ip, (cred or {}).get("username") or "root", public_key)
+            except ValueError:
+                if public_key:
+                    raise RequestError(409, no_key)
+                raise
             database.add_audit("ssh", f"SSH setup commands copied for {device['hostname']}", f"Monitor address {monitor_ip}")
-            self._send_json(200, {"script": script, "monitor_ip": monitor_ip})
+            self._send_json(200, {"script": script, "monitor_ip": monitor_ip, "kind": "key" if public_key else "password"})
             return
 
         match_hact = re.fullmatch(r"/api/devices/(\d+)/host-actions/([a-z_]{1,40})", path)
@@ -4282,6 +4776,7 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             extra = fields.pop("_extra", None)
             service = fields.pop("_service", None)
             tags = fields.pop("_tags", None)
+            self._check_upstream(extra, None)
             device_id = database.add_device(**fields)
             if extra:
                 database.set_device_overrides(device_id, **extra)
@@ -4348,28 +4843,39 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
                 minutes = _get_int(payload, "minutes", None, 1, 14 * 24 * 60)
                 start = float(payload.get("start") or now)
                 end = start + minutes * 60 if minutes else float(payload.get("end") or 0)
-                w = maintenance.add(_get_str(payload, "scope", max_len=10), _get_str(payload, "target", max_len=120),
-                                    start, end, _get_str(payload, "note", max_len=200), self.user.username, now)
+                scope, target = _get_str(payload, "scope", max_len=10), _get_str(payload, "target", max_len=120)
+                if scope in maintenance.SCOPES and not maintenance_in_scope(self.user, scope, target):
+                    raise RequestError(403, "That window covers devices outside your device access.")
+                w = maintenance.add(scope, target, start, end, _get_str(payload, "note", max_len=200), self.user.username, now)
             except (maintenance.MaintenanceError, TypeError, ValueError) as exc:
                 raise RequestError(400, str(exc))
             database.add_audit("maintenance", f"Maintenance window for {w['scope']} {w['target']}".strip(),
                                f"{datetime.fromtimestamp(w['start']):%Y-%m-%d %H:%M} to {datetime.fromtimestamp(w['end']):%Y-%m-%d %H:%M}"
                                f"{'; ' + w['note'] if w['note'] else ''}; by {self.user.username}")
-            self._send_json(201, {"success": True, "window": w, "windows": maintenance.windows()})
+            self._send_json(201, {"success": True, "window": w, "windows": maintenance_view(self.user, maintenance.windows())})
             return
         match_mw = re.fullmatch(r"/api/maintenance/(\d+)/end", path)
         if match_mw:
+            # Outside the user's device access a window does not exist.
+            known = next((x for x in maintenance.windows() if x["id"] == int(match_mw.group(1))), None)
+            if not known or not maintenance_in_scope(self.user, known["scope"], known["target"]):
+                raise RequestError(404, "No such maintenance window")
             w = maintenance.end(int(match_mw.group(1)))
             if not w:
                 raise RequestError(404, "No such maintenance window")
             database.add_audit("maintenance", f"Ended maintenance window for {w['scope']} {w['target']}".strip(), f"By {self.user.username}")
-            self._send_json(200, {"success": True, "windows": maintenance.windows()})
+            self._send_json(200, {"success": True, "windows": maintenance_view(self.user, maintenance.windows())})
             return
         if path == "/api/proxmox/guest":
             node, kind = _get_str(payload, "node", max_len=64), _get_str(payload, "type", max_len=8)
             vmid, action = _get_int(payload, "vmid", None, 1, 999999999), _get_str(payload, "action", max_len=12)
             if vmid is None:
                 raise RequestError(400, "vmid is required")
+            if self.user.scope is not None:
+                mapped = next((x.get("device_id") for x in proxmox.layout().get("guests", [])
+                               if x.get("node") == node and x.get("vmid") == vmid), None)
+                if not mapped or not self.user.sees_id(mapped):
+                    raise RequestError(404, "Guest not found")
             try:
                 proxmox.guest_action(node, kind, vmid, action)
             except proxmox.ProxmoxError as exc:
@@ -4474,11 +4980,27 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
                 raise RequestError(403, "Your account cannot change: " + ", ".join(denied))
             if any(SETTINGS[k]["type"] == "secret" for k in changed):
                 self._require_tier(rbac.SECRET_SETTING_TIER)
+            if "require_2fa" in changed and updates["require_2fa"] != "off" and two_factor_rule() == "off":
+                # Never a rule nobody can meet: the person turning it on and at least one active
+                # administrator already have 2FA, so someone can always still get in.
+                self._require_tier(3, path)
+                if not database.get_totp(self.user.username)["enabled"]:
+                    raise RequestError(409, "Turn on two-factor authentication for your own account first (Settings, "
+                                            "Account), so you cannot be locked out.")
+                if not any(u.get("role") == "admin" and not u.get("disabled") and u.get("totp_enabled")
+                           for u in database.list_users()):
+                    raise RequestError(409, "At least one administrator must have two-factor authentication on first.")
             for key in changed:
                 database.update_setting(key, updates[key])
             if changed:
                 database.add_audit("settings", f"Changed {len(changed)} setting(s)",
                                    ", ".join(SETTINGS[k]["label"] for k in changed))
+            for key, what in (("audit_retention_days", "Audit log"), ("event_retention_days", "Events")):
+                if key in changed:
+                    old = get_setting(current, key)
+                    database.add_audit("settings", f"{what} retention changed from {old} to {updates[key]} days")
+                    if key == "audit_retention_days":
+                        security_alert("retention", days=updates[key], old=old)
             self._send_json(200, {"success": True, "changed": changed})
             return
 
@@ -4764,6 +5286,7 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
                 raise RequestError(404, "Credential not found")
             database.add_audit("credential", f"Updated credential {fields['name']}",
                                "Secret replaced" if fields["secret"] else "Name or username changed")
+            security_alert("cred_changed", name=fields["name"])
             self._send_json(200, {"success": True, "public_key": fields["public_key"]})
             return
         match_wf = re.fullmatch(r"/api/workflows/(\d+)", path)
@@ -4828,6 +5351,7 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
         if extra and extra["upstream_device_id"] == device_id:
             raise RequestError(400, "A device cannot be its own upstream")
         before = database.get_device(device_id)
+        self._check_upstream(extra, before)
         if not database.update_device(device_id=device_id, **fields):
             raise RequestError(404, "Device not found")
         if before and "ip_address" in fields and fields["ip_address"] != before["ip_address"]:
@@ -4836,6 +5360,7 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             if n:
                 database.add_audit("ssh", f"Forgot the SSH host key of {before['hostname']}",
                                    f"Address changed from {before['ip_address']} to {fields['ip_address']}; by {self.user.username}")
+                security_alert("key_forgotten", device=before["hostname"])
         if extra:
             database.set_device_overrides(device_id, **extra)
         if tags is not None:
@@ -4904,15 +5429,20 @@ class ApiRequestHandler(http.server.BaseHTTPRequestHandler):
             return
         match_hk = re.fullmatch(r"/api/devices/(\d+)/hostkey", path)
         if match_hk:
+            known_device = database.get_device(int(match_hk.group(1)))
             n = database.forget_host_keys(int(match_hk.group(1)))
-            database.add_audit("ssh", "Forgot SSH host key", f"Device ID: {match_hk.group(1)}, {n} key(s)")
+            database.add_audit("ssh", "Forgot SSH host key", f"Device ID: {match_hk.group(1)}, {n} key(s); by {self.user.username}")
+            if n:
+                security_alert("key_forgotten", device=known_device["hostname"] if known_device else f"device {match_hk.group(1)}")
             self._send_json(200, {"success": True})
             return
         match_cred = re.fullmatch(r"/api/credentials/(\d+)", path)
         if match_cred:
+            gone = database.get_credential_public(int(match_cred.group(1)))
             if not database.delete_credential(int(match_cred.group(1))):
                 raise RequestError(404, "Credential not found")
             database.add_audit("credential", "Deleted credential", f"Credential ID: {match_cred.group(1)}")
+            security_alert("cred_deleted", name=gone["name"] if gone else f"credential {match_cred.group(1)}")
             self._send_json(200, {"success": True})
             return
         match = re.fullmatch(r"/api/devices/(\d+)", path)
@@ -5111,6 +5641,9 @@ def dashboard_extras(want: List[str], user: Any) -> Dict[str, Any]:
                              "guests": [{k: g.get(k) for k in ("vmid", "name", "node", "type", "status", "device_id", "onboot",
                                                                 "mem", "maxmem", "uptime")} for g in lay.get("guests", [])]}
             elif part == "pihole":
+                if user.scope is not None:
+                    out[part] = {"error": "Pi-hole needs access to every device"}
+                    continue
                 v = pihole.view(database.list_devices())
                 if not v.get("configured"):
                     out[part] = {"error": "Pi-hole is not set up (Settings, Pi-hole)"}
@@ -5133,7 +5666,7 @@ def dashboard_extras(want: List[str], user: Any) -> Dict[str, Any]:
                     continue
                 out[part] = {"runs": workflows_in_scope(user, database.list_workflow_runs(None, 20), "workflow_id")}
             elif part == "maintenance":
-                out[part] = {"windows": maintenance.windows()}
+                out[part] = {"windows": maintenance_view(user, maintenance.windows())}
             elif part == "new_devices":
                 if user.scope is not None:
                     out[part] = {"error": "The inventory needs access to every device"}
@@ -5430,6 +5963,7 @@ class PollScheduler:
     LAN_INTERVAL = 60          # Pi-hole and UniFi
     INVENTORY_INTERVAL = 300
     TLS_INTERVAL = 6 * 3600  # certificate renewal and expiry warnings (tls.daily_check limits the messages)
+    ROOT_WATCH_INTERVAL = 60  # restore and update results root wrote (watch_root_results)
     PROBLEM_INTERVAL = 30
 
     def __init__(self, workers: int = 8) -> None:
@@ -5442,6 +5976,7 @@ class PollScheduler:
         self.profiles: Dict[str, Any] = {}
         self.profiles_loaded = 0.0
         self.last_purge = 0.0
+        self.last_root_watch = time.time()   # start_server checks once at start
         self.last_rollup = 0.0
         self.last_tls = time.time() - self.TLS_INTERVAL + 120  # first check two minutes after start
         self.last_problems = 0.0
@@ -5795,12 +6330,17 @@ class PollScheduler:
             self._submit("tls", 0, tls.daily_check,
                          lambda days, date: NOTIFIER.event("certificate", {"days": days, "date": date}, critical=days <= 7))
 
+        if now - self.last_root_watch >= self.ROOT_WATCH_INTERVAL:
+            self.last_root_watch = now
+            self._submit("root_results", 0, watch_root_results)
+
         if now - self.last_purge > self.PURGE_INTERVAL:
             self.last_purge = now
             deleted = database.purge_expired(
                 get_setting(settings, "raw_retention_days"),
                 get_setting(settings, "audit_retention_days"),
                 get_setting(settings, "metric_retention_days"),
+                get_setting(settings, "event_retention_days"),
             )
             if deleted["metrics"] or deleted["audit"]:
                 log.info("Retention purge removed %d metric and %d audit rows", deleted["metrics"], deleted["audit"])
@@ -5847,7 +6387,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "0.11.2"
+APP_VERSION = "0.12.0"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:
@@ -5858,7 +6398,7 @@ except OSError:
 STARTED_AT = time.time()
 
 
-class RedirectToHttps(http.server.BaseHTTPRequestHandler):
+class RedirectToHttps(_TimedRequest, http.server.BaseHTTPRequestHandler):
     """Plain HTTP from another machine while HTTPS is on: one redirect to the same address over https."""
 
     server_version = "HomelabMonitor"
@@ -5913,7 +6453,6 @@ class ThreadingServer(socketserver.ThreadingTCPServer):
             except (ssl.SSLError, OSError):
                 return  # a browser that refused the certificate, or a scanner: nothing to answer
             try:
-                conn.settimeout(None)
                 self.RequestHandlerClass(conn, client_address, self)
             finally:
                 try:
@@ -5921,10 +6460,93 @@ class ThreadingServer(socketserver.ThreadingTCPServer):
                 except OSError:
                     pass
             return
-        request.settimeout(None)
         if self.local_client(client_address):
             return super().finish_request(request, client_address)
         RedirectToHttps(request, client_address, self)
+
+    # --- Connection cap ---
+
+    def _slots(self) -> Dict[str, Any]:
+        slots = vars(self).get("_slot_state")
+        if slots is None:
+            slots = vars(self).setdefault("_slot_state", {"lock": threading.Lock(), "open": 0, "per": {},
+                                                          "warned": 0.0})
+        return slots
+
+    def _take_slot(self, client_address) -> Optional[str]:
+        """A slot for this connection: the address it counts against ("" for this machine), or None
+        when the cap is full."""
+        slots = self._slots()
+        local = self.local_client(client_address)
+        key = "" if local else client_address[0]
+        with slots["lock"]:
+            if local:
+                if slots["open"] >= MAX_CONNECTIONS + LOCAL_EXTRA_CONNECTIONS:
+                    return None
+            elif slots["open"] >= MAX_CONNECTIONS or slots["per"].get(key, 0) >= MAX_PER_ADDRESS:
+                return None
+            slots["open"] += 1
+            if key:
+                slots["per"][key] = slots["per"].get(key, 0) + 1
+        return key
+
+    def _give_slot(self, key: str) -> None:
+        slots = self._slots()
+        with slots["lock"]:
+            slots["open"] -= 1
+            if key:
+                left = slots["per"].get(key, 0) - 1
+                if left > 0:
+                    slots["per"][key] = left
+                else:
+                    slots["per"].pop(key, None)
+
+    def open_connections(self) -> int:
+        return self._slots()["open"]
+
+    def _refuse(self, request, why: str) -> None:
+        """Answers 503 without waiting and closes. A TLS client sees a failed handshake, the same as a close."""
+        slots = self._slots()
+        now = time.monotonic()
+        if now - slots["warned"] >= 60:
+            slots["warned"] = now
+            log.warning("Web server: %s, new connections are refused for now", why)
+        body = json.dumps({"error": BUSY_TEXT}).encode()
+        reply = (b"HTTP/1.0 503 Service Unavailable\r\nContent-Type: application/json; charset=utf-8\r\n"
+                 b"Retry-After: 5\r\nConnection: close\r\nContent-Length: " + str(len(body)).encode()
+                 + b"\r\n\r\n" + body)
+        try:
+            request.setblocking(False)
+            request.send(reply)
+        except OSError:
+            pass
+        self.shutdown_request(request)
+
+    def process_request(self, request, client_address) -> None:
+        """Serves the connection in its own thread while a slot is free. The accept loop never waits:
+        a full cap is answered at once."""
+        key = self._take_slot(client_address)
+        if key is None:
+            self._refuse(request, "too many connections are open")
+            return
+        if self.block_on_close:
+            vars(self).setdefault("_threads", socketserver._Threads())
+        t = threading.Thread(target=self._serve_in_slot, args=(request, client_address, key))
+        t.daemon = self.daemon_threads
+        try:
+            t.start()
+        except RuntimeError:
+            # No thread could start (the service's task limit): give the slot back and close.
+            self._give_slot(key)
+            self._refuse(request, "no thread could be started")
+            return
+        self._threads.append(t)
+
+    def _serve_in_slot(self, request, client_address, key: str) -> None:
+        try:
+            self.process_request_thread(request, client_address)
+        finally:
+            self._give_slot(key)
 
     def handle_error(self, request, client_address) -> None:
         # A browser closing a kept-alive connection (common when a page switches to https) is not an error.
@@ -5989,6 +6611,14 @@ def initialise() -> None:
     moved = migrate_tasks_to_workflows()
     if moved:
         log.info("Converted %d SSH task(s) into workflows", moved)
+    given = migrate_credentials_use()
+    if given:
+        log.info("Gave %d user(s) the Use stored credentials permission", given)
+    skipped = check_workflow_scope()
+    if skipped:
+        log.info("%d saved workflow(s) reach past their author's device access", skipped)
+    raised = migrate_retention(existing)
+    security_notice(existing, database.get_account() is not None, raised)
     database.ensure_settings([(s["key"], s["default"], s["help"] or s["label"]) for s in SETTINGS.values()])
     tls.first_run(existing, database.get_account() is not None)
     changelog.first_run(existing, database.get_account() is not None)
@@ -6032,6 +6662,10 @@ def start_server() -> None:
     BOT.start()
 
     tls.load()
+    try:
+        watch_root_results()
+    except Exception:
+        log.exception("Could not read the restore and update results")
     threading.Thread(target=scheduler.run_forever, daemon=True, name="scheduler").start()
     threading.Thread(target=_auto_update_loop, daemon=True, name="update-check").start()
     logging.getLogger().addHandler(RECENT_LOG)

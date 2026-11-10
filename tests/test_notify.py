@@ -6,7 +6,7 @@ from datetime import datetime
 from unittest import mock
 
 from tests import _env  # noqa: F401
-from tests.helpers import add_device, raw_bytes, request, start_api_server
+from tests.helpers import add_device, login, raw_bytes, request, start_api_server
 
 import database
 import notify
@@ -338,6 +338,167 @@ class SilentWindowTests(unittest.TestCase):
             self.assertIn("silent_now", body)
             request("POST", "/api/notify/test", {"token": token, "chat_id": "42"})
             self.assertFalse(send.call_args.kwargs["silent"])
+
+
+class SecurityAlertTests(unittest.TestCase):
+    """Security alerts (REV-09): each event through the route that raises it, the switch, quiet hours,
+    the text through tpl and nothing personal in the event log."""
+
+    @classmethod
+    def setUpClass(cls):
+        start_api_server()
+
+    def setUp(self):
+        notify._outbox()
+        with database.get_connection() as conn:
+            conn.execute("DELETE FROM notify_outbox;")
+            conn.commit()
+        self.base = {"telegram_enabled": "on", "telegram_token": "t", "telegram_chat_id": "1", "notify_group": "off"}
+        self.sent = []
+
+    def notifier(self, **settings):
+        return notify.Notifier(lambda: dict(self.base, **settings), sender=lambda token, chat, text, silent=False: self.sent.append(text))
+
+    def capture(self):
+        """Alerts the routes raise, as (key, values)."""
+        calls = []
+        p = mock.patch.object(server.NOTIFIER, "security", side_effect=lambda key, **kw: calls.append((key, kw)))
+        p.start()
+        self.addCleanup(p.stop)
+        return calls
+
+    def test_each_event_fires(self):
+        from tests.helpers import TEST_PASSWORD, TEST_USER, add_device
+        calls = self.capture()
+
+        def fired(key, **values):
+            found = [kw for k, kw in calls if k == key]
+            self.assertTrue(found, f"{key} not sent; sent: {[k for k, _ in calls]}")
+            for k, v in values.items():
+                self.assertEqual(str(found[-1][k]), str(v), key)
+            calls.clear()
+
+        with self.subTest("users"):
+            self.assertEqual(request("POST", "/api/users", {"username": "sec-u", "password": "sec user pass phrase"})[0], 201)
+            fired("user_added", name="sec-u", role="Viewer")
+            request("PUT", "/api/users/sec-u", {"role": "operator"})
+            fired("role_changed", name="sec-u")
+            request("PUT", "/api/users/sec-u", {"role": "admin"})
+            fired("admin_added", name="sec-u")
+            request("POST", "/api/users/sec-u/2fa-reset", {})
+            fired("twofa_reset", name="sec-u")
+            request("DELETE", "/api/users/sec-u")
+            fired("user_deleted", name="sec-u")
+        with self.subTest("credentials"):
+            _, body, _ = request("POST", "/api/credentials", {"name": "sec-cred", "cred_type": "password", "username": "root", "secret": "x1"})
+            fired("cred_added", name="sec-cred")
+            request("PUT", f"/api/credentials/{body['id']}", {"name": "sec-cred", "username": "root", "secret": "x2"})
+            fired("cred_changed", name="sec-cred")
+            request("DELETE", f"/api/credentials/{body['id']}")
+            fired("cred_deleted", name="sec-cred")
+        with self.subTest("host keys"):
+            dev = add_device("sec-hk", "203.0.113.244", profile="linux_host")
+            try:
+                presented = {"key_type": "ssh-ed25519", "key_b64": "FFFF", "fingerprint": "SHA256:sec"}
+                with mock.patch.object(server.ssh_runner, "fetch_host_key", return_value=presented):
+                    request("POST", f"/api/devices/{dev}/hostkey", {"fingerprint": "SHA256:sec"})
+                fired("key_approved", device="sec-hk")
+                request("DELETE", f"/api/devices/{dev}/hostkey")
+                fired("key_forgotten", device="sec-hk")
+            finally:
+                database.delete_device(dev)
+        with self.subTest("own 2FA off"):
+            request("POST", "/api/auth/2fa/disable", {})
+            fired("twofa_off", name=TEST_USER)
+        with self.subTest("recovery code"):
+            secret = server.totp.new_secret()
+            code = server.totp.new_recovery_codes()[0]
+            database.delete_user("sec-rc")
+            database.create_user("sec-rc", server.auth.hash_password("sec rc pass phrase"), "viewer", None, None, None)
+            try:
+                database.set_totp("sec-rc", secret, True, [server.totp.hash_recovery(code)])
+                self.assertTrue(server.second_factor_ok("sec-rc", code))
+                fired("recovery_code", name="sec-rc", left=0, who="sec-rc")
+            finally:
+                database.delete_user("sec-rc")
+        with self.subTest("retention"):
+            request("POST", "/api/settings", {"audit_retention_days": "120"})
+            fired("retention", days=120, old=90)
+            request("POST", "/api/settings", {"audit_retention_days": "90"})
+            calls.clear()
+        with self.subTest("lockout"):
+            # Earlier suites lock this user and address out too: start from nothing.
+            server.auth.LIMITER.failures.clear()
+            server._LOCKOUT["sent"].clear()
+            server._LOCKOUT["hour"].clear()
+            for _ in range(server.auth.FAIL_FREE_ATTEMPTS):
+                request("POST", "/api/auth/login", {"username": TEST_USER, "password": "not the password"}, session=False)
+            server.auth.LIMITER.succeeded("127.0.0.1", TEST_USER)
+            fired("lockout", target=TEST_USER)
+            server._LOCKOUT["sent"].clear()
+        with self.subTest("https"):
+            server.tls.on_failure("the cryptography package is missing")
+            fired("https_failed", reason="the cryptography package is missing")
+        with self.subTest("recovered"):
+            # The last step of password recovery, with the Telegram code already checked.
+            with mock.patch.object(server.auth.RECOVERY_CHALLENGES, "check", return_value=TEST_USER), \
+                    mock.patch.object(server, "telegram_ready", return_value=True), \
+                    mock.patch.object(database, "get_totp", return_value={"enabled": True, "secret": "x", "recovery": [], "last_step": None}):
+                status, body, _ = request("POST", "/api/auth/recover/finish", {"username": TEST_USER, "ticket": "t", "telegram_code": "1",
+                                                                               "new": TEST_PASSWORD}, session=False)
+            self.assertEqual(status, 200, body)
+            fired("recovered", name=TEST_USER, who=TEST_USER)
+            login()
+
+    def test_off_switch(self):
+        self.assertIsNone(self.notifier(notify_on_security="off").security("user_deleted", name="x"))
+        self.assertIsNotNone(self.notifier().security("user_deleted", name="x"))
+
+    def test_telegram_off_queues_nothing(self):
+        self.assertIsNone(self.notifier(telegram_enabled="off").security("user_deleted", name="x"))
+        self.assertEqual(notify.outbox_state()["queued"], 0)
+
+    def test_goes_out_in_quiet_hours(self):
+        n = self.notifier(notify_quiet="on", notify_quiet_start="00:00", notify_quiet_end="23:59")
+        n.security("user_added", who="admin", source="192.0.2.5", name="alex", role="Viewer")
+        n.drain()
+        self.assertEqual(self.sent, ["Security: New user added: alex (Viewer)\nBy admin from 192.0.2.5"])
+
+    def test_texts_render_through_tpl(self):
+        real = notify.tpl.render
+        with mock.patch.object(notify.tpl, "render", side_effect=real) as spy:
+            self.notifier().security("lockout", who="", source="192.0.2.7", target="192.0.2.7")
+        self.assertEqual(spy.call_count, 2)
+        for key, text in notify.SECURITY_TEXTS.items():
+            names = set(notify._PLACEHOLDER.findall(text))
+            self.assertTrue(names, key)
+        # A name typed by a user is text, not a template.
+        self.notifier().security("user_added", who="{if 1}x{end}", source="", name="{time}", role="Viewer")
+        self.notifier().drain()
+        self.assertIn("New user added: {time} (Viewer)", self.sent[-1])
+        self.assertIn("By {if 1}x{end}", self.sent[-1])
+
+    def test_growing_custom_text_falls_back(self):
+        grow = "{what}" + "{if 1}{what}{what}{what}{what}{end}" * 40
+        n = self.notifier(notify_tpl_security=grow)
+        n.security("user_deleted", who="admin", source="", name="x" * 300)
+        n.drain()
+        self.assertTrue(self.sent[-1].startswith(notify.TOO_LONG_NOTE) or len(self.sent[-1]) <= notify.MAX_TEXT, self.sent[-1][:80])
+
+    def test_alert_failure_does_not_break_the_action(self):
+        with mock.patch.object(notify, "queue_message", side_effect=RuntimeError("disk full")), \
+                mock.patch.dict(server.NOTIFIER.__dict__, {"settings": lambda: dict(self.base)}):
+            status, body, _ = request("POST", "/api/users", {"username": "sec-fail", "password": "sec fail pass phrase"})
+        self.assertEqual(status, 201, body)
+        request("DELETE", "/api/users/sec-fail")
+
+    def test_event_log_holds_no_alert_text(self):
+        n = self.notifier()
+        n.security("user_added", who="admin-secret-name", source="192.0.2.77", name="alex", role="Viewer")
+        n.drain()
+        events = [e["message"] for e in database.list_events_filtered(event_type="telegram", limit=5)[0]]
+        self.assertIn("Telegram sent: a security alert (see the audit log)", events)
+        self.assertFalse(any("admin-secret-name" in e or "192.0.2.77" in e for e in events))
 
 
 if __name__ == "__main__":

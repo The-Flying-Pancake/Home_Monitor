@@ -54,7 +54,8 @@ function tgServerPreview(el, textOf, values, fallback) {
       const r = await api("/api/template/render", { method: "POST", body: { text: textOf(), values } });
       if (mine === seq) el.textContent = r.text || " ";
     } catch (err) {
-      if (mine === seq) el.textContent = (fallback || tgRender)(textOf(), values) || " ";
+      // 400: the server refused this text (it grows too long), so say why; otherwise fill it here.
+      if (mine === seq) el.textContent = err.status === 400 ? err.message : ((fallback || tgRender)(textOf(), values) || " ");
     }
   };
   return () => { clearTimeout(timer); timer = setTimeout(run, 250); };
@@ -71,7 +72,7 @@ function openTemplateEditor(opts) {
       <button type="button" class="btn" data-tg-close aria-label="Close">&times;</button></div>
     <div class="modal-body tg-body">
       <div class="tg-main">
-        <textarea class="tg-text" rows="7" maxlength="${max}" spellcheck="true"></textarea>
+        <textarea class="tg-text" rows="7" maxlength="${escapeHtml(max)}" spellcheck="true"></textarea>
         <div class="tg-count dim"></div>
         <div class="tg-label">Emoji <span class="dim">(click to insert)</span></div>
         <div class="tg-emojis">${emojis.map(e => `<button type="button" class="tg-emoji" data-ins="${escapeHtml(e)}">${escapeHtml(e)}</button>`).join("")}</div>
@@ -193,6 +194,12 @@ async function testCredential(credId, deviceId, port, out) {
     const r = await api(`/api/credentials/${Number(credId)}/test`, { method: "POST", body: { device_id: Number(deviceId), ssh_port: Number(port) || 22 } });
     if (r.need_hostkey) {
       if (out) out.textContent = "Host key not approved yet.";
+      // Only someone who may approve it is offered the review; others are told who can.
+      if (!can("credentials.manage")) {
+        if (out) out.textContent = r.message;
+        showToast(r.message, "info");
+        return;
+      }
       if (await confirmDialog({ title: "Approve the host key first", message: r.message, confirmLabel: "Review host key" })) {
         openHostKeys({ device_ids: [r.device_id], ssh_port: Number(port) || 22 });
       }

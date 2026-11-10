@@ -21,6 +21,9 @@ function backupsSection(b) {
     ["Backups there", `${b.count}${b.count ? `, ${formatBytes(b.total_bytes)} in total` : ""}`],
     ["Newest", latest],
   ];
+  const keyLabels = { "sealed": "Sealed with your passphrase", "withheld": "Left out of backups that leave this box",
+    "clear-local": "In the clear, inside this container only" };
+  if (b.installed && keyLabels[b.key_state]) rows.push(["Key in backups", keyLabels[b.key_state]]);
   if (b.restore_source) rows.push(["Restore source (home_monitor.sh)", b.restore_source]);
   const resultLine = (r, isPending, label) => {
     if (isPending) return `<span class="text-warn">${escapeHtml(label)} requested, waiting for the container...</span>`;
@@ -28,7 +31,10 @@ function backupsSection(b) {
     return `<span class="${r.ok ? "text-ok" : "text-err"}">${r.ok ? "Done" : "Failed"}</span> <span class="dim">${escapeHtml(formatAgo(r.time))}</span>`;
   };
   const helper = b.installed ? "" : `<div class="panel-note-bar warn">This copy has no root helper (development machine): changes are saved and apply in the container.</div>`;
-  return `${helper}<div class="backup-panel" id="backups-panel">
+  const noPassphrase = b.installed && b.passphrase_set === false
+    ? `<div class="panel-note-bar warn" id="bk-no-passphrase">No backup passphrase is set. New backups that leave this box do not carry the key that opens your stored passwords, so a rebuild from them cannot use those passwords. Backups also cannot be proven unchanged. To set one, open a root shell in the container and run <code>/root/backup-passphrase.sh</code>, then keep the passphrase in your password manager.</div>`
+    : "";
+  return `${helper}${noPassphrase}<div class="backup-panel" id="backups-panel">
     <table class="storage-table"><tbody>${rows.map(r => `<tr><td>${escapeHtml(r[0])}</td><td>${escapeHtml(r[1])}</td></tr>`).join("")}
       <tr><td>Last backup</td><td>${resultLine(res.backup, pending.backup, "Backup")}
         <button type="button" class="btn btn-small" data-backup-action="run" data-perm="settings.system">Back up now</button></td></tr>
@@ -48,7 +54,7 @@ function backupsSection(b) {
       </div>
       <div class="bk-actions"><button type="submit" class="btn btn-primary">Save backup location</button></div>
     </form>
-    <p class="form-help">Each backup holds everything a rebuild needs: devices and history, users (with their 2FA), workflows, settings, NFS and Syncthing choices, and the key that unlocks the stored passwords. Restoring asks no questions, so keep the backup folder as private as a password store. To rebuild: run home_monitor.sh on the Proxmox host, then <code>/root/restore.sh</code> in the new container (or set RESTORE="latest" at the top of home_monitor.sh).</p>
+    <p class="form-help">Each backup holds everything a rebuild needs: devices and history, users (with their 2FA), workflows, settings, NFS and Syncthing choices and, sealed with your backup passphrase, the key that unlocks the stored passwords. A restore checks each backup against your passphrase and warns you about any it cannot prove unchanged, so keep the passphrase somewhere apart from the backups. To rebuild: run home_monitor.sh on the Proxmox host, then <code>/root/restore.sh</code> in the new container (or set RESTORE="latest" at the top of home_monitor.sh).</p>
   </div>`;
 }
 

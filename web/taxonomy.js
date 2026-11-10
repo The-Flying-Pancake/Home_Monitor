@@ -71,7 +71,7 @@ function tagPicker({ title, applied = [], confirmLabel = "Save tags", help = "",
     const pool = () => (available || taxo.tags.map(t => t.name)).filter(t => !has(t));
     const chip = (t, act) => {
       const info = tagInfo(t);
-      return `<button type="button" class="tag-chip tag-pick tag-${escapeHtml(info ? info.colour : "grey")}" data-${act}="${escapeHtml(t)}"
+      return `<button type="button" class="tag-chip tag-pick tag-${escapeHtml(info ? info.colour : "grey")}" data-${escapeHtml(act)}="${escapeHtml(t)}"
         title="${act === "remove" ? "Remove" : "Add"} ${escapeHtml(t)}${info && info.description ? ": " + escapeHtml(info.description) : ""}">${escapeHtml(t)}<span aria-hidden="true">${act === "remove" ? " \u00d7" : " +"}</span></button>`;
     };
     const draw = () => {
@@ -144,26 +144,27 @@ async function taxoChange(body, done) {
 function renderTaxonomySettings() {
   const box = document.getElementById("taxonomy-settings");
   if (!box) return;
-  const edit = can("devices.manage");
+  // Groups and tags are shared by every device: changing them needs access to every device.
+  const edit = can("devices.manage") && !(currentUser && currentUser.scoped);
   const move = (kind, i, n) => edit ? `<span class="taxo-move">
-      <button type="button" class="btn btn-small" data-taxo-move="${kind}" data-i="${i}" data-d="-1"${i === 0 ? " disabled" : ""} aria-label="Move up">&uarr;</button>
-      <button type="button" class="btn btn-small" data-taxo-move="${kind}" data-i="${i}" data-d="1"${i === n - 1 ? " disabled" : ""} aria-label="Move down">&darr;</button></span>` : "";
+      <button type="button" class="btn btn-small" data-taxo-move="${escapeHtml(kind)}" data-i="${escapeHtml(i)}" data-d="-1"${i === 0 ? " disabled" : ""} aria-label="Move up">&uarr;</button>
+      <button type="button" class="btn btn-small" data-taxo-move="${escapeHtml(kind)}" data-i="${escapeHtml(i)}" data-d="1"${i === n - 1 ? " disabled" : ""} aria-label="Move down">&darr;</button></span>` : "";
   const groups = taxo.groups.map((g, i) => `<tr>
       <td class="taxo-order">${move("group", i, taxo.groups.length)}</td>
       <td class="text-cell"><strong>${escapeHtml(g.name)}</strong></td>
       <td class="dim">${g.builtin ? "Built in: devices land here by template" : "Your own"}</td>
-      <td>${g.devices ? `<a href="#/devices" data-taxo-show-group="${escapeHtml(g.id)}">${g.devices} device${g.devices === 1 ? "" : "s"}</a>` : `<span class="dim">none</span>`}</td>
+      <td>${g.devices ? `<a href="#/devices" data-taxo-show-group="${escapeHtml(g.id)}">${escapeHtml(g.devices)} device${g.devices === 1 ? "" : "s"}</a>` : `<span class="dim">none</span>`}</td>
       <td class="actions-cell">${edit ? `<button type="button" class="btn btn-small" data-taxo-rename-group="${escapeHtml(g.id)}">Rename</button>
         ${g.builtin ? "" : `<button type="button" class="btn btn-small btn-danger" data-taxo-delete-group="${escapeHtml(g.id)}">Delete</button>`}` : ""}</td></tr>`).join("");
   const colours = (selected, name) => `<select data-taxo-colour="${escapeHtml(name)}"${edit ? "" : " disabled"}>${taxo.colours.map(c =>
-    `<option value="${c}"${c === selected ? " selected" : ""}>${c}</option>`).join("")}</select>`;
+    `<option value="${escapeHtml(c)}"${c === selected ? " selected" : ""}>${escapeHtml(c)}</option>`).join("")}</select>`;
   const tags = taxo.tags.length ? taxo.tags.map((t, i) => `<tr>
       <td class="taxo-order">${move("tag", i, taxo.tags.length)}</td>
       <td class="text-cell">${tagChips([t.name])}</td>
       <td>${colours(t.colour, t.name)}</td>
       <td><input type="text" class="taxo-desc" data-taxo-desc="${escapeHtml(t.name)}" value="${escapeHtml(t.description)}" maxlength="200" placeholder="What it is for"${edit ? "" : " disabled"}></td>
-      <td>${t.devices ? `<a href="#/devices" data-taxo-show-tag="${escapeHtml(t.name)}">${t.devices} device${t.devices === 1 ? "" : "s"}</a>` : `<span class="dim">none</span>`}</td>
-      <td><a href="#/settings/alerts/tag/${encodeURIComponent(t.name)}">${t.rules ? `${t.rules} alert setting${t.rules === 1 ? "" : "s"}` : "Alert rules"}</a></td>
+      <td>${t.devices ? `<a href="#/devices" data-taxo-show-tag="${escapeHtml(t.name)}">${escapeHtml(t.devices)} device${t.devices === 1 ? "" : "s"}</a>` : `<span class="dim">none</span>`}</td>
+      <td><a href="#/settings/alerts/tag/${encodeURIComponent(t.name)}">${t.rules ? `${escapeHtml(t.rules)} alert setting${t.rules === 1 ? "" : "s"}` : "Alert rules"}</a></td>
       <td class="actions-cell">${edit ? `<button type="button" class="btn btn-small" data-taxo-rename-tag="${escapeHtml(t.name)}">Rename</button>
         <button type="button" class="btn btn-small btn-danger" data-taxo-delete-tag="${escapeHtml(t.name)}">Delete</button>` : ""}</td></tr>`).join("")
     : `<tr><td colspan="7" class="empty-cell">No tags yet. Add one here, or type it on a device in Edit.</td></tr>`;

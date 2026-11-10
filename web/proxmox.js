@@ -65,14 +65,13 @@ async function refreshFeatures() {
 function pveGuestButtons(g, actions) {
   if (g.template) return "";
   const key = `${g.node}/${g.vmid}`;
-  const out = [];
-  if (!g.device_id && (g.ips || []).length) out.push(`<button type="button" class="btn btn-small" data-perm="devices.manage" data-pve-monitor="${escapeHtml(key)}">Monitor</button>`);
+  let out = !g.device_id && (g.ips || []).length ? `<button type="button" class="btn btn-small" data-perm="devices.manage" data-pve-monitor="${escapeHtml(key)}">Monitor</button>` : "";
   if (actions && can("devices.manage")) {
-    const b = (a, l) => `<button type="button" class="btn btn-small" data-pve-action="${a}" data-pve-guest="${escapeHtml(key)}">${l}</button>`;
-    if (g.status === "running") out.push(b("reboot", "Reboot"), b("shutdown", "Shut down"));
-    else out.push(b("start", "Start"));
+    const b = (a, l) => `<button type="button" class="btn btn-small" data-pve-action="${escapeHtml(a)}" data-pve-guest="${escapeHtml(key)}">${escapeHtml(l)}</button>`;
+    const more = g.status === "running" ? `${b("reboot", "Reboot")} ${b("shutdown", "Shut down")}` : b("start", "Start");
+    out += (out ? " " : "") + more;
   }
-  return out.join(" ");
+  return out;
 }
 
 async function loadProxmox(force = false) {
@@ -98,10 +97,10 @@ const pveIsOpen = (kind, node, vmid) => pveOpen && pveRowKey(pveOpen.kind, pveOp
 
 /** The expandable history row under a node or guest. */
 function pveHistoryRow(colspan) {
-  return `<tr class="detail-row pve-history-row"><td colspan="${colspan}">
+  return `<tr class="detail-row pve-history-row"><td colspan="${escapeHtml(colspan)}">
     <div class="pve-history-head"><strong>${escapeHtml(pveOpen.title)}</strong>
       <span class="seg">${PVE_TIMEFRAMES.map(([id, label]) =>
-        `<button type="button" class="btn btn-small${id === pveTimeframe ? " active" : ""}" data-pve-tf="${id}">${label}</button>`).join("")}</span>
+        `<button type="button" class="btn btn-small${id === pveTimeframe ? " active" : ""}" data-pve-tf="${escapeHtml(id)}">${escapeHtml(label)}</button>`).join("")}</span>
       <span class="dim">From Proxmox's own history (averages).</span></div>
     <div class="pve-charts">
       <div class="chart-card"><div class="chart-title">CPU</div><div class="chart-host" data-pve-chart="cpu"></div></div>
@@ -162,7 +161,7 @@ function renderProxmox() {
   const nodesUp = d.nodes.filter(n => n.status === "online").length;
   const stTotal = d.storage.reduce((a, s) => a + (s.maxdisk || 0), 0), stUsed = d.storage.reduce((a, s) => a + (s.disk || 0), 0);
   const failedBackups = d.backups.filter(t => t.end && t.status !== "OK").length;
-  const tile = (n, l, cls = "") => `<div class="stat ${cls}"><div class="stat-num">${escapeHtml(n)}</div><div class="stat-label">${escapeHtml(l)}</div></div>`;
+  const tile = (n, l, cls = "") => `<div class="stat ${escapeHtml(cls)}"><div class="stat-num">${escapeHtml(n)}</div><div class="stat-label">${escapeHtml(l)}</div></div>`;
   const q = pveFilter.toLowerCase();
   const shownGuests = d.guests.filter(g => (pveStatus === "all" || g.status === pveStatus) &&
     (!q || `${g.vmid} ${g.name} ${g.node} ${(g.tags || []).join(" ")}`.toLowerCase().includes(q)));

@@ -124,17 +124,24 @@ KEY_RE = re.compile(r"(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)) [A-Z
 
 def ssh_setup_script(monitor_ip: str, username: str = "root", public_key: Optional[str] = None) -> str:
     """One command to paste into a host's root shell so this monitor can log in over SSH:
-    installs openssh-server when missing, allows password and key logins from the monitor's address
-    only (root by key only when the credential has a key, root by password otherwise) (a Match block at the end of sshd_config, between markers, replaced on a
-    second run), adds the credential's public key when it has one, checks the file with sshd -t
-    (the backup comes back if it fails) and restarts SSH. It sets no password: that stays with you."""
+    installs openssh-server when missing and adds a Match block for the monitor's address at the end
+    of sshd_config (between markers, replaced on a second run). With a public key it installs the key
+    for that address only (from=), turns password logins from the monitor off and lets root in by key
+    only. Without one it turns password logins from the monitor on, root included. It checks the file
+    with sshd -t (the backup comes back if it fails) and restarts SSH. It sets no password: that stays
+    with you. A public key that cannot be used raises ValueError, so a key never quietly becomes the
+    password setup."""
     import ipaddress
     ip = str(ipaddress.ip_address(monitor_ip))
     user = username if USER_RE.fullmatch(username or "") else "root"
-    key = None
+    key = blob = None
     if public_key:
         m = KEY_RE.match(public_key.strip())
-        key = m.group(0) + " homelab-monitor" if m else None
+        if not m:
+            raise ValueError("this public key cannot be used for SSH setup")
+        blob = m.group(0).split()[1]
+        # Bound to the monitor's address: a copy of the private key does not work from anywhere else.
+        key = f'from="{ip}" {m.group(0)} homelab-monitor'
     lines = [
         'set -e',
         '[ "$(id -u)" -eq 0 ] || { echo "Run this as root: sudo -i first, then paste it again."; exit 1; }',
@@ -143,7 +150,7 @@ def ssh_setup_script(monitor_ip: str, username: str = "root", public_key: Option
         'cp -p "$F" "$F.homelab-monitor.bak"',
         'sed -i "/^# BEGIN homelab-monitor/,/^# END homelab-monitor/d" "$F"',
         f"printf '%s\\n' '# BEGIN homelab-monitor: SSH logins from the monitor ({ip})' 'Match Address {ip}' "
-        "'    PubkeyAuthentication yes' '    PasswordAuthentication yes' "
+        f"'    PubkeyAuthentication yes' '    PasswordAuthentication {'no' if key else 'yes'}' "
         f"'    PermitRootLogin {'prohibit-password' if key else 'yes'}' '# END homelab-monitor' >> \"$F\"",
         'mkdir -p /run/sshd',
         'if ! /usr/sbin/sshd -t; then cp -p "$F.homelab-monitor.bak" "$F"; echo "sshd refused the change: the old file is back."; exit 1; fi',
@@ -152,8 +159,11 @@ def ssh_setup_script(monitor_ip: str, username: str = "root", public_key: Option
         lines += [
             f'U={user}',
             'H=$(getent passwd "$U" | cut -d: -f6)',
-            'if [ -n "$H" ]; then mkdir -p "$H/.ssh"; chmod 700 "$H/.ssh"; touch "$H/.ssh/authorized_keys"; chmod 600 "$H/.ssh/authorized_keys"; '
-            f"grep -qF '{key.split()[1]}' \"$H/.ssh/authorized_keys\" || echo '{key}' >> \"$H/.ssh/authorized_keys\"; "
+            'if [ -n "$H" ]; then A="$H/.ssh/authorized_keys"; mkdir -p "$H/.ssh"; chmod 700 "$H/.ssh"; touch "$A"; chmod 600 "$A"; '
+            # Only this monitor's own earlier line for the key goes (it may hold an old from=); cat keeps
+            # the file's owner and mode. A line you added yourself for the key stays.
+            f"T=$(mktemp); grep -v ' {blob} homelab-monitor$' \"$A\" > \"$T\" || true; cat \"$T\" > \"$A\"; rm -f \"$T\"; "
+            f"echo '{key}' >> \"$A\"; "
             'chown -R "$U:" "$H/.ssh"; else echo "No user $U on this host: create it, then paste this again."; fi',
         ]
     lines += [
@@ -161,7 +171,9 @@ def ssh_setup_script(monitor_ip: str, username: str = "root", public_key: Option
         '(systemctl restart ssh 2>/dev/null || systemctl restart sshd)',
         f'echo "SSH is ready for the monitor ({ip}). Back in the monitor: approve the host key if asked, then Preview changes again."',
     ]
-    if not key:
+    if key:
+        lines.insert(-1, f'echo "The monitor logs in as {user} with its SSH key. Password logins from the monitor are off."')
+    else:
         lines.insert(-1, f'echo "The monitor logs in as {user} with its stored password. No password set for {user} yet? Run: passwd {user}"')
     return "sh -c " + shlex.quote("; ".join(lines))
 

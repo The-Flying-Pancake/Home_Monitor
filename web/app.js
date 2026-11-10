@@ -87,6 +87,7 @@ const isNum = v => typeof v === "number" && isFinite(v);
 let authPending = null;     // one login prompt shared by every request that hit 401
 let confirmPending = null;  // one password confirmation shared by concurrent 403s
 let setupTokenRequired = false;
+let httpsLost = false;      // HTTPS failed and this is another computer: the server refuses logins
 
 async function ensureSession() {
   const status = await fetch("/api/auth/status").then(r => r.json()).catch(() => ({ authenticated: false, configured: true }));
@@ -96,6 +97,7 @@ async function ensureSession() {
   }
   setupTokenRequired = !!status.setup_token_required;
   loginRecovery = !!status.recovery;
+  httpsLost = !!status.https_lost;
   await promptLogin(status.configured ? "login" : "setup");
 }
 
@@ -122,7 +124,15 @@ function promptLogin(mode) {
     document.getElementById("auth-token-group").classList.toggle("hidden", !(setup && setupTokenRequired));
     document.getElementById("auth-password").autocomplete = setup ? "new-password" : "current-password";
     setLoginStep(null);
-    document.getElementById("auth-forgot").classList.toggle("hidden", setup || !loginRecovery);
+    document.getElementById("auth-forgot").classList.toggle("hidden", setup || !loginRecovery || httpsLost);
+    // HTTPS lost: no form at all, so no password is typed into a page that would send it unprotected.
+    if (httpsLost) {
+      document.getElementById("auth-title").textContent = "HTTPS is not working";
+      ["auth-setup-help", "auth-fields", "auth-submit"].forEach(id => hide(document.getElementById(id)));
+    } else {
+      show(document.getElementById("auth-submit"));
+    }
+    document.getElementById("auth-https-lost").classList.toggle("hidden", !httpsLost);
     hide(document.getElementById("auth-error"));
     screen.dataset.mode = mode;
     screen._resolve = resolve;
@@ -286,13 +296,21 @@ async function api(path, options = {}, retried = false) {
     await promptLogin(data.auth);
     return api(path, options, true);
   }
+  if (!retried && res.status === 403 && data.auth === "enrol") {
+    await promptEnrol();
+    return api(path, options, true);
+  }
   if (!retried && res.status === 403 && data.auth === "confirm") {
     if (!(await promptConfirm(data))) throw new Error("Cancelled: not confirmed");
     return api(path, options, true);
   }
   // An action that could not be done is recorded on the server as an event; show it in the bell straight away.
   if (opts.method !== "GET" && typeof refreshBell === "function") setTimeout(refreshBell, 400);
-  if (!res.ok) throw new Error(data.error || `Request failed (HTTP ${res.status})`);
+  if (!res.ok) {
+    const err = new Error(data.error || `Request failed (HTTP ${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -327,8 +345,8 @@ function formatBps(bps) {
 }
 
 function formatSpeed(mbps) {
-  if (!mbps) return "-";
-  return mbps >= 1000 ? `${mbps / 1000} Gbps` : `${mbps} Mbps`;
+  if (!isNum(mbps) || !mbps) return "-";
+  return mbps >= 1000 ? `${mbps / 1000} Gbps` : `${Number(mbps)} Mbps`;
 }
 
 function formatAgo(ts) {
@@ -598,8 +616,8 @@ function groupedRows(tableId, colspan, items, groupOf, rowHtml, summaryOf) {
     .map(([name, g]) => {
       const closed = collapsed.has(name);
       const summary = summaryOf ? summaryOf(g.items) : `${g.items.length}`;
-      return `<tr class="group-row ${closed ? "collapsed" : ""}" data-group-table="${tableId}" data-group="${escapeHtml(name)}">` +
-        `<td colspan="${colspan}">${escapeHtml(name)}<span class="dim">${escapeHtml(summary)}</span></td></tr>` +
+      return `<tr class="group-row ${closed ? "collapsed" : ""}" data-group-table="${escapeHtml(tableId)}" data-group="${escapeHtml(name)}">` +
+        `<td colspan="${escapeHtml(colspan)}">${escapeHtml(name)}<span class="dim">${escapeHtml(summary)}</span></td></tr>` +
         (closed ? "" : g.items.map(rowHtml).join(""));
     }).join("");
 }
@@ -618,7 +636,7 @@ const GROUP_RERENDER = {};
 /** Sets tbody HTML, then re-applies bars and the table's saved sort. */
 function fillTable(tbodyId, html, emptyText, colspan) {
   const tbody = document.getElementById(tbodyId);
-  tbody.innerHTML = html || `<tr><td colspan="${colspan}" class="empty-cell">${escapeHtml(emptyText)}</td></tr>`;
+  tbody.innerHTML = html || `<tr><td colspan="${escapeHtml(colspan)}" class="empty-cell">${escapeHtml(emptyText)}</td></tr>`;
   applyBars(tbody);
   const table = tbody.closest("table");
   if (table.classList.contains("sortable")) applySort(table);
@@ -786,7 +804,7 @@ const DEVICE_FILTERS = {
 };
 
 function statTile(n, label, cls, href, active) {
-  return `<a class="stat clickable ${cls} ${active ? "active-filter" : ""}" href="${href}" title="Show ${escapeHtml(label.toLowerCase())}">` +
+  return `<a class="stat clickable ${escapeHtml(cls)} ${active ? "active-filter" : ""}" href="${escapeHtml(href)}" title="Show ${escapeHtml(label.toLowerCase())}">` +
     `<div class="stat-num">${escapeHtml(n)}</div><div class="stat-label">${escapeHtml(label)}</div></a>`;
 }
 
@@ -832,7 +850,7 @@ function renderFleet(allDevices, problems) {
     document.getElementById("acked-count").textContent = String(ackedList.length);
     fillTable("acked-body", ackedList.map(p => `
       <tr class="acked">
-        <td data-sort="${SEVERITY_RANK[p.severity] ?? 3}">${severityPill(p.severity)}</td>
+        <td data-sort="${Number(SEVERITY_RANK[p.severity] ?? 3)}">${severityPill(p.severity)}</td>
         <td class="text-cell"><a class="device-link" href="#/device/${Number(p.device_id)}">${escapeHtml(p.hostname)}</a></td>
         <td class="text-cell">${escapeHtml(p.message)} <span class="dim">for ${escapeHtml(formatSince(p.since))}</span>${ackLabel(p)} ${ackButton(p)}</td>
       </tr>`).join(""), "", 3);
@@ -843,7 +861,7 @@ function renderFleet(allDevices, problems) {
     show(panel);
     fillTable("problems-body", listed.map(p => `
       <tr class="${p.acknowledged_at ? "acked" : ""}">
-        <td data-sort="${SEVERITY_RANK[p.severity] ?? 3}">${severityPill(p.severity)}</td>
+        <td data-sort="${Number(SEVERITY_RANK[p.severity] ?? 3)}">${severityPill(p.severity)}</td>
         <td class="text-cell"><a class="device-link" href="#/device/${Number(p.device_id)}">${escapeHtml(p.hostname)}</a></td>
         <td class="text-cell">${escapeHtml(p.message)} <span class="dim">for ${escapeHtml(formatSince(p.since))}</span>${ackLabel(p)} ${ackButton(p)}${haProblemButton(p, devById[p.device_id])}</td>
       </tr>`).join(""), "", 3);
@@ -859,7 +877,7 @@ function renderFleet(allDevices, problems) {
     const lastSeenAge = d.last_seen ? Math.floor(Date.now() / 1000 - d.last_seen) : "";
     return `
       <tr>
-        <td data-sort="${STATUS_RANK[d.status] ?? 2}" class="status-cell"><span class="status-pill ${statusClass(d.status)}">${escapeHtml(String(d.status).toUpperCase())}</span>${attentionIcon(d)}</td>
+        <td data-sort="${Number(STATUS_RANK[d.status] ?? 2)}" class="status-cell"><span class="status-pill ${statusClass(d.status)}">${escapeHtml(String(d.status).toUpperCase())}</span>${attentionIcon(d)}</td>
         <td class="text-cell"><input type="checkbox" class="row-select" data-perm="devices.manage" data-select="${id}"${selectedDevices.has(id) ? " checked" : ""} aria-label="Select ${escapeHtml(d.hostname)}"><a href="#/device/${id}" class="device-link">${escapeHtml(d.hostname)}</a> ${tagBadge(id, d.tags, d.hostname)}</td>
         <td class="text-cell">${d.service_port ? `<span class="dim">TCP port</span> ${Number(d.service_port)}` : d.snmp === false ? `<span class="dim">Ping only</span>` : escapeHtml(inv.model || "-")}</td>
         <td>${escapeHtml(d.ip_address)}</td>
@@ -868,7 +886,7 @@ function renderFleet(allDevices, problems) {
         <td data-sort="${isNum(d.last_ping_ms) ? d.last_ping_ms : ""}">${cellLink(id, "graphs", "Ping latency", isNum(d.last_ping_ms) ? d.last_ping_ms.toFixed(1) + " ms" : "")}</td>
         <td data-sort="${isNum(s.cpu_pct) ? s.cpu_pct : ""}" class="bar-cell">${isNum(s.cpu_pct) ? cellLink(id, "graphs", "CPU", barHtml(s.cpu_pct), true) : emptyMeter()}</td>
         <td data-sort="${isNum(s.mem_pct) ? s.mem_pct : ""}" class="bar-cell">${isNum(s.mem_pct) ? cellLink(id, "graphs", "Memory", barHtml(s.mem_pct), true) : emptyMeter()}</td>
-        <td data-sort="${ports.total ? ports.up : ""}">${cellLink(id, "ports", "", ports.total ? `${ports.up} / ${ports.total}` : "")}</td>
+        <td data-sort="${ports.total ? escapeHtml(ports.up) : ""}">${cellLink(id, "ports", "", ports.total ? `${ports.up} / ${ports.total}` : "")}</td>
         <td data-sort="${isNum(s.clients) ? s.clients : ""}">${cellLink(id, "wireless", "clients", isNum(s.clients) ? String(s.clients) : "")}</td>
         <td data-sort="${lastSeenAge}">${formatAgo(d.last_seen)}</td>
         <td class="actions-cell">
@@ -896,7 +914,7 @@ const selectedDevices = new Set();
 function cellLink(id, tab, focus, value, html = false) {
   if (!value) return "-";
   const what = focus && focus !== "clients" ? `the ${focus} graph` : `the ${tab} tab`;
-  return `<a class="cell-link" href="#/device/${Number(id)}/${tab}"${focus ? ` data-focus="${escapeHtml(focus)}"` : ""} title="Open ${escapeHtml(what)}">${html ? value : escapeHtml(value)}</a>`;
+  return `<a class="cell-link" href="#/device/${Number(id)}/${escapeHtml(tab)}"${focus ? ` data-focus="${escapeHtml(focus)}"` : ""} title="Open ${escapeHtml(what)}">${html ? value : escapeHtml(value)}</a>`;
 }
 
 // A link with data-focus scrolls the page it opens to that graph or section (consumed by the tab loaders).
@@ -1334,7 +1352,7 @@ function kpiCard(label, value, sub, valueClass = "", go = "") {
   return `
     <div class="summary-card${attrs}">
       <div class="summary-label">${escapeHtml(label)}</div>
-      <div class="summary-val ${valueClass}">${escapeHtml(value)}</div>
+      <div class="summary-val ${escapeHtml(valueClass)}">${escapeHtml(value)}</div>
       <div class="summary-sub">${escapeHtml(sub)}</div>
     </div>`;
 }
@@ -1420,7 +1438,7 @@ function renderOverview(data, isRefresh) {
     .map(r => `<tr><td>${escapeHtml(r[0])}</td><td>${escapeHtml(r[1])}</td></tr>`).join("");
 
   const ps = data.ports;
-  const stat = (n, label, cls = "") => `<div class="stat-inline ${cls}"><div class="stat-num">${n}</div><div class="stat-label">${label}</div></div>`;
+  const stat = (n, label, cls = "") => `<div class="stat-inline ${escapeHtml(cls)}"><div class="stat-num">${escapeHtml(n)}</div><div class="stat-label">${escapeHtml(label)}</div></div>`;
   document.getElementById("detail-port-summary").innerHTML = ps.total
     ? [stat(ps.total, "Total"), stat(ps.up, "Up", "stat-ok"), stat(ps.down, "Down", ps.down ? "stat-bad" : ""), stat(ps.disabled, "Disabled")].join("")
     : `<span class="dim">No physical ports reported.</span>`;
@@ -1474,16 +1492,16 @@ async function loadPorts(fromCache = false) {
         <td class="text-cell">${escapeHtml(r.alias && r.alias !== r.label ? r.alias : "")}</td>
         <td class="text-cell dim">${escapeHtml(r.kind)}</td>
         <td data-sort="${disabled ? 3 : r.oper === 1 ? 0 : 2}"><span class="status-pill ${statusCls}">${escapeHtml(statusText)}</span></td>
-        <td data-sort="${r.speed_mbps || ""}">${formatSpeed(r.speed_mbps)}</td>
+        <td data-sort="${escapeHtml(r.speed_mbps || "")}">${formatSpeed(r.speed_mbps)}</td>
         <td data-sort="${isNum(r.in_bps) ? r.in_bps : ""}">${formatBps(r.in_bps)}</td>
         <td data-sort="${isNum(r.out_bps) ? r.out_bps : ""}">${formatBps(r.out_bps)}</td>
         <td data-sort="${isNum(util) ? util : ""}" class="bar-cell">${barHtml(util, isNum(util) ? (util < 1 ? util.toFixed(2) : util.toFixed(0)) + " %" : null)}</td>
         <td data-sort="${isNum(r.in_octets) ? r.in_octets : ""}">${formatBytes(r.in_octets)}</td>
         <td data-sort="${isNum(r.out_octets) ? r.out_octets : ""}">${formatBytes(r.out_octets)}</td>
-        <td data-sort="${errs}">${errs.toLocaleString()}${errDelta > 0 ? `<span class="badge-delta">+${errDelta}</span>` : ""}</td>
-        <td data-sort="${disc}">${disc.toLocaleString()}</td>
-        <td data-sort="${r.mac_count || ""}">${r.mac_count || "-"}</td>
-        <td>${r.mtu ?? "-"}</td>
+        <td data-sort="${escapeHtml(errs)}">${escapeHtml(errs.toLocaleString())}${errDelta > 0 ? `<span class="badge-delta">+${escapeHtml(errDelta)}</span>` : ""}</td>
+        <td data-sort="${escapeHtml(disc)}">${escapeHtml(disc.toLocaleString())}</td>
+        <td data-sort="${escapeHtml(r.mac_count || "")}">${escapeHtml(r.mac_count || "-")}</td>
+        <td>${escapeHtml(r.mtu ?? "-")}</td>
         <td>${escapeHtml(r.mac || "-")}</td>
       </tr>`;
     if (!expandedPorts.has(String(r.if_index))) return main;
@@ -1514,7 +1532,7 @@ async function loadPorts(fromCache = false) {
     try {
       const cached = portHistoryCache[idx];
       const hist = cached && Date.now() - cached.at < 60000 ? cached.data
-        : await api(`/api/devices/${activeDeviceId}/history?keys=${keys.join(",")}&hours=24`);
+        : await api(`/api/devices/${activeDeviceId}/history?keys=${keys.map(encodeURIComponent).join(",")}&hours=24`);
       portHistoryCache[idx] = { at: cached && cached.data === hist ? cached.at : Date.now(), data: hist };
       host._source = { deviceId: activeDeviceId, g: { series: [[keys[0], "In"], [keys[1], "Out"]], fmt: "bps" }, hours: 24, compare: false };
       lineChart(host, [
@@ -1554,7 +1572,7 @@ async function loadNeighbours(fromCache = false) {
       <td>${escapeHtml(n.mac)}</td>
       <td>${escapeHtml(n.ip || "-")}</td>
       <td class="text-cell">${escapeHtml(n.device || "")}</td>
-      <td>${n.vlan ?? "-"}</td>
+      <td>${escapeHtml(n.vlan ?? "-")}</td>
       <td class="text-cell" data-sort="${escapeHtml(String(n.if_index).padStart(6, "0"))}">${escapeHtml(n.port)}</td>
       <td class="text-cell dim">${escapeHtml(n.seen_on || "")}</td>
       <td class="dim">${escapeHtml(n.source.toUpperCase())}</td>
@@ -1587,15 +1605,15 @@ async function loadWireless() {
       <tr>
         <td>${escapeHtml(r.name)}</td>
         <td class="text-cell">${escapeHtml(BAND_NAME[r.band] || r.band)}</td>
-        <td>${first.channel ?? "-"}</td>
-        <td data-sort="${first.tx_power_dbm ?? ""}">${isNum(first.tx_power_dbm) ? first.tx_power_dbm + " dBm" : "-"}</td>
-        <td>${clients}</td>
-        <td data-sort="${r.util_pct ?? ""}" class="bar-cell">${barHtml(r.util_pct)}</td>
-        <td data-sort="${r.util_rx_pct ?? ""}">${pct(r.util_rx_pct)}</td>
-        <td data-sort="${r.util_tx_pct ?? ""}">${pct(r.util_tx_pct)}</td>
-        <td data-sort="${r.other_bss_pct ?? ""}">${pct(r.other_bss_pct)}</td>
-        <td data-sort="${r.rx_packets ?? ""}">${isNum(r.rx_packets) ? r.rx_packets.toLocaleString() : "-"}</td>
-        <td data-sort="${r.tx_packets ?? ""}">${isNum(r.tx_packets) ? r.tx_packets.toLocaleString() : "-"}</td>
+        <td>${escapeHtml(first.channel ?? "-")}</td>
+        <td data-sort="${escapeHtml(first.tx_power_dbm ?? "")}">${isNum(first.tx_power_dbm) ? first.tx_power_dbm + " dBm" : "-"}</td>
+        <td>${escapeHtml(clients)}</td>
+        <td data-sort="${escapeHtml(r.util_pct ?? "")}" class="bar-cell">${barHtml(r.util_pct)}</td>
+        <td data-sort="${escapeHtml(r.util_rx_pct ?? "")}">${pct(r.util_rx_pct)}</td>
+        <td data-sort="${escapeHtml(r.util_tx_pct ?? "")}">${pct(r.util_tx_pct)}</td>
+        <td data-sort="${escapeHtml(r.other_bss_pct ?? "")}">${pct(r.other_bss_pct)}</td>
+        <td data-sort="${escapeHtml(r.rx_packets ?? "")}">${isNum(r.rx_packets) ? Number(r.rx_packets).toLocaleString() : "-"}</td>
+        <td data-sort="${escapeHtml(r.tx_packets ?? "")}">${isNum(r.tx_packets) ? Number(r.tx_packets).toLocaleString() : "-"}</td>
       </tr>`;
   }).join(""), "No radios reported.", 11);
 
@@ -1604,13 +1622,13 @@ async function loadWireless() {
       <td class="text-cell"><strong>${escapeHtml(s.ssid)}</strong></td>
       <td class="text-cell">${escapeHtml(BAND_NAME[s.band] || s.band)}</td>
       <td>${escapeHtml(s.bssid)}</td>
-      <td>${s.channel ?? "-"}</td>
-      <td>${s.clients ?? "-"}</td>
+      <td>${escapeHtml(s.channel ?? "-")}</td>
+      <td>${escapeHtml(s.clients ?? "-")}</td>
       <td data-sort="${isNum(s.rx_bps) ? s.rx_bps : ""}">${formatBps(s.rx_bps)}</td>
       <td data-sort="${isNum(s.tx_bps) ? s.tx_bps : ""}">${formatBps(s.tx_bps)}</td>
-      <td data-sort="${s.rx_bytes ?? ""}">${formatBytes(s.rx_bytes)}</td>
-      <td data-sort="${s.tx_bytes ?? ""}">${formatBytes(s.tx_bytes)}</td>
-      <td data-sort="${s.tx_power_dbm ?? ""}">${isNum(s.tx_power_dbm) ? s.tx_power_dbm + " dBm" : "-"}</td>
+      <td data-sort="${escapeHtml(s.rx_bytes ?? "")}">${formatBytes(s.rx_bytes)}</td>
+      <td data-sort="${escapeHtml(s.tx_bytes ?? "")}">${formatBytes(s.tx_bytes)}</td>
+      <td data-sort="${escapeHtml(s.tx_power_dbm ?? "")}">${isNum(s.tx_power_dbm) ? s.tx_power_dbm + " dBm" : "-"}</td>
       <td class="dim">${escapeHtml(s.name)}</td>
     </tr>`;
   fillTable("ssids-body", groupedRows("tbl-ssids", 11, ssids, x => [x.ssid || "(hidden)", 0], ssidRow,
@@ -1637,7 +1655,7 @@ async function loadWireless() {
       <td>${escapeHtml(h.mac)}</td>
       <td>${escapeHtml(h.ip || "-")}</td>
       <td class="text-cell">${escapeHtml(h.device || "")}</td>
-      <td>${h.vlan ?? "-"}</td>
+      <td>${escapeHtml(h.vlan ?? "-")}</td>
     </tr>`).join(""), "No hosts found.", 4);
   if (pendingFocus === "clients") {
     document.getElementById("clients-panel").scrollIntoView({ behavior: "smooth" });
@@ -1662,10 +1680,12 @@ async function openFixSnmp(device) {
   const hostKey = ((autoData && autoData.devices) || []).some(x => x.id === device.id && x.host_key);
   // No credential yet: the form would only show an empty list, so point to adding one instead.
   const none = !creds.length;
-  document.getElementById("fixsnmp-nocred").classList.toggle("hidden", !none);
-  document.getElementById("fixsnmp-form").classList.toggle("hidden", none);
-  document.getElementById("btn-fixsnmp-preview").classList.toggle("hidden", none);
-  document.getElementById("fixsnmp-hostkey").classList.toggle("hidden", none || !!hostKey);
+  // Without Use stored credentials only Copy as commands applies: no form, no Preview, no note.
+  const useCred = can("credentials.use");
+  document.getElementById("fixsnmp-nocred").classList.toggle("hidden", !none || !useCred);
+  document.getElementById("fixsnmp-form").classList.toggle("hidden", none || !useCred);
+  document.getElementById("btn-fixsnmp-preview").classList.toggle("hidden", none || !useCred);
+  document.getElementById("fixsnmp-hostkey").classList.toggle("hidden", none || !useCred || !!hostKey);
   document.getElementById("fixsnmp-changes").innerHTML = "";
   for (const id of ["fixsnmp-file", "fixsnmp-script", "fixsnmp-result", "btn-fixsnmp-apply"]) hide(document.getElementById(id));
   // Copy as commands needs no credential: the steps can be pasted into the host by hand.
@@ -1680,6 +1700,12 @@ const isSshLoginFailure = msg => /could not log in over SSH|did not answer on th
 async function copySshSetup(deviceId, credentialId) {
   try {
     const r = await api(`/api/devices/${deviceId}/ssh-setup`, { method: "POST", body: { credential_id: credentialId || null } });
+    // A password setup opens the host to password logins from this monitor: say so plainly before copying.
+    if (r.kind !== "key" && !(await confirmDialog({
+      title: "This turns on password login for root",
+      message: `These commands let anyone connecting from this monitor's address (${r.monitor_ip}) log in to this host over SSH with a password, including as root. If this monitor were ever taken over, its address could be used to try passwords on this host. An SSH key credential avoids this.`,
+      confirmLabel: "Copy the commands",
+    }))) return null;
     try {
       await navigator.clipboard.writeText(r.script);
       showToast("Copied. Open the host's console as root (Proxmox: the guest's Console), paste and press Enter. Then try again here.", "success", 9000);
@@ -1694,7 +1720,7 @@ async function copySshSetup(deviceId, credentialId) {
 }
 
 function initFixSnmp() {
-  const body = () => ({ credential_id: parseInt(document.getElementById("fixsnmp-cred").value, 10),
+  const body = () => ({ credential_id: can("credentials.use") ? parseInt(document.getElementById("fixsnmp-cred").value, 10) || null : null,
     ssh_port: parseInt(document.getElementById("fixsnmp-port").value, 10) || 22 });
   document.getElementById("btn-close-fixsnmp").addEventListener("click", () => hide(document.getElementById("modal-fixsnmp")));
   document.getElementById("btn-fixsnmp-hostkey").addEventListener("click", async () => {
@@ -1806,7 +1832,7 @@ async function loadHealth() {
         <td class="text-cell"><strong>${escapeHtml(h.name ?? "-")}</strong></td>
         <td>${escapeHtml(h.kind || "-")}</td>
         <td>${cls ? `<span class="status-pill ${cls}">${escapeHtml(status)}</span>` : escapeHtml(status)}</td>
-        <td data-sort="${sortVal}" class="${isNum(h.pct) ? "bar-cell" : ""}">${text}</td>
+        <td data-sort="${escapeHtml(sortVal)}" class="${isNum(h.pct) ? "bar-cell" : ""}">${text}</td>
       </tr>`;
   }).join(""), "No components reported.", 4);
 }
@@ -1859,7 +1885,7 @@ function renderProcesses() {
   const q = document.getElementById("processes-filter").value.trim().toLowerCase();
   const match = n => !q || n.toLowerCase().includes(q);
   const watched = new Set(processData.watches.map(w => `${w.kind}:${w.name}`));
-  const box = (kind, name) => `<input type="checkbox" data-perm="devices.manage" data-watch-kind="${kind}" data-watch-name="${escapeHtml(name)}"${watched.has(`${kind}:${name}`) ? " checked" : ""} aria-label="Watch ${escapeHtml(name)}">`;
+  const box = (kind, name) => `<input type="checkbox" data-perm="devices.manage" data-watch-kind="${escapeHtml(kind)}" data-watch-name="${escapeHtml(name)}"${watched.has(`${kind}:${name}`) ? " checked" : ""} aria-label="Watch ${escapeHtml(name)}">`;
   const procs = new Map(processData.processes.map(p => [p.name, p]));
   const svcs = new Map(processData.services.map(x => [x.name, x]));
 
@@ -1886,7 +1912,7 @@ function renderProcesses() {
   fillTable("processes-body", processData.processes.filter(p => match(p.name)).map(p => `<tr>
       <td class="watch-cell">${box("process", p.name)}</td>
       <td class="text-cell">${escapeHtml(p.name)}</td>
-      <td data-sort="${p.count}">${p.count}</td>
+      <td data-sort="${escapeHtml(p.count)}">${escapeHtml(p.count)}</td>
     </tr>`).join(""), "No processes match.", 3);
 }
 
@@ -1902,10 +1928,10 @@ async function loadStorage() {
     <tr>
       <td class="text-cell"><strong>${escapeHtml(s.descr)}</strong></td>
       <td class="text-cell">${escapeHtml(s.kind)}</td>
-      <td data-sort="${s.size_bytes}">${formatBytes(s.size_bytes)}</td>
-      <td data-sort="${s.used_bytes}">${formatBytes(s.used_bytes)}</td>
+      <td data-sort="${escapeHtml(s.size_bytes)}">${formatBytes(s.size_bytes)}</td>
+      <td data-sort="${escapeHtml(s.used_bytes)}">${formatBytes(s.used_bytes)}</td>
       <td data-sort="${s.size_bytes - s.used_bytes}">${formatBytes(s.size_bytes - s.used_bytes)}</td>
-      <td data-sort="${s.used_pct}" class="bar-cell">${barHtml(s.used_pct)}</td>
+      <td data-sort="${escapeHtml(s.used_pct)}" class="bar-cell">${barHtml(s.used_pct)}</td>
     </tr>`;
   const storageGroup = s => (["ram", "virtual"].includes(s.kind) || /memory|swap/i.test(s.descr))
     ? ["Memory and swap", 2] : ["Filesystems", 1];
@@ -1927,10 +1953,10 @@ async function loadStorage() {
         <td class="text-cell"><strong>${escapeHtml(v.descr)}</strong></td>
         <td>${escapeHtml(v.filesystem || "-")}</td>
         <td><span class="status-pill ${ok ? "status-ok" : "status-err"}">${escapeHtml(v.status || "unknown")}</span></td>
-        <td data-sort="${v.size_bytes}">${formatBytes(v.size_bytes)}</td>
-        <td data-sort="${v.used_bytes}">${formatBytes(v.used_bytes)}</td>
+        <td data-sort="${escapeHtml(v.size_bytes)}">${formatBytes(v.size_bytes)}</td>
+        <td data-sort="${escapeHtml(v.used_bytes)}">${formatBytes(v.used_bytes)}</td>
         <td data-sort="${v.size_bytes - v.used_bytes}">${formatBytes(v.size_bytes - v.used_bytes)}</td>
-        <td data-sort="${v.used_pct ?? ""}" class="bar-cell">${barHtml(v.used_pct)}</td>
+        <td data-sort="${escapeHtml(v.used_pct ?? "")}" class="bar-cell">${barHtml(v.used_pct)}</td>
       </tr>`;
   }).join(""), "No volumes reported.", 7);
 
@@ -1944,8 +1970,8 @@ async function loadStorage() {
       <tr>
         <td class="text-cell"><strong>${escapeHtml(d.name)}</strong></td>
         <td>${escapeHtml(d.model || "-")}</td>
-        <td data-sort="${d.size_bytes ?? ""}">${isNum(d.size_bytes) ? (d.size_bytes / 1e12).toFixed(2) + " TB" : "-"}</td>
-        <td data-sort="${d.temp_c ?? ""}" class="${hot ? "text-err" : ""}">${isNum(d.temp_c) ? d.temp_c + " °C" : "-"}</td>
+        <td data-sort="${escapeHtml(d.size_bytes ?? "")}">${isNum(d.size_bytes) ? (d.size_bytes / 1e12).toFixed(2) + " TB" : "-"}</td>
+        <td data-sort="${escapeHtml(d.temp_c ?? "")}" class="${hot ? "text-err" : ""}">${isNum(d.temp_c) ? d.temp_c + " °C" : "-"}</td>
         <td><span class="status-pill ${good ? "status-ok" : "status-err"}">${escapeHtml(d.smart || "unknown")}</span></td>
       </tr>`;
   }).join(""), "No disks reported.", 5);
@@ -1956,7 +1982,7 @@ async function loadStorage() {
   fillTable("sensors-body", sensors.map(t => `
     <tr>
       <td class="text-cell"><strong>${escapeHtml(t.name)}</strong></td>
-      <td data-sort="${t.temp_c}" class="${t.temp_c >= sensorLimit ? "text-err" : ""}">${t.temp_c.toFixed(1)} °C</td>
+      <td data-sort="${escapeHtml(t.temp_c)}" class="${t.temp_c >= sensorLimit ? "text-err" : ""}">${t.temp_c.toFixed(1)} °C</td>
     </tr>`).join(""), "No sensors reported.", 2);
 
   // "Full in N days" (forecast.py, lan.js).
@@ -1968,10 +1994,10 @@ async function loadStorage() {
   fillTable("diskio-body", dio.map(d => `
     <tr>
       <td class="text-cell"><strong>${escapeHtml(d.name)}</strong></td>
-      <td data-sort="${d.read_Bps ?? ""}">${rate(d.read_Bps)}</td>
-      <td data-sort="${d.write_Bps ?? ""}">${rate(d.write_Bps)}</td>
-      <td data-sort="${d.read_bytes ?? ""}">${isNum(d.read_bytes) ? formatBytes(d.read_bytes) : "-"}</td>
-      <td data-sort="${d.written_bytes ?? ""}">${isNum(d.written_bytes) ? formatBytes(d.written_bytes) : "-"}</td>
+      <td data-sort="${escapeHtml(d.read_Bps ?? "")}">${rate(d.read_Bps)}</td>
+      <td data-sort="${escapeHtml(d.write_Bps ?? "")}">${rate(d.write_Bps)}</td>
+      <td data-sort="${escapeHtml(d.read_bytes ?? "")}">${isNum(d.read_bytes) ? formatBytes(d.read_bytes) : "-"}</td>
+      <td data-sort="${escapeHtml(d.written_bytes ?? "")}">${isNum(d.written_bytes) ? formatBytes(d.written_bytes) : "-"}</td>
     </tr>`).join(""), "No disk counters reported.", 5);
 }
 
@@ -2003,7 +2029,7 @@ function renderLatest(data) {
         <td class="text-cell" title="${escapeHtml(x.metric_key)}"><strong>${escapeHtml(label)}</strong></td>
         <td data-sort="${escapeHtml(String(x.value))}">${escapeHtml(valStr)}</td>
         <td data-sort="${isNum(delta) ? delta : ""}">${formatChange(x.metric_key, delta)}</td>
-        <td data-sort="${x.timestamp}" class="dim">${escapeHtml(formatAgo(x.timestamp))}</td>
+        <td data-sort="${escapeHtml(x.timestamp)}" class="dim">${escapeHtml(formatAgo(x.timestamp))}</td>
         <td data-sort="${interval ?? ""}" class="dim">${interval ? interval + "s" : "-"}</td>
       </tr>`;
   };
@@ -2014,11 +2040,11 @@ function renderLatest(data) {
 function eventRows(events, withDevice) {
   return events.map(e => `
     <tr>
-      <td data-sort="${e.timestamp}">${escapeHtml(formatTime(e.timestamp))}</td>
+      <td data-sort="${escapeHtml(e.timestamp)}">${escapeHtml(formatTime(e.timestamp))}</td>
       ${withDevice ? `<td class="text-cell">${e.device_id
         ? `<a class="device-link" href="#/device/${Number(e.device_id)}">${escapeHtml(e.hostname)}</a>`
         : `<span class="dim">${e.actor ? escapeHtml(e.actor) : "System"}</span>`}</td>` : ""}
-      <td data-sort="${SEVERITY_RANK[e.severity] ?? 3}">${severityPill(e.severity)}</td>
+      <td data-sort="${Number(SEVERITY_RANK[e.severity] ?? 3)}">${severityPill(e.severity)}</td>
       <td class="text-cell dim">${escapeHtml(e.event_type)}</td>
       <td class="text-cell">${escapeHtml(e.message)}</td>
     </tr>`).join("");
@@ -2062,14 +2088,14 @@ function pagerHtml(page, pages, total, perPage) {
   const buttons = [];
   for (const n of [...nums].sort((a, b) => a - b)) {
     if (n - prev > 1) buttons.push(`<span class="pager-gap">...</span>`);
-    buttons.push(`<button type="button" class="btn${n === page ? " active" : ""}" data-page="${n}"${n === page ? ' aria-current="page"' : ""}>${n}</button>`);
+    buttons.push(`<button type="button" class="btn${n === page ? " active" : ""}" data-page="${escapeHtml(n)}"${n === page ? ' aria-current="page"' : ""}>${escapeHtml(n)}</button>`);
     prev = n;
   }
-  return `<span class="dim">${first} to ${last} of ${total.toLocaleString()}</span>
+  return `<span class="dim">${first} to ${last} of ${Number(total).toLocaleString()}</span>
     <span class="pager-buttons">
       <button type="button" class="btn" data-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>Previous</button>
       ${buttons.join("")}
-      <button type="button" class="btn" data-page="${page + 1}" ${page >= pages ? "disabled" : ""}>Next</button>
+      <button type="button" class="btn" data-page="${Number(page) + 1}" ${page >= pages ? "disabled" : ""}>Next</button>
     </span>`;
 }
 
@@ -2206,7 +2232,7 @@ function graphDefinitions(detail, ports) {
 async function drawDefinition(host, deviceId, g, hours, compare = false) {
   try {
     const keys = g.series.map(s => s[0]);
-    const hist = await api(`/api/devices/${deviceId}/history?keys=${keys.join(",")}&hours=${hours}${compare ? "&compare=1" : ""}`);
+    const hist = await api(`/api/devices/${encodeURIComponent(deviceId)}/history?keys=${keys.map(encodeURIComponent).join(",")}&hours=${encodeURIComponent(hours)}${compare ? "&compare=1" : ""}`);
     const series = g.series.map(([k, label]) => ({ key: k, label, points: hist.series[k] || [] }));
     if (compare && hist.previous) {
       g.series.forEach(([k, label], i) => series.push({ label: `${label} (previous)`, points: hist.previous[k] || [], dashed: true, color: i }));
@@ -2341,7 +2367,7 @@ async function renderChartGrid(containerId, defs, hours) {
     ? `<div class="dim">No graphs chosen for the Overview. <a href="#" data-choose-graphs>Choose graphs</a></div>` : `<div class="dim">No graphable metrics yet.</div>`;
   container.innerHTML = defs.map((g, i) => `
     <div class="chart-card" data-title="${escapeHtml(g.title)}">
-      <div class="chart-title"><span>${escapeHtml(g.title)}</span><span class="chart-title-end">${pin(g)}<span class="dim">${hours >= 24 ? hours / 24 + "d" : hours + "h"}</span></span></div>
+      <div class="chart-title"><span>${escapeHtml(g.title)}</span><span class="chart-title-end">${pin(g)}<span class="dim">${hours >= 24 ? Number(hours) / 24 + "d" : Number(hours) + "h"}</span></span></div>
       <div class="chart-host" data-chart="${i}"></div>
     </div>`).join("") || empty;
 
@@ -2597,7 +2623,7 @@ function drawChart(host, series, opts) {
       const off = hidden.has(s.label);
       const last = s.points.length ? opts.fmt(s.points[s.points.length - 1].value) : "-";
       return `<button type="button" class="legend-item legend-toggle${off ? " off" : ""}" data-series-toggle="${escapeHtml(s.label)}"
-        aria-pressed="${!off}" title="${off ? "Show" : "Hide"} ${escapeHtml(s.label)}"><span class="legend-indicator legend-s${s._ci}"></span>${escapeHtml(s.label)} <span class="dim">${escapeHtml(off ? "hidden" : last)}</span></button>`;
+        aria-pressed="${!off}" title="${off ? "Show" : "Hide"} ${escapeHtml(s.label)}"><span class="legend-indicator legend-s${escapeHtml(s._ci)}"></span>${escapeHtml(s.label)} <span class="dim">${escapeHtml(off ? "hidden" : last)}</span></button>`;
     }).join("");
     legend.addEventListener("click", ev => {
       const b = ev.target.closest("[data-series-toggle]");
@@ -3007,7 +3033,7 @@ async function fillEditExtras(d) {
   const auto = DEVICE_GROUPS[d.device_group ? "" : d.group] || null;
   group.innerHTML = `<option value="">Automatic${auto ? ` (${escapeHtml(auto[0])})` : ""}</option>` +
     Object.entries(DEVICE_GROUPS).sort((a, b) => a[1][1] - b[1][1])
-      .map(([id, [label]]) => `<option value="${id}">${escapeHtml(label)}</option>`).join("");
+      .map(([id, [label]]) => `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`).join("");
   group.value = d.device_group || "";
   let devices = lastFleet ? lastFleet[0] : null;
   if (!devices) {
@@ -3025,8 +3051,8 @@ async function fillEditExtras(d) {
   const over = d.overrides || {};
   document.getElementById("edit-overrides").innerHTML = OVERRIDE_FIELDS.map(([k, label]) => {
     const reported = k in polled ? polled[k] : (d.inventory || {})[k];
-    return `<div class="form-group"><label for="edit-ov-${k}">${escapeHtml(label)}</label>
-      <input type="text" id="edit-ov-${k}" data-override="${k}" maxlength="128" value="${escapeHtml(over[k] || "")}"
+    return `<div class="form-group"><label for="edit-ov-${escapeHtml(k)}">${escapeHtml(label)}</label>
+      <input type="text" id="edit-ov-${escapeHtml(k)}" data-override="${escapeHtml(k)}" maxlength="128" value="${escapeHtml(over[k] || "")}"
         placeholder="${escapeHtml(reported ? `Device says: ${reported}` : "Not reported by the device")}"></div>`;
   }).join("");
   // Open the section when something in it is set, so it is not hidden away.
@@ -3119,6 +3145,7 @@ const SETTINGS_SECTIONS = [
   ["maintenance", "Maintenance windows", "", "Monitoring", "problems.ack"],
   ["demo", "Demo data", "This monitor was installed with made-up devices to look around. Remove them when you are ready to use it for real.", "System", "settings.system"],
   ["users", "Users", "", "System", "users.manage"],
+  ["login", "Login security", "Extra protection for logins.", "System", "settings.system"],
   ["retention", "Data retention and storage", "How long history is kept. Raw samples are rolled up into hourly min / avg / max before they expire.", "System", "settings.system"],
   ["backups", "Backups", "Where backups go and how to rebuild. Without Syncthing they stay in the container (the newest 7); with Syncthing they are written to the synced folder, so your NAS holds them.", "System", "settings.system"],
   ["updates", "Updates", "New versions from the project's signed releases. Each update keeps a backup and the previous version for two days, so it can be undone.", "System", "settings.system"],
@@ -3174,7 +3201,7 @@ function settingInput(s, value) {
       `<button class="btn" type="button" data-reveal="${escapeHtml(s.key)}">Show</button>`;
   }
   if (s.type === "int" || s.type === "float") {
-    return `<input type="number" ${common} value="${escapeHtml(value)}" min="${s.min}" max="${s.max}" step="${s.type === "int" ? 1 : 0.1}">`;
+    return `<input type="number" ${common} value="${escapeHtml(value)}" min="${escapeHtml(s.min)}" max="${escapeHtml(s.max)}" step="${s.type === "int" ? 1 : 0.1}">`;
   }
   if (s.type === "time") return `<input type="time" ${common} value="${escapeHtml(value)}">`;
   if (s.type === "template") return `<textarea ${common} rows="3" maxlength="500" spellcheck="false">${escapeHtml(value)}</textarea>`;
@@ -3191,7 +3218,7 @@ function demoPanel(d) {
   if (!d || !d.on) return "";
   const admin = currentUser && currentUser.role === "admin";
   return `<div class="backup-panel demo-panel">
-    <p>${d.devices ? `${d.devices} made-up devices` : "Made-up devices"} fill the dashboard, the map, the graphs and the history, so you can try everything without touching your network. Their readings are invented here; nothing is sent to those addresses.</p>
+    <p>${d.devices ? `${escapeHtml(d.devices)} made-up devices` : "Made-up devices"} fill the dashboard, the map, the graphs and the history, so you can try everything without touching your network. Their readings are invented here; nothing is sent to those addresses.</p>
     <p>Removing them deletes the demo devices with their history and events, and the groups and tags that came with them. Your account, your settings and any device you added yourself stay. With nothing left, the setup guide opens to find the devices on your network.</p>
     ${admin ? `<button type="button" class="btn btn-danger-solid" id="btn-demo-remove">Remove the demo data and start for real</button>`
       : `<p class="form-help">An administrator can remove it.</p>`}
@@ -3244,7 +3271,7 @@ function renderSettings(values, system) {
     group = g;
     const badge = id === "updates" && typeof updateWaiting !== "undefined" && updateWaiting
       ? `<span class="nav-badge" aria-label="An update is ready">1</span>` : "";
-    return `${head}<a data-section="${id}" href="#/settings/${id}">${escapeHtml(title)}${badge}</a>`;
+    return `${head}<a data-section="${escapeHtml(id)}" href="#/settings/${escapeHtml(id)}">${escapeHtml(title)}${badge}</a>`;
   }).join("");
 
   const cards = SETTINGS_SECTIONS.filter(([id]) => !STATIC_SETTINGS_CARDS.has(id) && (id !== "demo" || demoOn)).map(([id, title, blurb, , perm]) => {
@@ -3259,7 +3286,7 @@ function renderSettings(values, system) {
       <div class="setting-row${cls}" data-row="${escapeHtml(s.key)}"${id === "notify" ? ` data-ntab="${notifyTab(s.key)}"` : ""}>
         <div><label for="setting-${escapeHtml(s.key)}">${escapeHtml(paired ? "Message" : s.label)}</label></div>
         <div class="setting-input">${settingInput(s, values[s.key] ?? s.default)}<span class="unit">${escapeHtml(s.unit || "")}</span></div>
-        <div class="setting-help">${escapeHtml(s.help || "")}${s.min !== null && s.min !== undefined ? ` <span class="dim">(${s.min} to ${s.max}, default ${escapeHtml(s.default)})</span>` : ""}<span class="err"></span></div>
+        <div class="setting-help">${escapeHtml(s.help || "")}${s.min !== null && s.min !== undefined ? ` <span class="dim">(${escapeHtml(s.min)} to ${escapeHtml(s.max)}, default ${escapeHtml(s.default)})</span>` : ""}<span class="err"></span></div>
       </div>`;
     }).join("");
     let extra = "";
@@ -3271,7 +3298,7 @@ function renderSettings(values, system) {
     if (id === "notify") extra = notifyPanel() + `<div id="bot-builder" class="bot-builder" data-ntab="commands"></div>`;
     if (id === "alerts") extra = alertRulesPanel();
     const note = readOnly ? `<div class="panel-note-bar warn">Your account can view these settings but not change them.</div>` : "";
-    return `<section class="settings-card${readOnly ? " read-only" : ""}" id="settings-${id}" data-card="${id}">
+    return `<section class="settings-card${readOnly ? " read-only" : ""}" id="settings-${escapeHtml(id)}" data-card="${escapeHtml(id)}">
       <div class="settings-card-head"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(blurb)}${SECTION_LINKS[id] || ""}</p></div>
       ${id === "notify" ? notifyTabsBar() : ""}${note}${id === "updates" ? extra + rows : rows + extra}</section>`;
   }).join("");
@@ -3341,7 +3368,7 @@ function notifyTab(key) {
 
 function notifyTabsBar() {
   return `<div class="tab-bar ntab-bar" id="ntab-bar" role="tablist">${NOTIFY_TABS.map(([id, label]) =>
-    `<a class="tab${id === notifyTabActive ? " active" : ""}" data-ntab-go="${id}" role="tab" tabindex="0">${escapeHtml(label)}</a>`).join("")}</div>`;
+    `<a class="tab${id === notifyTabActive ? " active" : ""}" data-ntab-go="${escapeHtml(id)}" role="tab" tabindex="0">${escapeHtml(label)}</a>`).join("")}</div>`;
 }
 
 function applyNotifyTab() {
@@ -3406,9 +3433,9 @@ function storagePanel(st, values) {
       ${stat(st.oldest_raw ? formatAgo(st.oldest_raw).replace(" ago", "") : "-", "Raw history span")}
     </div>
     <table class="storage-table"><tbody>
-      <tr><td>Raw samples</td><td>${st.rows.metrics.toLocaleString()} rows</td></tr>
-      <tr><td>Hourly trends</td><td>${st.rows.metrics_hourly.toLocaleString()} rows</td></tr>
-      <tr><td>Events / audit</td><td>${st.rows.events.toLocaleString()} / ${st.rows.audit_log.toLocaleString()} rows</td></tr>
+      <tr><td>Raw samples</td><td>${Number(st.rows.metrics).toLocaleString()} rows</td></tr>
+      <tr><td>Hourly trends</td><td>${Number(st.rows.metrics_hourly).toLocaleString()} rows</td></tr>
+      <tr><td>Events / audit</td><td>${Number(st.rows.events).toLocaleString()} / ${Number(st.rows.audit_log).toLocaleString()} rows</td></tr>
       <tr><td>Reusable free space</td><td>${formatBytes(st.free_bytes)}</td></tr>
       <tr><td>File</td><td>${escapeHtml(st.path)}</td></tr>
     </tbody></table>`;
@@ -3657,11 +3684,13 @@ async function loadAuditLogs() {
     document.getElementById("au-clear").classList.toggle("hidden", !filtered);
     fillTable("audit-table-body", (data.logs || []).map(l => `
       <tr>
-        <td data-sort="${l.timestamp}">${escapeHtml(formatTime(l.timestamp))}</td>
+        <td data-sort="${escapeHtml(l.timestamp)}">${escapeHtml(formatTime(l.timestamp))}</td>
         <td class="text-cell"><span class="status-pill status-unknown">${escapeHtml(l.category)}</span></td>
         <td class="text-cell"><strong>${escapeHtml(l.message)}</strong></td>
+        <td class="text-cell">${escapeHtml(l.actor || "")}</td>
+        <td class="text-cell dim" data-perm="audit.sensitive">${escapeHtml(l.source || "")}</td>
         <td class="text-cell dim">${escapeHtml(l.details || "")}</td>
-      </tr>`).join(""), document.getElementById("au-clear").classList.contains("hidden") ? "No audit logs recorded yet." : "No entries match these filters.", 4);
+      </tr>`).join(""), document.getElementById("au-clear").classList.contains("hidden") ? "No audit logs recorded yet." : "No entries match these filters.", 6);
   } catch (err) {
     showToast(`Could not load audit log: ${err.message}`, "error");
   }
@@ -3863,7 +3892,7 @@ function initDashboard() {
   const grid = document.getElementById("dash-grid");
   const addSel = document.getElementById("dash-add");
   addSel.innerHTML = `<option value="">+ Add tile...</option>` +
-    Object.entries(WIDGETS).map(([type, w]) => `<option value="${type}">${escapeHtml(w.title)}</option>`).join("");
+    Object.entries(WIDGETS).map(([type, w]) => `<option value="${escapeHtml(type)}">${escapeHtml(w.title)}</option>`).join("");
 
   document.getElementById("dash-edit").addEventListener("click", () => {
     dashEditing = !dashEditing;
@@ -4179,7 +4208,7 @@ async function loadDashboard(name) {
     dashColumns = r.columns || 4;
     dashColumnOptions = r.column_options || dashColumnOptions;
     const sel = document.getElementById("dash-columns");
-    sel.innerHTML = dashColumnOptions.map(n => `<option value="${n}" ${n === dashColumns ? "selected" : ""}>${n} columns</option>`).join("");
+    sel.innerHTML = dashColumnOptions.map(n => `<option value="${escapeHtml(n)}" ${n === dashColumns ? "selected" : ""}>${escapeHtml(n)} columns</option>`).join("");
   } catch (err) {
     showToast(`Could not load dashboard: ${err.message}`, "error");
     return;
@@ -4519,7 +4548,7 @@ const DASH_RENDER = {
                  [`if.${x.if_index}.in_peak_bps`, "Download peak"], [`if.${x.if_index}.out_peak_bps`, "Upload peak"]], fmt: "bps",
       }, 24);
     }
-    const stat = (n, label, cls = "") => `<div class="stat-inline ${cls}"><div class="stat-num">${escapeHtml(n)}</div><div class="stat-label">${escapeHtml(label)}</div></div>`;
+    const stat = (n, label, cls = "") => `<div class="stat-inline ${escapeHtml(cls)}"><div class="stat-num">${escapeHtml(n)}</div><div class="stat-label">${escapeHtml(label)}</div></div>`;
     body.querySelector(".wan-head").innerHTML =
       stat(x.oper === 1 ? "UP" : "DOWN", "Link", x.oper === 1 ? "stat-ok" : "stat-bad") +
       stat(formatBps(x.in_bps), "Download avg") + stat(formatBps(x.out_bps), "Upload avg") +
@@ -4548,9 +4577,9 @@ const DASH_RENDER = {
       const s = d.summary;
       return `<tr>
         <td class="text-cell"><a class="device-link" href="#/device/${Number(d.id)}/wireless">${escapeHtml(d.hostname)}</a></td>
-        <td>${s.clients}</td>
-        <td>${s.clients_2g ?? "-"} / ${s.clients_5g ?? "-"}</td>
-        <td>${s.channel_2g ?? "-"} / ${s.channel_5g ?? "-"}</td>
+        <td>${escapeHtml(s.clients)}</td>
+        <td>${escapeHtml(s.clients_2g ?? "-")} / ${escapeHtml(s.clients_5g ?? "-")}</td>
+        <td>${escapeHtml(s.channel_2g ?? "-")} / ${escapeHtml(s.channel_5g ?? "-")}</td>
         <td class="bar-cell">${barHtml(s.util_2g)}</td>
         <td class="bar-cell">${barHtml(s.util_5g)}</td>
       </tr>`;
@@ -4646,9 +4675,9 @@ async function loadCredentials() {
       <td class="text-cell"><strong>${escapeHtml(c.name)}</strong></td>
       <td class="text-cell">${c.cred_type === "ssh_key" ? `SSH key${c.has_passphrase ? " (with passphrase)" : ""}${c.public_fingerprint ? `<div class="dim task-cmd">${escapeHtml(c.public_fingerprint)}</div>` : ""}` : "Password"}</td>
       <td>${escapeHtml(c.username || "-")}</td>
-      <td data-sort="${c.created_at}" class="dim">${escapeHtml(formatTime(c.created_at))}</td>
+      <td data-sort="${escapeHtml(c.created_at)}" class="dim">${escapeHtml(formatTime(c.created_at))}</td>
       <td class="actions-cell">
-        <button class="btn" data-cred-test="${Number(c.id)}" title="Log in to a host with it (runs only 'true')">Test</button>
+        <button class="btn" data-perm="credentials.use" data-cred-test="${Number(c.id)}" title="Log in to a host with it (runs only 'true')">Test</button>
         <button class="btn" data-cred-edit="${Number(c.id)}">Edit</button>
         <button class="btn btn-danger" data-cred-delete="${Number(c.id)}" data-name="${escapeHtml(c.name)}">Delete</button>
       </td>
@@ -4814,11 +4843,14 @@ async function openHostKeys(task) {
         row.cells[1].className = "text-err";
       } else if (approved) {
         row.cells[1].innerHTML = `<code>${escapeHtml(p.key_type)} ${escapeHtml(p.fingerprint)}</code>`;
-        row.cells[2].innerHTML = `<span class="status-pill status-ok">approved</span> <button class="btn" data-hk-forget="${id}">Forget</button>`;
+        row.cells[2].innerHTML = `<span class="status-pill status-ok">approved</span> <button class="btn" data-perm="devices.manage" data-hk-forget="${escapeHtml(id)}">Forget</button>`;
       } else {
         const changed = r.approved.length ? `<div class="text-err">WARNING: this differs from the key approved earlier (${escapeHtml(r.approved[0].fingerprint)}). Only approve if you reinstalled the host.</div>` : "";
         row.cells[1].innerHTML = `<code>${escapeHtml(p.key_type)} ${escapeHtml(p.fingerprint)}</code>${changed}`;
-        row.cells[2].innerHTML = `<button class="btn btn-primary" data-hk-approve="${id}" data-fp="${escapeHtml(p.fingerprint)}" data-port="${Number(task.ssh_port)}">Approve</button>`;
+        // Approving decides where stored credentials are sent: Manage credentials only.
+        row.cells[2].innerHTML = can("credentials.manage")
+          ? `<button class="btn btn-primary" data-hk-approve="${escapeHtml(id)}" data-fp="${escapeHtml(p.fingerprint)}" data-port="${Number(task.ssh_port)}">Approve</button>`
+          : `<span class="dim">Someone with the Manage credentials permission needs to approve it.</span>`;
       }
     } catch (err) {
       row.cells[1].textContent = err.message;

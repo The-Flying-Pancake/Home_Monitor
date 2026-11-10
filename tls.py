@@ -37,7 +37,7 @@ import socket
 import ssl
 import tempfile
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import database
 
@@ -50,6 +50,15 @@ KEY_KEY = "tls_key"            # in database.SECRET_SETTINGS: encrypted at rest
 NAMES_KEY = "tls_extra_names"  # extra names for the self-signed certificate (JSON list)
 PROMPT_KEY = "tls_prompt"      # "pending": ask an admin to choose (installs upgraded from before HTTPS)
 WARNED_KEY = "tls_warned"      # expiry date already warned about, and on which day (no repeat the same day)
+FAILED_KEY = "tls_failed"      # "reason|YYYY-MM-DD": HTTPS failure already reported (once a day per reason)
+
+REFUSED_TEXT = ("HTTPS is not working on this monitor, so logins from other computers are switched off. "
+                "The login page says how to fix it.")
+MAX_REASON = 200
+
+# Set by server.py: tells the administrator (Telegram) that HTTPS could not start. Kept as a hook so
+# this module does not import the notifier.
+on_failure: Optional[Callable[[str], None]] = None
 
 SELF_SIGNED_DAYS = 825
 RENEW_DAYS = 30
@@ -265,11 +274,15 @@ class Server:
 
     def __init__(self) -> None:
         self.context: Optional[ssl.SSLContext] = None
+        # Why HTTPS should be on but is not ("" when it works or is switched off). While set, logins
+        # from other computers over plain HTTP are refused (server.py).
+        self.failure = ""
         self.lock = threading.Lock()
 
-    def set(self, ctx: Optional[ssl.SSLContext]) -> None:
+    def set(self, ctx: Optional[ssl.SSLContext], failure: str = "") -> None:
         with self.lock:
             self.context = ctx
+            self.failure = failure
 
 
 SERVER = Server()
@@ -322,28 +335,83 @@ def ensure_self_signed(force: bool = False) -> bool:
     return True
 
 
+def _today() -> str:
+    return datetime.date.today().isoformat()
+
+
 def load() -> None:
-    """Called at start: applies the stored mode, making a self-signed certificate when one is due."""
-    s = _settings()
+    """Called at start and after a change: applies the stored mode, making a self-signed certificate
+    when one is due. Every way HTTPS should be on but is not goes through _fail, and nothing here
+    stops the monitor from starting."""
+    try:
+        _load()
+    except Exception as exc:
+        log.exception("HTTPS could not be set up")
+        _fail(f"it could not be set up: {exc}")
+
+
+def _load() -> None:
     m = mode()
+    if m == "off":
+        SERVER.set(None)
+        _forget_failure()
+        return
     if m == "self-signed":
         try:
             ensure_self_signed()
-        except Exception:
-            log.exception("Could not make a self-signed certificate; serving plain HTTP")
-            SERVER.set(None)
+        except ImportError:
+            _fail("the cryptography package is missing")
             return
-        s = _settings()
-    if m == "off" or not s.get(CERT_KEY) or not s.get(KEY_KEY):
-        SERVER.set(None)
+        except Exception:
+            log.exception("Could not make a self-signed certificate")
+            _fail("a self-signed certificate could not be made")
+            return
+    s = _settings()
+    if not s.get(CERT_KEY) or not s.get(KEY_KEY):
+        _fail("no certificate is stored")
         return
     try:
-        SERVER.set(build_context(s[CERT_KEY], s[KEY_KEY]))
-    except TlsError as exc:
-        # A stored pair that no longer loads (it should not happen): plain HTTP rather than no access at all.
-        log.error("HTTPS certificate could not be loaded (%s); serving plain HTTP", exc)
-        database.add_event(None, "warning", "system", f"HTTPS is off: the stored certificate could not be loaded ({exc})")
-        SERVER.set(None)
+        ctx = build_context(s[CERT_KEY], s[KEY_KEY])
+    except Exception as exc:
+        _fail(f"the stored certificate could not be loaded: {exc}")
+        return
+    SERVER.set(ctx)
+    if _forget_failure():
+        database.add_event(None, "info", "system", "HTTPS is working again.")
+
+
+def _forget_failure() -> bool:
+    """Clears the reported failure. True when there was one."""
+    try:
+        if not database.get_all_settings().get(FAILED_KEY):
+            return False
+        database.set_internal_setting(FAILED_KEY, "")
+        return True
+    except Exception:
+        return False
+
+
+def _fail(reason: str) -> None:
+    """HTTPS should be on but is not: plain HTTP, logins from other computers refused, and the
+    administrator told (the bell, the audit log and Telegram), once a day for the same reason."""
+    reason = " ".join(str(reason).split())[:MAX_REASON]
+    SERVER.set(None, failure=reason)
+    log.error("HTTPS could not start (%s); serving plain HTTP and refusing logins from other computers", reason)
+    try:
+        mark = f"{reason}|{_today()}"
+        if database.get_all_settings().get(FAILED_KEY) == mark:
+            return
+        database.set_internal_setting(FAILED_KEY, mark)
+        database.add_event(None, "high", "system",
+                           f"HTTPS is off: {reason}. Logins from other computers are refused until this is fixed.")
+        database.add_audit("system", "HTTPS could not start", reason)
+    except Exception:
+        log.exception("Could not record the HTTPS failure")
+    if on_failure is not None:
+        try:
+            on_failure(reason)
+        except Exception:
+            log.exception("Could not send the HTTPS failure alert")
 
 
 def first_run(existing: Dict[str, str], has_accounts: bool) -> None:
@@ -363,6 +431,7 @@ def set_off() -> None:
     database.set_internal_setting(MODE_KEY, "off")
     database.set_internal_setting(PROMPT_KEY, "")
     SERVER.set(None)
+    _forget_failure()
 
 
 def set_self_signed(names: List[str]) -> None:
@@ -371,6 +440,9 @@ def set_self_signed(names: List[str]) -> None:
     changed = set(names) != set(extra_names())
     database.set_internal_setting(NAMES_KEY, json.dumps(names))
     ensure_self_signed(force=changed)
+    # The mode is stored here, not left to ensure_self_signed: when the kept certificate still fits it
+    # stores nothing, and coming back from "off" would then stay off.
+    database.set_internal_setting(MODE_KEY, "self-signed")
     database.set_internal_setting(PROMPT_KEY, "")
     load()
 
@@ -393,7 +465,7 @@ def public_state() -> Dict[str, Any]:
     m = mode()
     out: Dict[str, Any] = {"mode": m, "active": SERVER.context is not None, "prompt": s.get(PROMPT_KEY) == "pending",
                            "extra_names": extra_names(), "machine_names": machine_names(),
-                           "certificate": None}
+                           "certificate": None, "failure": SERVER.failure}
     if m != "off" and s.get(CERT_KEY):
         try:
             out["certificate"] = describe(s[CERT_KEY])
@@ -412,6 +484,10 @@ def daily_check(notify, now: Optional[float] = None) -> Optional[str]:
     notify(days, date) sends the message. Returns what was done, for the tests."""
     m = mode()
     now = now if now is not None else datetime.datetime.now(datetime.timezone.utc).timestamp()
+    if SERVER.failure and m != "off":
+        # A passing fault (a package installed, a file restored) clears itself.
+        load()
+        return "retried"
     if m == "self-signed":
         if ensure_self_signed():
             load()

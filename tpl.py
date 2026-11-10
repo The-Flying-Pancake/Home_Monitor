@@ -36,20 +36,56 @@ line holding only {if}, {else} or {end} leaves no empty line behind. Unknown nam
 written, so a typo shows; mistakes in a tag show as {?message}.
 
 Nothing here can reach anything but the values handed in: there is no attribute access, no
-loops and no exponent, and the size of the work is bounded by the template's length.
+loops and no exponent. Every value a filter builds is limited to MAX_WORK characters and each
+render to MAX_TOTAL_WORK. A template that goes over them renders FALLBACK.
 """
 
+import hashlib
+import logging
 import math
 import re
+import threading
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 MAX_OUT = 3800
+# The largest value one filter may build, in characters. Far above any message a caller keeps.
+MAX_WORK = 16 * MAX_OUT
+# The most lines a list filter handles.
+MAX_LINES = 2000
+# Everything one render may build: every filter result and every tag's text counts.
+MAX_TOTAL_WORK = 20 * MAX_WORK
+FALLBACK = "This message could not be built because its template makes the text too long. Please check the template."
 _NUM = re.compile(r"^\s*([-+]?\d+(?:[.,]\d+)?)")
 _TAG = re.compile(r"\{\{|\}\}|\{([^{}\n]*)\}")
+
+log = logging.getLogger("tpl")
+_logged_lock = threading.Lock()
+_logged: set = set()
 
 
 class TemplateError(Exception):
     pass
+
+
+class TemplateLimit(TemplateError):
+    """The template builds more text than MAX_WORK or MAX_TOTAL_WORK allow."""
+
+
+class _Budget:
+    """What one render may still build, in characters."""
+
+    def __init__(self) -> None:
+        self.left = MAX_TOTAL_WORK
+
+    def charge(self, n: int) -> None:
+        self.left -= n
+        if self.left < 0:
+            raise TemplateLimit("the text grows too large")
+
+
+def _check(n: int) -> None:
+    if n > MAX_WORK:
+        raise TemplateLimit("the text grows too large")
 
 
 def number(value: Any) -> Optional[float]:
@@ -292,7 +328,8 @@ def _split_pipes(text: str) -> List[str]:
 
 
 def _lines(v: str) -> List[str]:
-    return [x for x in v.split("\n") if x.strip()]
+    """The non-blank lines, at most MAX_LINES of them."""
+    return [x for x in v.split("\n", MAX_LINES)[:MAX_LINES] if x.strip()]
 
 
 def _int_arg(args: List[str], i: int, default: int, lo: int = 0, hi: int = 500) -> int:
@@ -314,7 +351,16 @@ def _numeric(v: str, name: str) -> float:
     return n
 
 
-def apply_filter(value: Any, spec: str) -> str:
+def apply_filter(value: Any, spec: str, budget: Optional[_Budget] = None) -> str:
+    """One filter. Its result may not be longer than MAX_WORK and counts towards the budget."""
+    out = _apply(value, spec)
+    _check(len(out))
+    if budget is not None:
+        budget.charge(len(out))
+    return out
+
+
+def _apply(value: Any, spec: str) -> str:
     args = _split_args(spec.strip())
     name = args.pop(0).strip().lower()
     v = "" if value is None else (fmt(value) if isinstance(value, float) else str(value))
@@ -371,7 +417,12 @@ def apply_filter(value: Any, spec: str) -> str:
     if name == "replace":
         if not args:
             raise TemplateError("replace needs OLD:NEW")
-        return v.replace(args[0], args[1] if len(args) > 1 else "") if args[0] else v
+        if not args[0]:
+            return v
+        new = args[1] if len(args) > 1 else ""
+        # The size is known before anything is built, so a growing chain stops here.
+        _check(len(v) + v.count(args[0]) * (len(new) - len(args[0])))
+        return v.replace(args[0], new)
     if name == "first":
         return "\n".join(_lines(v)[:_int_arg(args, 0, 5)])
     if name == "last":
@@ -389,9 +440,13 @@ def apply_filter(value: Any, spec: str) -> str:
                 out.append(x)
         return "\n".join(out)
     if name == "count":
-        return str(len(_lines(v)))
+        # Counted over the whole value, so the answer stays right past MAX_LINES.
+        return str(sum(1 for x in v.split("\n") if x.strip()))
     if name == "join":
-        return (args[0] if args else ", ").join(x.strip() for x in _lines(v))
+        sep = args[0] if args else ", "
+        items = [x.strip() for x in _lines(v)]
+        _check(sum(len(x) for x in items) + len(sep) * max(0, len(items) - 1))
+        return sep.join(items)
     raise TemplateError(f"unknown filter {name}")
 
 
@@ -402,8 +457,10 @@ FILTERS = ["upper", "lower", "title", "trim", "default", "before", "after", "rou
 
 # --- Rendering ---
 
-def _tag(body: str, values: Dict[str, Any], known: Optional[set]) -> Tuple[str, bool, bool]:
+def _tag(body: str, values: Dict[str, Any], known: Optional[set],
+         budget: Optional[_Budget] = None) -> Tuple[str, bool, bool]:
     """One {tag}: (text, was a placeholder, its value was missing or empty)."""
+    budget = budget if budget is not None else _Budget()
     parts = _split_pipes(body)
     head = parts[0].strip()
     try:
@@ -423,11 +480,18 @@ def _tag(body: str, values: Dict[str, Any], known: Optional[set]) -> Tuple[str, 
             else:
                 v, missing = values[head], False
         for f in parts[1:]:
-            v = apply_filter(v, f)
+            v = apply_filter(v, f, budget)
         text = "" if v is None else (fmt(v) if isinstance(v, float) else str(v))
+        budget.charge(len(text))
         return text, True, missing or not text.strip()
+    except TemplateLimit:
+        raise
     except TemplateError as exc:
         return "{?" + str(exc)[:80] + "}", False, False
+    except ArithmeticError:
+        return "{?number too large}", False, False
+    except RecursionError:
+        return "{?too deeply nested}", False, False
 
 
 def _blocks(text: str, values: Dict[str, Any], known: Optional[set]) -> str:
@@ -478,9 +542,13 @@ def _blocks(text: str, values: Dict[str, Any], known: Optional[set]) -> str:
                 if not stack:
                     raise TemplateError("end without if")
                 stack.pop()
-        except TemplateError as exc:
+        except TemplateLimit:
+            raise
+        except (TemplateError, ArithmeticError, RecursionError) as exc:
             if showing:
-                out.append("{?" + str(exc)[:80] + "}")
+                mark = (str(exc)[:80] if isinstance(exc, TemplateError) else
+                        "number too large" if isinstance(exc, ArithmeticError) else "too deeply nested")
+                out.append("{?" + mark + "}")
             if word == "if":
                 stack.append([False, True, showing])
         showing = stack[-1][0] if stack else True
@@ -491,12 +559,41 @@ def _blocks(text: str, values: Dict[str, Any], known: Optional[set]) -> str:
     return "".join(out)
 
 
+def _log_once(text: str) -> None:
+    """Logs a template that hit a limit, once per template text. Only its digest and length are logged."""
+    digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+    with _logged_lock:
+        if digest in _logged:
+            return
+        if len(_logged) >= 256:
+            _logged.clear()
+        _logged.add(digest)
+    log.warning("A message template made its text too long and was replaced by a notice (template %s, %d characters)",
+                digest[:16], len(text))
+
+
 def render(text: str, values: Dict[str, Any], known: Optional[Iterable[str]] = None, drop_empty: bool = True,
-           max_len: int = MAX_OUT) -> str:
+           max_len: int = MAX_OUT, strict: bool = False) -> str:
     """Fills a template. known: names that are placeholders even when values lacks them (they come
-    out empty); None means only the names in values."""
+    out empty); None means only the names in values. A template that builds too much text gives
+    FALLBACK (logged once); strict raises TemplateLimit instead, for the editors' preview."""
+    try:
+        return _render(text, values, known, drop_empty, max_len)
+    except (TemplateLimit, MemoryError, RecursionError):
+        if strict:
+            raise
+        _log_once(text)
+        return FALLBACK[:max_len]
+
+
+def _render(text: str, values: Dict[str, Any], known: Optional[Iterable[str]], drop_empty: bool,
+            max_len: int) -> str:
     if len(text) > 8000:
         text = text[:8000]
+    # A long value comes from the data, not the template: it is shortened, never refused.
+    if any(isinstance(v, str) and len(v) > MAX_WORK for v in values.values()):
+        values = {k: (v[:MAX_WORK] if isinstance(v, str) else v) for k, v in values.items()}
+    budget = _Budget()
     known_set = set(known) if known is not None else None
     text = _blocks(text, values, known_set)
     out = []
@@ -510,7 +607,7 @@ def render(text: str, values: Dict[str, Any], known: Optional[Iterable[str]] = N
             elif m.group(0) == "}}":
                 pieces.append("}")
             else:
-                done, was_tag, empty = _tag(m.group(1), values, known_set)
+                done, was_tag, empty = _tag(m.group(1), values, known_set, budget)
                 pieces.append(done)
                 if was_tag:
                     any_tag = True

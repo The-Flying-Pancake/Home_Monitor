@@ -15,6 +15,39 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 0.12.0: Release 32, Security fixes (2026-11-10)
+
+- Every value from a device or integration is now made safe before it is shown on a page.
+- Number columns holding anything but a number now show a dash.
+- Message templates can no longer use up the monitor's memory. A template that grows too large now sends a short notice. The live preview needs permission to edit messages or workflows.
+- Guessing an authenticator code is now much slower. Wrong codes count towards the login lockout and a correct password no longer resets it.
+- Copy console commands now really sets up key login for an SSH key credential, with password login from the monitor turned off. For a password credential it warns you first. If you used it with a key credential before, paste the new commands again.
+- Settings now reminds you when Pi-hole is connected over http://.
+- The README now has a short note to read before you install: Home Monitor is a hobby project that comes as is, without warranty or a promise of support. Please try it somewhere you can afford to lose and keep your own backups.
+- A new Use stored credentials permission now says plainly who can run commands on your hosts. Operators have it. Users you gave other permissions keep what they could do: the update gives it to them and tells administrators once.
+- Approving an SSH host key now needs Manage credentials.
+- People limited to some devices can now only change those devices. The map, dashboards, groups and tags are shared by everyone, so changing them needs access to every device.
+- Pausing Pi-hole blocking and reconnecting a Wi-Fi device now ask for your password first.
+- A user manager limited to some devices can no longer change someone who can see more.
+- Backups can now prove they were not changed. Set a backup passphrase with /root/backup-passphrase.sh in the container and keep it in your password manager. Settings, Backups reminds you until one is set.
+- Without a backup passphrase, backups that leave the box no longer carry the key to your stored passwords.
+- A restore now shows the accounts in a backup it cannot prove unchanged and asks you to type UNVERIFIED. RESTORE="latest" refuses such a backup unless you set RESTORE_UNVERIFIED="yes".
+- Copies made before an update, upgrade or restore now live in a folder only root can read. Older copies are cleared away after a while.
+- Undo after an update now uses only the copy the box recorded when it made it. It checks that copy first. The trial run of your data before an update or restore now runs as the monitor's own account instead of root.
+- The installer now asks which kind of container you want and warns plainly about a privileged container or root SSH with a password.
+- You can paste an SSH key during the install. The last screen now says correctly how root logs in.
+- The installer checks ADMIN_NET and SNMP_ALLOW strictly and tests the firewall rules before turning them on.
+- If the inbound firewall cannot start the last screen now says so instead of up and running.
+- An upgrade keeps who may reach the box unless you agree to a change.
+- An install with --local now says plainly that it adds no inbound firewall.
+- Checking the installer's signature is now part of the install steps and the release key's fingerprint is published.
+- The web server now drops clients that send too slowly and limits how many connections it serves at once. The monitor's service has memory and task limits, so it cannot use up its container. Very long SSH output is now cut off while it is read.
+- If HTTPS stops working the monitor keeps running and tells you, but it no longer accepts logins from other computers over plain HTTP.
+- Turning HTTPS off and then back on with the same names now really turns it on again. Before, it stayed on plain HTTP.
+- The audit log now records who made each change and from which address. It is kept for at least 90 days, separately from events.
+- New Telegram security alerts tell you about changes to users, credentials and host keys, login lockouts, HTTPS problems, updates and restores. They are on when Telegram is set up and can be turned off.
+- You can now require two-factor authentication for administrators or for everyone, in Settings, Login security. It is off until you turn it on.
+
 ### 0.11.2: Release 31, Acknowledged problems have their own place (2026-11-08)
 
 - A problem you acknowledge has been seen to. It now leaves the dashboard and Current problems and waits under Acknowledged problems on the Devices page, with its note and an Unacknowledge button, until its cause clears.

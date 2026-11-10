@@ -52,6 +52,8 @@ EVENTS = {
     "workflow_start": ("Workflow started", False, "Workflow {workflow} started ({trigger})"),
     "new_device": ("New device on the network", True, "New on the network: {what}"),
     "certificate": ("HTTPS certificate expiring", True, "The monitor's HTTPS certificate expires on {date} ({days} days). Upload a new one in Settings, HTTPS."),
+    # Changes to users, credentials and host keys, lockouts, HTTPS, updates and restores (SECURITY_TEXTS).
+    "security": ("Security alerts", True, "Security: {what}\n{if who}By {who}{end}{if source} from {source}{end}"),
     # Not an event of its own: several messages that came at once, sent as one (Notifier.drain, notify_group).
     "grouped": ("Several at once, grouped", None, "📣 {count} changes at {time}\n{if offline_count > 0}\n🔴 Offline ({offline_count}): {offline_list}\n{end}\n{if online_count > 0}\n🟢 Back online ({online_count}): {online_list}\n{end}\n{if proxmox_count > 0}\n🖥️ Proxmox ({proxmox_count}):\n{proxmox_list}\n{end}\n{other_list}"),
 }
@@ -69,7 +71,8 @@ PLACEHOLDERS = {
     "watch_kind": "service or process", "workflow": "Workflow name", "status": "Workflow result (success, failed, ...)",
     "failed_step": "Failed step, when there is one", "trigger": "What started the workflow (manual, schedule, an event)",
     "date": "Expiry date of the certificate", "days": "Days left before it expires",
-    "what": "The new device: its name or maker, address and where it is connected",
+    "what": "The new device (its name or maker, address and where it is connected), or what happened (security alerts)",
+    "who": "Who did it (security alerts)", "source": "The address it came from (security alerts)",
     "count": "How many messages were grouped", "offline_count": "Devices that went offline",
     "offline_list": "Their names, comma separated; devices unreachable behind one follow it in brackets", "online_count": "Devices back online", "online_list": "Their names",
     "other_list": "Every other message, one per line", "window": "Seconds the monitor waited to group them",
@@ -85,6 +88,7 @@ EVENT_PLACEHOLDERS = {
     "reminder": ["severity", "device", "ip", "template", "time", "problem", "duration"],
     "workflow": ["workflow", "status", "failed_step", "trigger", "time"],
     "workflow_start": ["workflow", "trigger", "time"],
+    "security": ["what", "who", "source", "time"],
     "grouped": ["count", "time", "window", "offline_count", "offline_list", "online_count", "online_list",
                 "proxmox_count", "proxmox_list", "other_list"],
 }
@@ -95,7 +99,7 @@ SAMPLE = {"device": "nas-01", "ip": "192.168.1.99", "template": "qnap_nas", "tim
           "trigger": "schedule", "count": 6, "offline_count": 4, "offline_list": "ap-living-room, ap-kitchen, ap-garden, ap-upstairs",
           "online_count": 0, "online_list": "", "other_list": "• warning: nas-01: CPU usage 97% (threshold 90%)\n• Resolved on pve: memory 91%",
           "proxmox_count": 1, "proxmox_list": "• warning: pve: Guest media-server (200) is stopped, although it starts at boot",
-          "window": 30}
+          "window": 30, "what": "New user added: alex (Viewer)", "who": "admin", "source": "192.168.1.20"}
 # Ready-made texts offered in the template editor, per event. Short on purpose.
 PRESETS = {
     "device_offline": ["🔴 {device} ({ip}) is offline. {problem}", "🔴 DOWN {device} ({ip}) at {time}",
@@ -107,11 +111,41 @@ PRESETS = {
     "reminder": ["🔁 Still open, {severity}: {device} ({ip}): {problem} (for {duration})"],
     "workflow": ["✅ Workflow {workflow}: {status}{failed_step}", "🔁 {workflow} finished: {status}{failed_step}"],
     "workflow_start": ["▶️ Workflow {workflow} started ({trigger})", "⏱️ {time}: running {workflow}"],
+    "security": ["🔒 Security: {what}\n{if who}By {who}{end}{if source} from {source}{end}", "🚨 {what} ({time})"],
     "grouped": ["📣 {count} changes at {time}\n{if offline_count > 0}\n🔴 Offline ({offline_count}): {offline_list}\n{end}\n{if online_count > 0}\n🟢 Back online ({online_count}): {online_list}\n{end}\n{if proxmox_count > 0}\n🖥️ Proxmox ({proxmox_count}):\n{proxmox_list}\n{end}\n{other_list}",
                 "📣 {count} at once: {if offline_count > 0}{offline_count} down{end}{if online_count > 0} {online_count} up{end}\n{offline_list|before:\"Down: \"}\n{online_list|before:\"Up: \"}\n{other_list|first:5}"],
 }
 EMOJIS = ["✅", "❌", "⚠️", "ℹ️", "🔴", "🟢", "🟡", "🔵", "🔥", "🚨", "⏱️", "🔁", "▶️", "⏹️", "🖥️", "📶",
           "💾", "🌡️", "🔌", "🛠️", "🔒", "🔑", "📦", "🌐", "📡", "⚡", "🔋", "🧰", "📣", "👀"]
+
+# What a security alert says (the {what} of the "security" message). Values are filled in as text:
+# tpl.render reads only the template, so a username cannot add placeholders of its own.
+SECURITY_TEXTS = {
+    "admin_added": "{name} is now an administrator",
+    "role_changed": "The role of {name} changed to {role}",
+    "user_added": "New user added: {name} ({role})",
+    "user_deleted": "User deleted: {name}",
+    "twofa_off": "Two-factor authentication was turned off for {name}",
+    "twofa_reset": "Two-factor authentication was reset for {name}",
+    "recovery_code": "A recovery code was used for {name}. {left} left",
+    "recovered": "The password of {name} was reset through password recovery",
+    "cred_added": "Stored credential added: {name}",
+    "cred_changed": "Stored credential changed: {name}",
+    "cred_deleted": "Stored credential deleted: {name}",
+    "key_approved": "SSH host key approved for {device}",
+    "key_forgotten": "SSH host key forgotten for {device}",
+    "lockout": "Too many failed logins for {target}. Further tries are paused",
+    "https_failed": ("HTTPS could not start on the monitor: {reason}. It is serving plain HTTP and refuses logins from "
+                     "other computers until this is fixed. Monitoring and alerts keep running. To get back in, run "
+                     "/root/update.sh on its container and choose option 6."),
+    "update_ok": "{kind} from {from} to {to} finished",
+    "update_failed": "{kind} to {to} failed: {error}",
+    "restored": "The monitor's data was restored from a backup: {file}",
+    "retention": "The audit log is now kept for {days} days (it was {old})",
+}
+# What the event log says for a sent security alert: its text names people and addresses, and
+# device-less events are seen by every user.
+SECURITY_EVENT_TEXT = "a security alert (see the audit log)"
 
 OUTBOX_KEEP_SECONDS = 24 * 3600
 BACKOFF_SECONDS = (15, 30, 60, 120, 300, 600, 900)
@@ -125,6 +159,18 @@ def render(template: str, values: Dict[str, Any]) -> str:
     """Fills a message template (tpl.py: placeholders, filters, arithmetic, {if}). Placeholder names
     the event does not supply come out empty; names nobody knows are left as written."""
     return tpl.render(template, values, known=set(PLACEHOLDERS) | set(values), max_len=MAX_TEXT)
+
+
+TOO_LONG_NOTE = "Your custom text for this alert was too long to build, so this is the standard text."
+
+
+def _render_custom(custom: Optional[str], builtin: str, values: Dict[str, Any]) -> str:
+    """A saved custom text, or the built-in one with a short notice when the custom text is too long
+    to build: a broken template must not blank every alert."""
+    text = render(custom or builtin, values)
+    if custom and text == tpl.FALLBACK[:MAX_TEXT]:
+        text = (TOO_LONG_NOTE + "\n" + render(builtin, values))[:MAX_TEXT]
+    return text
 
 
 def in_quiet_hours(start: str, end: str, now: Optional[datetime] = None) -> bool:
@@ -305,6 +351,11 @@ def _event(device_id: Optional[int], severity: str, text: str) -> None:
         database.add_event(None, severity, "telegram", text)
 
 
+def _logged(m: Dict[str, Any]) -> str:
+    """A message as the event log shows it: a security alert only says it was one."""
+    return SECURITY_EVENT_TEXT if m.get("kind") == "security" else m["text"]
+
+
 def _line(m: Dict[str, Any]) -> str:
     return f"• {m['text'].splitlines()[0][:200]}"
 
@@ -336,7 +387,7 @@ class Notifier:
         if EVENTS[kind][1] is not None and s.get(f"notify_on_{kind}", "on" if EVENTS[kind][1] else "off") != "on":
             return None
         values = dict(values, time=datetime.now().strftime("%Y-%m-%d %H:%M"))
-        text = render(s.get(f"notify_tpl_{kind}") or EVENTS[kind][2], values)
+        text = _render_custom(s.get(f"notify_tpl_{kind}"), EVENTS[kind][2], values)
         # Good news never rings in the silent window: a recovery keeps its problem's severity in the
         # text but is queued without one, so "Still ring from" does not apply to it.
         severity = "" if kind in RECOVERY_KINDS else str(values.get("severity") or "")
@@ -345,6 +396,12 @@ class Notifier:
                                behind=str(values.get("behind") or ""))
         self.wake.set()
         return msg_id
+
+    def security(self, key: str, who: str = "", source: str = "", **values: Any) -> Optional[int]:
+        """A security alert: SECURITY_TEXTS[key] becomes {what} of the "security" message. Sent straight
+        away, also in quiet hours."""
+        what = render(SECURITY_TEXTS[key], {k: str(v) for k, v in values.items()})
+        return self.event("security", {"what": what, "who": who, "source": source, "severity": "high"}, critical=True)
 
     def message(self, text: str, device_id: Optional[int] = None, kind: str = "workflow_step", silent: bool = False) -> Optional[int]:
         """A free-text message (the workflow Send Telegram step). None when Telegram is off.
@@ -403,7 +460,7 @@ class Notifier:
                 for m in msg.get("_members") or [msg]:
                     if now - m["created_at"] >= OUTBOX_KEEP_SECONDS:
                         _outbox_done(m["id"])
-                        _event(m["device_id"], "warning", f"Telegram message not delivered after 24 hours ({exc}): {m['text']}")
+                        _event(m["device_id"], "warning", f"Telegram message not delivered after 24 hours ({exc}): {_logged(m)}")
                         log.warning("Telegram message given up after %d attempts: %s", m["attempts"] + 1, exc)
                     else:
                         _outbox_retry(m, str(exc), now)
@@ -415,7 +472,7 @@ class Notifier:
             self.last_error = ""
             late = f" (delayed {int((now - msg['created_at']) // 60)} min)" if now - msg["created_at"] > DELAY_NOTE_SECONDS else ""
             grouped = f" ({len(ids)} grouped)" if len(ids) > 1 else ""
-            _event(msg["device_id"], "info", f"Telegram sent{' silently' if silent else ''}{grouped}{late}: {msg['text']}")
+            _event(msg["device_id"], "info", f"Telegram sent{' silently' if silent else ''}{grouped}{late}: {_logged(msg)}")
 
     def grouped(self, due: List[Dict[str, Any]], s: Dict[str, str], now: float) -> List[Dict[str, Any]]:
         """Bursts become one message. With notify_group on, problem and device messages wait until
@@ -459,7 +516,7 @@ class Notifier:
                   "offline_count": count("device_offline"), "offline_list": ", ".join(off),
                   "online_count": count("device_online"), "online_list": ", ".join(on),
                   "proxmox_count": len(pve), "proxmox_list": "\n".join(pve), "other_list": "\n".join(other)}
-        text = render(template, values)
+        text = _render_custom(s.get("notify_tpl_grouped"), EVENTS["grouped"][2], values)
         sounds = {m.get("sound") or "default" for m in pool}
         rank = max((SEVERITY_RANK.get(m.get("severity") or "", 0) for m in pool), default=0)
         combined = {"id": pool[0]["id"], "created_at": min(m["created_at"] for m in pool), "text": text, "device_id": None,

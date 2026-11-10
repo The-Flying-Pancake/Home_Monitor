@@ -186,13 +186,13 @@ function renderAlertRules() {
   const telegramOn = cachedSettings.telegram_enabled === "on";
   document.querySelectorAll("#alert-rules .ar-tg").forEach(th => th.classList.toggle("hidden", !telegramOn));
   const sevOptions = (rule, value) => (rule.as_reported ? [["", "As reported"]] : []).concat(arData.severities.map(s => [s, s]))
-    .map(([v, l]) => `<option value="${v}" ${v === value ? "selected" : ""}>${escapeHtml(l)}</option>`).join("");
+    .map(([v, l]) => `<option value="${escapeHtml(v)}" ${v === value ? "selected" : ""}>${escapeHtml(l)}</option>`).join("");
   const cell = (rule, field, html) => {
     const cls = arIsHere(rule, field) ? "ar-here" : "ar-inherited";
     const from = arIsHere(rule, field) ? "Set here" : `From ${arSourceText(rule.source[field])}`;
     return `<td class="${cls}" title="${escapeHtml(from)}">${html}</td>`;
   };
-  const attrs = (rule, field) => `data-ar-rule="${escapeHtml(rule.id)}" data-ar-field="${field}"`;
+  const attrs = (rule, field) => `data-ar-rule="${escapeHtml(rule.id)}" data-ar-field="${escapeHtml(field)}"`;
 
   let group = null;
   const rows = [];
@@ -209,16 +209,16 @@ function renderAlertRules() {
       <td class="text-cell"><strong>${escapeHtml(r.label)}</strong>${r.help ? `<div class="dim ar-rule-help">${escapeHtml(r.help)}</div>` : ""}</td>
       ${cell(r, "enabled", `<input type="checkbox" ${attrs(r, "enabled")} ${on ? "checked" : ""}>`)}
       ${on ? (r.has_threshold
-        ? cell(r, "threshold", `<input type="number" class="ar-num" ${attrs(r, "threshold")} value="${escapeHtml(arValue(r, "threshold"))}" min="${r.min}" max="${r.max}" step="any"> <span class="unit">${escapeHtml(r.unit)}</span>`)
+        ? cell(r, "threshold", `<input type="number" class="ar-num" ${attrs(r, "threshold")} value="${escapeHtml(arValue(r, "threshold"))}" min="${escapeHtml(r.min)}" max="${escapeHtml(r.max)}" step="any"> <span class="unit">${escapeHtml(r.unit)}</span>`)
         : `<td class="dim">-</td>`) : `<td></td>`}
       ${on ? cell(r, "for_minutes", `<input type="number" class="ar-num" ${attrs(r, "for_minutes")} value="${escapeHtml(arValue(r, "for_minutes"))}" min="0" max="1440" step="1"> <span class="unit">min</span>`) : `<td></td>`}
       ${on ? cell(r, "severity", `<select ${attrs(r, "severity")} class="ar-sev ar-sev-${escapeHtml(sev || "reported")}">${sevOptions(r, sev)}</select>`) : `<td class="dim">Off</td>`}
       ${telegramOn ? (on ? cell(r, "telegram", `<select ${attrs(r, "telegram")}>${Object.entries(AR_TELEGRAM).map(([v, l]) =>
-        `<option value="${v}" ${v === arValue(r, "telegram") ? "selected" : ""}>${l}</option>`).join("")}</select>`) : `<td></td>`) : ""}
+        `<option value="${escapeHtml(v)}" ${v === arValue(r, "telegram") ? "selected" : ""}>${escapeHtml(l)}</option>`).join("")}</select>`) : `<td></td>`) : ""}
       ${telegramOn ? (on && arValue(r, "telegram") !== "never" ? cell(r, "resolved", `<select ${attrs(r, "resolved")}>${["on", "off"].map(v =>
-        `<option value="${v}" ${v === arValue(r, "resolved") ? "selected" : ""}>${v === "on" ? "Send" : "Do not send"}</option>`).join("")}</select>`) : `<td></td>`) : ""}
+        `<option value="${escapeHtml(v)}" ${v === arValue(r, "resolved") ? "selected" : ""}>${v === "on" ? "Send" : "Do not send"}</option>`).join("")}</select>`) : `<td></td>`) : ""}
       ${telegramOn ? (on && arValue(r, "telegram") !== "never" ? cell(r, "sound", `<select ${attrs(r, "sound")}>${Object.entries(AR_SOUND).map(([v, l]) =>
-        `<option value="${v}" ${v === (arValue(r, "sound") || "default") ? "selected" : ""}>${l}</option>`).join("")}</select>`) : `<td></td>`) : ""}
+        `<option value="${escapeHtml(v)}" ${v === (arValue(r, "sound") || "default") ? "selected" : ""}>${escapeHtml(l)}</option>`).join("")}</select>`) : `<td></td>`) : ""}
       <td>${hasHere ? `<button class="btn btn-small" type="button" data-ar-reset="${escapeHtml(r.id)}"
         title="Remove the values set here so this row inherits again">Reset</button>` : ""}</td>
     </tr>`);
