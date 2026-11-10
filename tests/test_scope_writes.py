@@ -18,7 +18,7 @@ import workflows
 
 PASSWORD = "scope writes passphrase"
 PERMS = ["problems.ack", "devices.manage", "map.edit", "dashboard.edit", "automation.run", "automation.edit",
-         "credentials.use"]
+         "credentials.use", "settings.system"]
 
 
 def login(name, scope=None):
@@ -139,7 +139,7 @@ class ScopeWriteTests(unittest.TestCase):
               ("PUT", "/api/inventory/aa:bb:cc:dd:ee:ff"), ("DELETE", "/api/inventory/aa:bb:cc:dd:ee:ff"),
               ("POST", "/api/map/objects"), ("DELETE", "/api/map/objects/999999"), ("POST", "/api/map/links"),
               ("PUT", "/api/map/positions"), ("PUT", "/api/dashboard"), ("POST", "/api/dashboards"),
-              ("DELETE", "/api/dashboards/sw-none"), ("PUT", "/api/taxonomy")]
+              ("DELETE", "/api/dashboards/sw-none"), ("PUT", "/api/taxonomy"), ("POST", "/api/backups/passphrase")]
 
     def test_network_wide_routes_refused_when_scoped(self):
         self.assertEqual(len(self.ROUTES), len(rbac.UNSCOPED_ROUTES))

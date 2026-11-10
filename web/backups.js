@@ -32,12 +32,15 @@ function backupsSection(b) {
   };
   const helper = b.installed ? "" : `<div class="panel-note-bar warn">This copy has no root helper (development machine): changes are saved and apply in the container.</div>`;
   const noPassphrase = b.installed && b.passphrase_set === false
-    ? `<div class="panel-note-bar warn" id="bk-no-passphrase">No backup passphrase is set. New backups that leave this box do not carry the key that opens your stored passwords, so a rebuild from them cannot use those passwords. Backups also cannot be proven unchanged. To set one, open a root shell in the container and run <code>/root/backup-passphrase.sh</code>, then keep the passphrase in your password manager.</div>`
+    ? `<div class="panel-note-bar warn" id="bk-no-passphrase">No backup passphrase is set. New backups that leave this box do not carry the key that opens your stored passwords, so a rebuild from them cannot use those passwords. Backups also cannot be proven unchanged. Set one with Set backup passphrase below and keep it in your password manager.</div>`
     : "";
   return `${helper}${noPassphrase}<div class="backup-panel" id="backups-panel">
     <table class="storage-table"><tbody>${rows.map(r => `<tr><td>${escapeHtml(r[0])}</td><td>${escapeHtml(r[1])}</td></tr>`).join("")}
       <tr><td>Last backup</td><td>${resultLine(res.backup, pending.backup, "Backup")}
         <button type="button" class="btn btn-small" data-backup-action="run" data-perm="settings.system">Back up now</button></td></tr>
+      ${b.installed ? `<tr><td>Backup passphrase</td><td>${resultLine(res.passphrase, pending.passphrase, "Saving")}
+        <button type="button" class="btn btn-small" data-backup-action="passphrase" data-perm="settings.system">${b.passphrase_set ? "Change backup passphrase" : "Set backup passphrase"}</button>
+        ${res.passphrase && !res.passphrase.ok && !pending.passphrase ? `<div class="form-help text-err">${escapeHtml(res.passphrase.output)}</div>` : ""}</td></tr>` : ""}
       <tr><td>Syncthing set-up</td><td>${resultLine(res.site, pending.site, "Applying")}
         ${res.site && res.site.output ? `<details class="backup-output"><summary>Details</summary><pre>${escapeHtml(res.site.output)}</pre></details>` : ""}</td></tr>
     </tbody></table>
@@ -69,7 +72,10 @@ async function refreshBackups() {
     fresh.innerHTML = backupsSection(sys.backup);
     panel.querySelector("table").replaceWith(fresh.querySelector("#backups-panel table"));
     const p = sys.backup.pending || {};
-    if (!p.backup && !p.site) stopBackupsPoll();
+    if (!p.backup && !p.site && !p.passphrase) stopBackupsPoll();
+    // The yellow bar and the button's label follow a passphrase saved meanwhile.
+    const bar = card.querySelector("#bk-no-passphrase");
+    if (bar && sys.backup.passphrase_set) bar.remove();
   } catch (e) { stopBackupsPoll(); }
 }
 
@@ -91,6 +97,8 @@ function initBackups() {
     }
   });
   root.addEventListener("click", async ev => {
+    const pass = ev.target.closest("[data-backup-action=passphrase]");
+    if (pass) { setBackupPassphrase(pass); return; }
     const btn = ev.target.closest("[data-backup-action=run]");
     if (!btn) return;
     btn.disabled = true;
@@ -123,6 +131,75 @@ function initBackups() {
       showToast(err.message, "error");
     }
   });
+}
+
+// Set or change the backup passphrase: typed twice, sent once, never shown again. The server asks
+// for your password (and code) first; root saves it and makes a sealed backup straight away.
+function passphraseDialog(change) {
+  return new Promise(resolve => {
+    const back = document.createElement("div");
+    back.className = "modal-backdrop dialog-backdrop";
+    const box = document.createElement("form");
+    box.className = "modal dialog";
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-modal", "true");
+    box.innerHTML = `
+      <div class="modal-header"><span>${change ? "Change backup passphrase" : "Set backup passphrase"}</span></div>
+      <div class="modal-body">
+        <div class="dialog-message">Keep this passphrase in a password manager, apart from the backups. Without it a sealed backup cannot be opened and nobody can recover it for you.${change ? " Backups made before the change still need the old passphrase, so keep that one too until they are gone." : ""}</div>
+        <div class="form-group"><label for="bk-pass1">New backup passphrase (12 or more characters)</label>
+          <input type="password" id="bk-pass1" autocomplete="new-password" minlength="12" maxlength="1024" required></div>
+        <div class="form-group"><label for="bk-pass2">The same again</label>
+          <input type="password" id="bk-pass2" autocomplete="new-password" minlength="12" maxlength="1024" required></div>
+        <div class="form-help text-err hidden" id="bk-pass-err"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn" data-dialog="cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save passphrase</button>
+      </div>`;
+    back.appendChild(box);
+    document.body.appendChild(back);
+    const before = document.activeElement;
+    const done = value => {
+      document.removeEventListener("keydown", onKey, true);
+      box.querySelectorAll("input").forEach(i => { i.value = ""; });
+      back.remove();
+      if (before && before.focus) before.focus();
+      resolve(value);
+    };
+    const onKey = ev => { if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); done(null); } };
+    document.addEventListener("keydown", onKey, true);
+    box.querySelector("[data-dialog=cancel]").addEventListener("click", () => done(null));
+    box.addEventListener("submit", ev => {
+      ev.preventDefault();
+      const a = box.querySelector("#bk-pass1").value, b = box.querySelector("#bk-pass2").value;
+      const err = box.querySelector("#bk-pass-err");
+      const problem = a.length < 12 ? "The passphrase must be at least 12 characters." : a !== b ? "The two passphrases are not the same." : "";
+      err.textContent = problem;
+      err.classList.toggle("hidden", !problem);
+      if (!problem) done(a);
+    });
+    box.querySelector("#bk-pass1").focus();
+  });
+}
+
+async function setBackupPassphrase(btn) {
+  const change = /Change/.test(btn.textContent);
+  let value = await passphraseDialog(change);
+  if (value === null) return;
+  btn.disabled = true;
+  try {
+    await api("/api/backups/passphrase", { method: "POST", body: { passphrase: value } });
+    value = null;
+    showToast("Passphrase sent. The container saves it and makes a sealed backup now.", "success");
+    refreshBackups();
+    startBackupsPoll();
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    value = null;
+    btn.disabled = false;
+  }
 }
 
 document.addEventListener("DOMContentLoaded", initBackups);

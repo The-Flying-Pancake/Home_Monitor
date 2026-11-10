@@ -136,6 +136,7 @@ ROUTE_PERMISSIONS = [
     ("POST", r"/api/tls/dismiss", "settings.system"),
     ("PUT", r"/api/backups/site", "settings.system"),
     ("POST", r"/api/backups/run", "settings.system"),
+    ("POST", r"/api/backups/passphrase", "settings.system"),
     ("POST", r"/api/proxmox/(?:fingerprint|test)", "settings.system"),
 ]
 # Read routes that need a permission (everything else is readable by every signed-in user).
@@ -188,6 +189,7 @@ TIER_ROUTES = [
     ("POST", r"/api/pihole/blocking", 2),         # every device on the network loses its ad blocking
     ("POST", r"/api/wifi/reconnect", 2),          # drops a device off the Wi-Fi
     ("PUT", r"/api/backups/site", 2),             # where backups go, and the Syncthing identity source
+    ("POST", r"/api/backups/passphrase", 3),      # what opens and proves every backup from now on
     ("POST", r"/api/(?:pihole|unifi|proxmox)/test", 2),   # sends the stored secret to the stored address
     ("POST", r"/api/workflows", 2),               # saved workflows run unattended on devices
     ("PUT", r"/api/workflows/\d+", 2),
@@ -199,6 +201,7 @@ _TIERS = [(m, re.compile(p), t) for m, p, t in TIER_ROUTES]
 # tags): a user limited to some devices is refused, after the permission check and before any
 # password prompt. Path patterns match the whole path.
 UNSCOPED_ROUTES = [
+    ("POST", r"/api/backups/passphrase"),
     ("POST", r"/api/pihole/blocking"),
     ("POST", r"/api/wifi/reconnect"),
     ("POST", r"/api/inventory"),

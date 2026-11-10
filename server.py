@@ -1057,8 +1057,10 @@ def backup_status() -> Dict[str, Any]:
     except OSError:
         pass
     files.sort(key=lambda f: f["time"], reverse=True)
-    results = {k: _read_result(data_dir, k) for k in ("backup", "site")}
+    results = {k: _read_result(data_dir, k) for k in ("backup", "site", "passphrase")}
     pending = {k: _request_time(data_dir, k) > ((results[k] or {}).get("time") or 0) for k in ("backup", "site")}
+    # The passphrase request is removed by root as soon as it is read: waiting while it is there.
+    pending["passphrase"] = os.path.exists(os.path.join(data_dir, "requests", PASSPHRASE_REQUEST))
     # Root keeps the backup passphrase beside install.conf (root only: the app sees only whether it exists).
     install_dir = os.path.dirname(os.environ.get("MONITOR_INSTALL_CONF", "") or "")
     passphrase_set = bool(conf) and bool(install_dir) and os.path.exists(os.path.join(install_dir, "backup-passphrase"))
@@ -1096,6 +1098,37 @@ def request_root_action(kind: str) -> None:
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, kind), "w", encoding="ascii") as f:
         f.write(str(int(time.time())))
+
+
+# Settings, Backups, Set backup passphrase: the passphrase goes to root sealed with the vault key
+# (sitectl.py passphrase-request, through hm-passphrase.path), so it is never on disk in the clear.
+PASSPHRASE_REQUEST = "backup-passphrase"
+PASSPHRASE_CONTEXT = "backup-passphrase-request"
+PASSPHRASE_MIN, PASSPHRASE_MAX = 12, 1024
+
+
+def backup_passphrase_problem(value: Any) -> str:
+    if not isinstance(value, str) or len(value) < PASSPHRASE_MIN:
+        return f"The backup passphrase must be at least {PASSPHRASE_MIN} characters"
+    if len(value) > PASSPHRASE_MAX or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        return "The backup passphrase is too long or holds a character that cannot be typed"
+    return ""
+
+
+def request_backup_passphrase(passphrase: str) -> None:
+    """Leaves the new backup passphrase for root, sealed with the vault key. One request at a time."""
+    if not VAULT.enabled:
+        raise RequestError(409, "The vault is locked, so the passphrase cannot be passed on safely. Use /root/backup-passphrase.sh in the container.")
+    token = VAULT.encrypt(passphrase, PASSPHRASE_CONTEXT)
+    folder = os.path.join(os.path.dirname(os.path.abspath(database.DB_FILE)), "requests")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, PASSPHRASE_REQUEST)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except FileExistsError:
+        raise RequestError(409, "A new backup passphrase is already being saved. Wait a moment and try again.")
+    with os.fdopen(fd, "w", encoding="ascii") as f:
+        f.write(token + "\n")
 
 
 def _request_time(data_dir: str, kind: str) -> int:
@@ -3220,6 +3253,20 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
                     else:
                         raise RequestError(404, "Endpoint not found")
                     self._send_json(200, update_status())
+                    return
+                if path == "/api/backups/passphrase" and self.command == "POST":
+                    payload = self._read_json()
+                    passphrase = payload.get("passphrase") if isinstance(payload, dict) else None
+                    problem = backup_passphrase_problem(passphrase)
+                    if problem:
+                        raise RequestError(400, problem)
+                    had_one = bool(backup_status().get("passphrase_set"))
+                    request_backup_passphrase(passphrase)
+                    passphrase = None
+                    database.add_audit("backup", "Backup passphrase " + ("change" if had_one else "set") + " requested",
+                                       f"By {self.user.username}")
+                    security_alert("backup_passphrase", how="changed" if had_one else "set")
+                    self._send_json(200, backup_status())
                     return
                 if path == "/api/backups/run" and self.command == "POST":
                     self._read_json()       # an unread body makes some systems reset the connection
@@ -6387,7 +6434,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "0.12.0"
+APP_VERSION = "0.12.1"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:

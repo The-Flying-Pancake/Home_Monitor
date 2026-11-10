@@ -15,6 +15,10 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 0.12.1: Release 33, Set the backup passphrase in the app (2026-11-10)
+
+- You can now set or change the backup passphrase in Settings, Backups. It asks for your password first, then the container saves the passphrase and makes a sealed backup at once. Telegram sends a security alert when it changes. The command in the container still works too.
+
 ### 0.12.0: Release 32, Security fixes (2026-11-10)
 
 - Every value from a device or integration is now made safe before it is shown on a page.

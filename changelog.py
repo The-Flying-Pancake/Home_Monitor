@@ -278,6 +278,9 @@ RELEASES: List[Dict[str, Any]] = [
         "New Telegram security alerts tell you about changes to users, credentials and host keys, login lockouts, HTTPS problems, updates and restores. They are on when Telegram is set up and can be turned off.",
         "You can now require two-factor authentication for administrators or for everyone, in Settings, Login security. It is off until you turn it on.",
     ]},
+    {"id": 33, "date": "2026-11-10", "title": "Set the backup passphrase in the app", "items": [
+        "You can now set or change the backup passphrase in Settings, Backups. It asks for your password first, then the container saves the passphrase and makes a sealed backup at once. Telegram sends a security alert when it changes. The command in the container still works too.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 

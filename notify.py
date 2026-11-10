@@ -142,6 +142,7 @@ SECURITY_TEXTS = {
     "update_failed": "{kind} to {to} failed: {error}",
     "restored": "The monitor's data was restored from a backup: {file}",
     "retention": "The audit log is now kept for {days} days (it was {old})",
+    "backup_passphrase": "The backup passphrase was {how} in Settings, Backups",
 }
 # What the event log says for a sent security alert: its text names people and addresses, and
 # device-less events are seen by every user.

@@ -9,6 +9,7 @@
   sitectl.py check-auth  ARCHIVE --key FILE [same options]     can the backup be proven unchanged? (no trial)
   sitectl.py take        ARCHIVE --to FILE                     a private copy of a backup to work on
   sitectl.py set-passphrase --data DIR                         the backup passphrase, on stdin
+  sitectl.py passphrase-request --data DIR --key FILE        the one Settings, Backups asked for
   sitectl.py find-backups --data DIR [--also DIR]            backups here, in Syncthing and on mounted shares
   sitectl.py site-of     ARCHIVE                             the site settings a backup would apply
   sitectl.py export-site --data DIR --out FILE
@@ -108,6 +109,10 @@ def _app_version() -> str:
 BACKUP_MEMBERS = ("monitor.db", "vault.json", "vault.key", "vault.key.sealed", "site.json", "manifest.json")
 INSTALL_DIR = "/etc/homelab-monitor-install"
 PASSPHRASE_FILE = os.path.join(INSTALL_DIR, "backup-passphrase")
+# Settings, Backups: the request the app leaves (sealed with the vault key) and the longest passphrase.
+PASSPHRASE_REQUEST = "backup-passphrase"
+PASSPHRASE_CONTEXT = "backup-passphrase-request"
+PASSPHRASE_MAX = 1024
 # A backup's file name: what the backup command writes, nothing a shell could read as code.
 BACKUP_NAME = re.compile(r"monitor-backup-[A-Za-z0-9._-]{1,80}\.tar\.gz")
 # Characters a backup's full path may hold (a share's folder can have spaces).
@@ -820,9 +825,22 @@ def take(args) -> None:
 def set_passphrase(args) -> None:
     """The backup passphrase (stdin) into root's file through a new file and a rename; one audit row,
     written as the monitor's own account."""
-    passphrase = sys.stdin.readline().rstrip("\n")
+    _save_passphrase(args, sys.stdin.readline().rstrip("\n"), "Backup passphrase set from the container shell")
+    print(f"Backup passphrase saved in {getattr(args, 'file', None) or PASSPHRASE_FILE}")
+
+
+def _passphrase_problem(passphrase: str) -> str:
     if len(passphrase) < 12:
-        fail("The backup passphrase must be at least 12 characters")
+        return "The backup passphrase must be at least 12 characters"
+    if len(passphrase) > PASSPHRASE_MAX or any(ord(c) < 32 or ord(c) == 127 for c in passphrase):
+        return "The backup passphrase is too long or holds a control character"
+    return ""
+
+
+def _save_passphrase(args, passphrase: str, audit_text: str) -> None:
+    problem = _passphrase_problem(passphrase)
+    if problem:
+        fail(problem)
     path = getattr(args, "file", None) or PASSPHRASE_FILE
     folder = os.path.dirname(path)
     os.makedirs(folder, exist_ok=True)
@@ -835,9 +853,47 @@ def set_passphrase(args) -> None:
         except KeyError:
             ids = None
         kw = {"user": ids[0], "group": ids[1], "extra_groups": []} if ids else {}
-        subprocess.run([sys.executable, "-I", "-c", _AUDIT_PROGRAM, db, "system", "Backup passphrase set from the container shell",
+        subprocess.run([sys.executable, "-I", "-c", _AUDIT_PROGRAM, db, "system", audit_text,
                         "", *ROOT_ACTOR], capture_output=True, **kw)
-    print(f"Backup passphrase saved in {path}")
+
+
+def passphrase_request(args) -> None:
+    """Settings, Backups asked for a new backup passphrase (hm-passphrase.path). The app left it in
+    DATA/requests/backup-passphrase sealed with the vault key, so it is never on disk in the clear.
+    The request is read and removed first, then the passphrase is saved as the shell command saves
+    it, the outcome is recorded for the page and a sealed backup is started."""
+    folder = os.path.join(args.data, "requests")
+    try:
+        token = safefile.read_regular(os.path.join(folder, PASSPHRASE_REQUEST), 8192).decode("ascii").strip()
+    except FileNotFoundError:
+        return  # the path unit also fires when the request is removed
+    except (OSError, UnicodeDecodeError):
+        token = ""
+    try:
+        safefile.unlink_in(folder, PASSPHRASE_REQUEST)
+    except OSError:
+        pass
+    passphrase = ""
+    try:
+        if vault.AESGCM is None or not vault.Vault.is_token(token):
+            raise ValueError("unreadable")
+        key = base64.b64decode(safefile.read_regular(args.key, 4096).decode("ascii").strip())
+        passphrase = vault.Vault._open(vault.AESGCM(key), token, PASSPHRASE_CONTEXT)
+    except Exception:
+        write_result(args.data, "passphrase", False, "The request could not be read, so nothing was changed. Try again.")
+        sys.exit(1)
+    problem = _passphrase_problem(passphrase)
+    if problem:
+        write_result(args.data, "passphrase", False, problem + ". Nothing was changed.")
+        sys.exit(1)
+    try:
+        _save_passphrase(args, passphrase, "Backup passphrase saved (asked for in Settings, Backups)")
+    except (SystemExit, OSError):
+        write_result(args.data, "passphrase", False, "The passphrase could not be saved. Nothing was changed.")
+        sys.exit(1)
+    write_result(args.data, "passphrase", True, "Backup passphrase saved. A sealed backup is being made now.")
+    if not getattr(args, "no_backup", False):
+        subprocess.run(["systemctl", "start", "--no-block", "homelab-monitor-backup.service"], capture_output=True)
 
 
 def prune_pre_restore(folders: list, now: float = None) -> list:
@@ -1358,6 +1414,12 @@ def main() -> None:
     p.add_argument("--data", required=True)
     p.add_argument("--file", help=f"where the passphrase is kept (default {PASSPHRASE_FILE})")
     p.set_defaults(fn=set_passphrase)
+    p = sub.add_parser("passphrase-request")
+    p.add_argument("--data", required=True)
+    p.add_argument("--key", required=True)
+    p.add_argument("--file", help=f"where the passphrase is kept (default {PASSPHRASE_FILE})")
+    p.add_argument("--no-backup", action="store_true", help="do not start a backup afterwards (tests)")
+    p.set_defaults(fn=passphrase_request)
     p = sub.add_parser("site-of")
     p.add_argument("archive")
     p.set_defaults(fn=site_of)

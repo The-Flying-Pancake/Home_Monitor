@@ -1996,6 +1996,53 @@ class BackupAuthTests(unittest.TestCase):
                          .fetchone()[0], 1)
         conn.close()
 
+    def test_passphrase_request_from_settings(self):
+        """Settings, Backups leaves the passphrase sealed with the vault key; root saves it and removes the request."""
+        import base64
+        import vault
+        target = os.path.join(self.tmp, "install", "backup-passphrase")
+        requests_dir = os.path.join(self.data, "requests")
+        os.makedirs(requests_dir, exist_ok=True)
+        req = os.path.join(requests_dir, "backup-passphrase")
+        key = base64.b64decode(read(self.key).strip())
+
+        def ask(token):
+            with open(req, "w", encoding="ascii") as f:
+                f.write(token + "\n")
+            return sitectl("passphrase-request", "--data", self.data, "--key", self.key, "--file", target, "--no-backup")
+
+        def result():
+            with open(os.path.join(self.data, "passphrase.result.json"), encoding="utf-8") as f:
+                return json.load(f)
+
+        # Sealed with another key, or not sealed at all: refused, nothing saved, request gone.
+        other = vault.Vault._seal(vault.AESGCM(bytes(32)), PASS, "backup-passphrase-request")
+        for token in (other, PASS):
+            r = ask(token)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertFalse(os.path.exists(target))
+            self.assertFalse(os.path.exists(req))
+            self.assertFalse(result()["ok"])
+        # Too short, though sealed properly.
+        r = ask(vault.Vault._seal(vault.AESGCM(key), "short", "backup-passphrase-request"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(os.path.exists(target))
+        self.assertIn("12 characters", result()["output"])
+        # The real thing.
+        r = ask(vault.Vault._seal(vault.AESGCM(key), PASS, "backup-passphrase-request"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(read(target), PASS + "\n")
+        self.assertFalse(os.path.exists(req))
+        self.assertTrue(result()["ok"])
+        self.assertNotIn(PASS, json.dumps(result()))
+        self.assertNotIn(PASS.encode(), r.stdout + r.stderr)
+        conn = sqlite3.connect(os.path.join(self.data, "monitor.db"))
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM audit_log WHERE message LIKE 'Backup passphrase saved%'").fetchone()[0], 1)
+        conn.close()
+        # Fired again with no request (the path unit also sees the removal): nothing happens.
+        self.assertEqual(sitectl("passphrase-request", "--data", self.data, "--key", self.key, "--file", target,
+                                 "--no-backup").returncode, 0)
+
     def test_take_copies_a_plain_file_only(self):
         archive = self.backup(os.path.join(self.tmp, "share"))
         to = os.path.join(self.tmp, "copy.tar.gz")

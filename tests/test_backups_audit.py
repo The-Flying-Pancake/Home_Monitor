@@ -63,6 +63,42 @@ class BackupRouteTests(unittest.TestCase):
         self.assertTrue(body["results"]["backup"]["ok"])
 
 
+    def test_set_backup_passphrase_from_settings(self):
+        """The passphrase leaves the app sealed with the vault key, after a fresh password, once at a time."""
+        from tests.helpers import TEST_PASSWORD
+        req = self.request_file("backup-passphrase")
+        if os.path.exists(req):
+            os.remove(req)
+        phrase = "correct horse battery staple"
+        for bad in ("short", "x" * 1025, "twelve chars\nnewline", 12345):
+            self.assertEqual(request("POST", "/api/backups/passphrase", {"passphrase": bad})[0], 400, bad)
+        self.assertFalse(os.path.exists(req))
+        # It needs a fresh password confirmation (tier 3).
+        for s in auth.SESSIONS.sessions.values():
+            s["tier2_until"] = s["tier3_until"] = 0
+        status, body, _ = request("POST", "/api/backups/passphrase", {"passphrase": phrase})
+        self.assertEqual(status, 403)
+        self.assertEqual(body.get("auth"), "confirm")
+        self.assertFalse(os.path.exists(req))
+        self.assertEqual(request("POST", "/api/auth/confirm", {"password": TEST_PASSWORD, "tier": 3})[0], 200)
+        with mock.patch.object(server, "security_alert") as alert:
+            status, body, _ = request("POST", "/api/backups/passphrase", {"passphrase": phrase})
+        self.assertEqual(status, 200, body)
+        alert.assert_called_once()
+        self.assertEqual(alert.call_args[0][0], "backup_passphrase")
+        self.assertTrue(body["pending"]["passphrase"])
+        with open(req, encoding="ascii") as f:
+            token = f.read().strip()
+        self.assertNotIn(phrase, token)
+        self.assertEqual(server.VAULT.decrypt(token, "backup-passphrase-request"), phrase)
+        self.assertNotIn(phrase, json.dumps(body))
+        # A second one while the first waits is refused.
+        self.assertEqual(request("POST", "/api/backups/passphrase", {"passphrase": phrase + "!"})[0], 409)
+        rows = database.get_audit_log(limit=20) if hasattr(database, "get_audit_log") else []
+        self.assertFalse(any(phrase in json.dumps(r) for r in rows))
+        os.remove(req)
+
+
 class PassphraseStatusTests(unittest.TestCase):
     """Settings, Backups: without a backup passphrase the status says so (the page shows the command)."""
 
