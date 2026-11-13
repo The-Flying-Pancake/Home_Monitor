@@ -672,6 +672,58 @@ class UnifiTests(unittest.TestCase):
         request("PUT", "/api/pihole/config", {"disconnect": True})
 
 
+class WifiNetworkRuleTests(unittest.TestCase):
+    """Weak Wi-Fi per network: phones on a guest network change their address, so a rule per device
+    does not stick. A network's rule applies to all its devices; a device's own rule still wins."""
+
+    @classmethod
+    def setUpClass(cls):
+        start_api_server()
+
+    def tearDown(self):
+        database.delete_settings([inventory.WIFI_NET_ALERT_KEY, inventory.WIFI_ALERT_KEY])
+
+    def problems(self, table):
+        ap = next((d["id"] for d in database.list_devices() if d["ip_address"] == "198.51.100.211"), None)
+        ap = ap or add_device("ap-guest-t", "198.51.100.211", profile="generic_device")
+        out = server.device_problems(dict(database.get_device(ap), status="online"), {}, {"wifi_clients": table})
+        return " ".join(p["message"] for p in out if p["rule"] == "wifi_weak")
+
+    def test_rules_per_network(self):
+        table = {"02:00:00:00:00:01": {"mac": "02:00:00:00:00:01", "name": "guest-phone", "ssid": "Guest", "signal": -85.0},
+                 "02:00:00:00:00:02": {"mac": "02:00:00:00:00:02", "name": "guest-laptop", "ssid": "guest", "signal": -78.0},
+                 "10:00:00:00:00:03": {"mac": "10:00:00:00:00:03", "name": "home-tablet", "ssid": "Home", "signal": -80.0}}
+        both = self.problems(table)
+        self.assertIn("guest-phone", both)
+        self.assertIn("home-tablet", both)
+        # Guest never reported (names compared without case): only the home device is left.
+        self.assertEqual(inventory.set_wifi_net_alerts({"Guest": "off", "Home": ""}), {"Guest": "off"})
+        msg = self.problems(table)
+        self.assertNotIn("guest-phone", msg)
+        self.assertNotIn("guest-laptop", msg)
+        self.assertIn("home-tablet", msg)
+        # Its own line: only below -82 dBm counts on the guest network.
+        inventory.set_wifi_net_alerts({"Guest": -82})
+        msg = self.problems(table)
+        self.assertIn("guest-phone", msg)
+        self.assertNotIn("guest-laptop", msg)
+        # A device's own rule wins over its network's.
+        inventory.set_wifi_net_alerts({"Guest": "off"})
+        inventory.set_wifi_alert("02:00:00:00:00:01", -80)
+        self.assertIn("guest-phone", self.problems(table))
+
+    def test_bad_rules_refused_and_route(self):
+        for bad in ([], {"x" * 33: "off"}, {"Guest": -20}, {"Guest": "sometimes"}):
+            with self.assertRaises(inventory.InventoryError):
+                inventory.set_wifi_net_alerts(bad)
+        self.assertEqual(request("PUT", "/api/inventory/wifi-networks", {"weak": {"Guest": "nope"}})[0], 400)
+        status, body, _ = request("PUT", "/api/inventory/wifi-networks", {"weak": {"Guest": "off", "Cafe": "-80"}})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["weak"], {"Cafe": -80, "Guest": "off"})
+        listed = request("GET", "/api/inventory")[1]
+        self.assertEqual(listed["wifi_net_alerts"], {"Cafe": -80, "Guest": "off"})
+
+
 class StoredSecretTests(unittest.TestCase):
     """The Test buttons and saves reuse the stored password only for the stored address."""
 

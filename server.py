@@ -29,7 +29,7 @@ import threading
 import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
@@ -1467,6 +1467,45 @@ def alert_overview(user: "rbac.User") -> Dict[str, Any]:
     return {"groups": out, "fields": list(alerts.FIELDS)}
 
 
+def changed_alert_settings(user: "rbac.User", now: Optional[float] = None) -> Dict[str, Any]:
+    """Settings, Notifications, Changed alerts: everything that makes alerts differ from the defaults,
+    wherever it is set, with a link to where it is changed. A user limited to some devices sees the
+    changes on their devices only (the inventory's network-wide rules are left out for them)."""
+    now = now if now is not None else time.time()
+    scope_link = {"global": "#/settings/alerts", "template": "#/settings/alerts/template/", "tag": "#/settings/alerts/tag/",
+                  "device": "#/settings/alerts/device/"}
+    rules = []
+    for g in alert_overview(user)["groups"]:
+        link = scope_link.get(g["scope"], "#/settings/alerts")
+        if g["scope"] != "global":
+            link += quote(str(g["target"]), safe="")
+        rules.append({"scope": g["scope"], "name": g["name"], "link": link,
+                      "changes": [{"label": i["label"], "field": i["field"], "value": i["value"], "default": i["default"],
+                                   "unit": i["unit"]} for i in g["items"]]})
+    names = {d["id"]: d["hostname"] for d in database.list_devices()}
+    windows = []
+    for w in maintenance_view(user, maintenance.windows(now)):
+        if w["state"] == "ended":
+            continue
+        target = str(w.get("target") or "")
+        what = ("Every device" if w["scope"] == "all" else
+                names.get(int(target), f"Device {target}") if w["scope"] == "device" and target.isdigit() else
+                f"Group {target}" if w["scope"] == "group" else f"Tag {target}")
+        windows.append({"what": what, "state": w["state"], "start": w["start"], "end": w["end"], "note": w.get("note") or ""})
+    out: Dict[str, Any] = {"rules": rules, "maintenance": windows, "inventory": None}
+    if user.scope is None:
+        listing = inventory.listing(now)
+        label = lambda r: r.get("name") or r.get("device_name") or r.get("seen_name") or r["mac"]
+        out["inventory"] = {
+            "quiet_networks": inventory.quiet_ssid_list(),
+            "network_wifi": [{"name": k, "rule": v} for k, v in sorted(inventory.wifi_net_alerts().items(), key=lambda kv: kv[0].lower())],
+            "quiet_devices": sorted((label(r) for r in listing["rows"] if r["quiet"]), key=str.lower),
+            "device_wifi": sorted(({"name": label(r), "mac": r["mac"], "rule": r["wifi_alert"]} for r in listing["rows"] if r["wifi_alert"] != ""),
+                                  key=lambda x: x["name"].lower()),
+        }
+    return out
+
+
 def parse_alert_changes(body: Any) -> Tuple[str, str, List[Tuple[str, str, Optional[str]]]]:
     """Validates PUT /api/alert-rules: {scope, target, changes: [{rule_id, field, value}]}; value null inherits."""
     if not isinstance(body, dict):
@@ -1667,9 +1706,10 @@ def lan_service_problems(device: Dict[str, Any], m: Dict[str, float], tables: Di
         poor = sorted((c for c in tables.get("wifi_clients", {}).values() if is_number(c.get("signal")) and c["signal"] < weak),
                       key=lambda c: c["signal"])
         if poor:
-            # A device can have its own line, or be left out (Inventory, Edit, Weak Wi-Fi signal).
-            own = inventory.wifi_alerts()
-            poor = [c for c in poor if c["signal"] < (inventory.weak_line(c.get("mac"), weak, own) or float("-inf"))]
+            # A device can have its own line, or be left out (Inventory, Edit, Weak Wi-Fi signal), and so
+            # can a whole Wi-Fi network (Inventory, Wi-Fi networks); the device's own rule wins.
+            own, nets = inventory.wifi_alerts(), inventory.wifi_net_alerts()
+            poor = [c for c in poor if c["signal"] < (inventory.weak_line(c.get("mac"), weak, own, c.get("ssid"), nets) or float("-inf"))]
         if poor:
             names = ", ".join(f"{c.get('name') or c.get('mac')} ({c['signal']:.0f} dBm)" for c in poor[:5])
             more = f" and {len(poor) - 5} more" if len(poor) > 5 else ""
@@ -2223,7 +2263,8 @@ def unifi_map_links(devices: List[Dict[str, Any]], imacs: Dict[int, set], labels
 def wifi_view() -> Dict[str, Any]:
     """The Wi-Fi page: every monitored access point and every Wi-Fi device on them (unifi.py)."""
     weak = alert_policy().resolve("wifi_weak", upto="global")[0]["threshold"] or -75
-    own = inventory.wifi_alerts()
+    own, nets = inventory.wifi_alerts(), inventory.wifi_net_alerts()
+    nets_lower = {k.lower(): v for k, v in nets.items()}
     aps, rows = [], []
     for d in database.list_devices():
         table = database.get_device_table(d["id"], "wifi_clients")
@@ -2239,7 +2280,8 @@ def wifi_view() -> Dict[str, Any]:
                     "experience": round(sum(scores) / len(scores)) if scores else None, "bands": bands})
         for c in clients:
             rows.append(dict(c, ap_id=d["id"], ap_name=d["hostname"], blocked=unifi.why_not(c),
-                             alert=own.get(inventory.normalise_mac(c.get("mac")) or "", "")))
+                             alert=own.get(inventory.normalise_mac(c.get("mac")) or "", ""),
+                             net_alert=nets_lower.get(str(c.get("ssid") or "").lower(), "")))
     return {"aps": sorted(aps, key=lambda a: a["name"].lower()), "clients": rows, "weak_dbm": weak,
             "never": unifi.never_list(), "last": unifi.LAST.copy()}
 
@@ -3909,6 +3951,9 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
         if path == "/api/tls":
             self._send_json(200, tls.public_state())
             return
+        if path == "/api/alerts/changed":
+            self._send_json(200, changed_alert_settings(self.user))
+            return
         if path == "/api/maintenance":
             scopes = [s for s in maintenance.SCOPES if s != "all" or self.user.scope is None]
             self._send_json(200, {"windows": maintenance_view(self.user, maintenance.windows()), "scopes": scopes})
@@ -5148,6 +5193,17 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
             database.add_audit("device", "Quiet Wi-Fi networks in the inventory: " + (", ".join(saved) or "none"),
                                f"By {self.user.username}")
             self._send_json(200, {"success": True, "ssids": saved})
+            return
+        if path == "/api/inventory/wifi-networks":
+            before = inventory.wifi_net_alerts()
+            try:
+                saved = inventory.set_wifi_net_alerts(self._read_json().get("weak"))
+            except inventory.InventoryError as exc:
+                raise RequestError(400, str(exc))
+            if saved != before:
+                said = ", ".join(f"{k} {'never reported' if v == 'off' else f'below {v} dBm'}" for k, v in sorted(saved.items())) or "none"
+                database.add_audit("device", f"Weak Wi-Fi rules per network: {said}", f"By {self.user.username}")
+            self._send_json(200, {"success": True, "weak": saved})
             return
         match_inv = re.fullmatch(r"/api/inventory/([0-9a-fA-F:.-]{12,17})", path)
         if match_inv:
@@ -6434,7 +6490,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "0.12.1"
+APP_VERSION = "0.13.0"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:
@@ -6683,9 +6739,11 @@ def initialise() -> None:
     database.mark_schema()
 
 
-def open_listener(tries: int = 30, wait: float = 2.0) -> "ThreadingServer":
+def open_listener(tries: int = 90, wait: float = 2.0) -> "ThreadingServer":
     """The web port, opened before anything else starts. Still taken (a previous copy shutting down):
-    wait and try again for a minute, rather than fail and be restarted over and over."""
+    wait and try again for up to three minutes, rather than fail and be restarted over and over. A
+    version before 0.11.1 opened the port without address reuse, so the connections it leaves behind
+    keep the port from this one for a minute or two after it stops."""
     import errno
     for attempt in range(tries):
         try:

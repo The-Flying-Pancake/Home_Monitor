@@ -396,7 +396,9 @@ function renderWifi() {
   document.querySelectorAll("[data-wifi-ap]").forEach(b => b.classList.toggle("on", b.dataset.wifiAp === ap));
   fillTable("wifi-body", rows.map(c => `<tr>
       <td class="text-cell"><strong>${escapeHtml(c.name || c.mac)}</strong>${c.alert === "off" ? ' <span class="dim" title="Inventory, Edit: its weak signal is never reported">not reported</span>'
-        : c.alert ? ` <span class="dim" title="Inventory, Edit: its weak signal is reported below its own line">own line ${escapeHtml(String(c.alert))} dBm</span>` : ""}<div class="dim">${escapeHtml([c.ip, c.vendor, c.ssid].filter(Boolean).join(" · "))}</div></td>
+        : c.alert ? ` <span class="dim" title="Inventory, Edit: its weak signal is reported below its own line">own line ${escapeHtml(String(c.alert))} dBm</span>`
+        : c.net_alert === "off" ? ' <span class="dim" title="Inventory, Wi-Fi networks: weak signal on this network is never reported">not reported (network)</span>'
+        : c.net_alert ? ` <span class="dim" title="Inventory, Wi-Fi networks: this network has its own line">network line ${escapeHtml(String(c.net_alert))} dBm</span>` : ""}<div class="dim">${escapeHtml([c.ip, c.vendor, c.ssid].filter(Boolean).join(" · "))}</div></td>
       <td class="text-cell"><a href="#/device/${escapeHtml(c.ap_id)}/wireless">${escapeHtml(c.ap_name)}</a></td>
       <td data-sort="${escapeHtml(c.signal ?? -999)}" class="${signalClass(c.signal)}">${c.signal != null ? `${escapeHtml(c.signal)} dBm` : "-"}</td>
       <td>${escapeHtml(c.band || "-")}${c.channel ? ` <span class="dim">ch ${escapeHtml(String(c.channel))}</span>` : ""}</td>

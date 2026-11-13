@@ -3295,7 +3295,8 @@ function renderSettings(values, system) {
     if (id === "backups") extra = backupsSection(system.backup);
     if (id === "updates") extra = updatesSection(system.update);
     if (id === "demo") extra = demoPanel(system.demo);
-    if (id === "notify") extra = notifyPanel() + `<div id="bot-builder" class="bot-builder" data-ntab="commands"></div>`;
+    if (id === "notify") extra = notifyPanel() + `<div id="bot-builder" class="bot-builder" data-ntab="commands"></div>`
+      + `<div id="notify-changed" class="notify-changed" data-ntab="changed"></div>`;
     if (id === "alerts") extra = alertRulesPanel();
     const note = readOnly ? `<div class="panel-note-bar warn">Your account can view these settings but not change them.</div>` : "";
     return `<section class="settings-card${readOnly ? " read-only" : ""}" id="settings-${escapeHtml(id)}" data-card="${escapeHtml(id)}">
@@ -3356,7 +3357,9 @@ function applySettingDependencies() {
 
 // Notifications in three tabs (the list had grown long): how messages travel, when they are
 // held or silent, and what they say. Nothing is removed; rows are only grouped.
-const NOTIFY_TABS = [["delivery", "Delivery"], ["when", "When"], ["messages", "Messages"], ["commands", "Commands"]];
+const NOTIFY_TABS = [["delivery", "Delivery"], ["when", "When"], ["messages", "Messages"], ["commands", "Commands"], ["changed", "Changed alerts"]];
+// Tabs that apply only while Telegram is on (Changed alerts also covers what shows in the app).
+const NOTIFY_TELEGRAM_TABS = new Set(["when", "messages", "commands"]);
 let notifyTabActive = "delivery";
 
 function notifyTab(key) {
@@ -3376,11 +3379,12 @@ function applyNotifyTab() {
   if (!card) return;
   card.querySelectorAll("[data-ntab]").forEach(el => el.classList.toggle("ntab-off", el.dataset.ntab !== notifyTabActive));
   card.querySelectorAll("[data-ntab-go]").forEach(a => a.classList.toggle("active", a.dataset.ntabGo === notifyTabActive));
-  // Until Telegram is on only Delivery has anything to show.
+  // Until Telegram is on only Delivery and Changed alerts have anything to show.
   const on = (document.getElementById("setting-telegram_enabled") || {}).value === "on";
-  document.getElementById("ntab-bar").classList.toggle("hidden", !on);
-  if (!on && notifyTabActive !== "delivery") { notifyTabActive = "delivery"; applyNotifyTab(); }
+  card.querySelectorAll("[data-ntab-go]").forEach(a => a.classList.toggle("hidden", !on && NOTIFY_TELEGRAM_TABS.has(a.dataset.ntabGo)));
+  if (!on && NOTIFY_TELEGRAM_TABS.has(notifyTabActive)) { notifyTabActive = "delivery"; applyNotifyTab(); return; }
   if (notifyTabActive === "commands" && typeof renderBotBuilder === "function") renderBotBuilder();
+  if (notifyTabActive === "changed" && typeof loadChangedAlerts === "function") loadChangedAlerts();
 }
 
 // Short cross-links between the two halves of alerting: what is a problem, and how you hear about it.

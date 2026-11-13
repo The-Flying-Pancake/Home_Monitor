@@ -1898,6 +1898,13 @@ tr:hover .tag-add, .tag-add:focus-visible, .tag-add.has-tags { opacity: 1; }
 .inv-editor .kv-table { margin-bottom: 12px; }
 .inv-nets { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 14px; max-height: 260px; overflow-y: auto; }
 .inv-nets .dim { margin-left: 4px; }
+.inv-net-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.inv-net-row:last-child { border-bottom: none; }
+.inv-net-row .inv-net-name { flex: 1 1 100%; }
+.inv-net-row select { flex: 1 1 220px; min-width: 0; }
+.inv-net-row input[type=number] { width: 90px; }
+.inv-editor .inline-form { display: flex; gap: 8px; }
+.inv-editor .inline-form input { flex: 1; min-width: 0; }
 .inv-wifi-alert .form-row { align-items: center; gap: 10px; }
 .inv-wifi-alert select { flex: 1; min-width: 0; }
 .inv-wifi-line { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
@@ -2225,3 +2232,9 @@ html:not([data-auth="in"]) .modal-backdrop:not(.dialog-backdrop), html:not([data
   .update-history { overflow-x: auto; }
 }
 #updates-panel > details { padding: 0 16px; }
+
+/* Settings, Notifications, Changed alerts */
+.notify-changed .chg-section { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+.notify-changed .chg-head { display: flex; align-items: center; gap: 8px; }
+.notify-changed .chg-list { margin: 8px 0 0; padding-left: 18px; }
+.notify-changed .chg-list li { margin: 4px 0; overflow-wrap: anywhere; }

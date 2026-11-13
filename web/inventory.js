@@ -217,38 +217,86 @@ function addInventoryDevice() {
   form.querySelector("#inv-add-mac").focus();
 }
 
-/** Quiet Wi-Fi networks: their devices are kept but never announced or counted as new. */
-function editQuietNetworks() {
+/** Wi-Fi networks: per network, Quiet (devices kept but never announced or counted as new) and the
+ *  weak signal rule (as usual, never reported or its own line). Phones on a guest network change their
+ *  address, so a rule per device does not stick; a rule per network does. A device's own rule wins. */
+function editWifiNetworks() {
   const nets = (invData.ssids || []).map(s => s.ssid);
-  (invData.quiet_ssids || []).forEach(q => { if (!nets.some(n => n.toLowerCase() === q.toLowerCase())) nets.push(q); });
+  const rules = invData.wifi_net_alerts || {};
+  const addNet = n => { if (n && !nets.some(x => x.toLowerCase() === n.toLowerCase())) nets.push(n); };
+  (invData.quiet_ssids || []).forEach(addNet);
+  Object.keys(rules).forEach(addNet);
   const quiet = new Set((invData.quiet_ssids || []).map(q => q.toLowerCase()));
+  const ruleOf = n => { const k = Object.keys(rules).find(x => x.toLowerCase() === n.toLowerCase()); return k === undefined ? "" : rules[k]; };
   const count = s => Number((invData.ssids || []).find(x => x.ssid === s)?.count || 0);
+  const usual = Number(invData.weak_dbm || -75);
+  const row = n => {
+    const rule = ruleOf(n);
+    const mode = rule === "off" ? "off" : rule === "" ? "" : "line";
+    const line = mode === "line" ? rule : Math.max(-95, usual - 10);
+    return `<div class="inv-net-row" data-net-row="${escapeHtml(n)}">
+      <div class="inv-net-name"><strong>${escapeHtml(n)}</strong> <span class="dim">${count(n)} device${count(n) === 1 ? "" : "s"}</span></div>
+      <label class="checkbox-label"><input type="checkbox" data-net-quiet${quiet.has(n.toLowerCase()) ? " checked" : ""}> Quiet</label>
+      <select data-net-weak aria-label="Weak Wi-Fi signal on ${escapeHtml(n)}">
+        <option value=""${mode === "" ? " selected" : ""}>Weak signal as usual (below ${escapeHtml(String(usual))} dBm)</option>
+        <option value="off"${mode === "off" ? " selected" : ""}>Weak signal never reported</option>
+        <option value="line"${mode === "line" ? " selected" : ""}>Weak signal below its own line</option>
+      </select>
+      <input type="number" data-net-line min="-95" max="-40" step="1" value="${escapeHtml(String(line))}" aria-label="Own line in dBm"${mode === "line" ? "" : ' class="hidden"'}>
+    </div>`;
+  };
   const back = document.createElement("div");
   back.className = "modal-backdrop dialog-backdrop";
   back.innerHTML = `<form class="modal dialog inv-editor" role="dialog" aria-modal="true">
-    <div class="modal-header"><span>Quiet Wi-Fi networks</span></div>
+    <div class="modal-header"><span>Wi-Fi networks</span></div>
     <div class="modal-body">
-      <p class="dim">Devices on a quiet network, a tenant's or a guest network for example, are still recorded and kept up to date, but never announced, never counted as new and hidden from the list (choose "Quiet only" to see them). Nothing is deleted.</p>
-      <div class="inv-nets">${nets.length ? nets.map(n => `<label class="checkbox-label"><input type="checkbox" data-net="${escapeHtml(n)}"${quiet.has(n.toLowerCase()) ? " checked" : ""}> ${escapeHtml(n)} <span class="dim">${count(n)} device${count(n) === 1 ? "" : "s"}</span></label>`).join("")
-        : '<p class="dim">No Wi-Fi networks seen yet (they come from UniFi). Type one below.</p>'}</div>
-      <div class="form-group"><label for="inv-net-add">Another network, by name</label><input type="text" id="inv-net-add" maxlength="32" placeholder="Tenant-WiFi"></div>
+      <p class="dim"><strong>Quiet:</strong> devices on the network, a tenant's or a guest network for example, are still recorded and kept up to date, but never announced, never counted as new and hidden from the list (choose "Quiet only" to see them).</p>
+      <p class="dim"><strong>Weak signal:</strong> whether its devices show in an access point's "Wi-Fi devices on weak signal" problem. Useful for a guest network whose phones change their address, so a rule per device would not stick. A device's own rule (in its Edit window) still wins. Nothing is deleted.</p>
+      <div class="inv-nets" data-net-list>${nets.length ? nets.map(row).join("")
+        : '<p class="dim" data-net-none>No Wi-Fi networks seen yet (they come from UniFi). Add one below.</p>'}</div>
+      <div class="form-group"><label for="inv-net-add">Another network, by name</label>
+        <div class="inline-form"><input type="text" id="inv-net-add" maxlength="32" placeholder="Guest-WiFi"><button type="button" class="btn" data-net-add>Add</button></div></div>
       <div class="form-error hidden" data-err></div>
     </div>
     <div class="modal-footer"><span class="topbar-spacer"></span>
       <button type="button" class="btn" data-x>Cancel</button><button type="submit" class="btn btn-primary">Save</button></div></form>`;
   document.body.appendChild(back);
   const form = back.querySelector("form");
+  const list = form.querySelector("[data-net-list]");
+  const err = msg => { const e = form.querySelector("[data-err]"); e.textContent = msg; e.classList.toggle("hidden", !msg); };
   form.querySelector("[data-x]").addEventListener("click", () => back.remove());
   back.addEventListener("keydown", ev => { if (ev.key === "Escape") back.remove(); });
+  form.addEventListener("change", ev => {
+    const sel = ev.target.closest("[data-net-weak]");
+    if (sel) sel.parentElement.querySelector("[data-net-line]").classList.toggle("hidden", sel.value !== "line");
+  });
+  const addTyped = () => {
+    const input = form.querySelector("#inv-net-add");
+    const n = input.value.trim();
+    if (!n) return;
+    if ([...list.querySelectorAll("[data-net-row]")].some(r => r.dataset.netRow.toLowerCase() === n.toLowerCase())) { err(`${n} is already listed`); return; }
+    list.querySelector("[data-net-none]")?.remove();
+    list.insertAdjacentHTML("beforeend", row(n));
+    input.value = "";
+    err("");
+  };
+  form.querySelector("[data-net-add]").addEventListener("click", addTyped);
+  form.querySelector("#inv-net-add").addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); addTyped(); } });
   form.addEventListener("submit", async ev => {
     ev.preventDefault();
-    const ssids = [...form.querySelectorAll("[data-net]:checked")].map(c => c.dataset.net);
-    const extra = form.querySelector("#inv-net-add").value.trim();
-    if (extra) ssids.push(extra);
+    addTyped();
+    const rows = [...list.querySelectorAll("[data-net-row]")];
+    const ssids = rows.filter(r => r.querySelector("[data-net-quiet]").checked).map(r => r.dataset.netRow);
+    const weak = {};
+    rows.forEach(r => {
+      const mode = r.querySelector("[data-net-weak]").value;
+      if (mode) weak[r.dataset.netRow] = mode === "off" ? "off" : r.querySelector("[data-net-line]").value;
+    });
     try {
       await api("/api/inventory/quiet-ssids", { method: "PUT", body: { ssids } });
+      await api("/api/inventory/wifi-networks", { method: "PUT", body: { weak } });
       back.remove();
-      showToast(ssids.length ? `Quiet: ${ssids.join(", ")}` : "No quiet networks", "success");
+      showToast("Wi-Fi networks saved", "success");
       loadInventory();
     } catch (err) {
       const e = form.querySelector("[data-err]"); e.textContent = err.message; e.classList.remove("hidden");
@@ -273,7 +321,7 @@ function initInventory() {
     }
   });
   document.getElementById("btn-inv-add").addEventListener("click", addInventoryDevice);
-  document.getElementById("btn-inv-quiet-nets").addEventListener("click", editQuietNetworks);
+  document.getElementById("btn-inv-quiet-nets").addEventListener("click", editWifiNetworks);
   document.getElementById("btn-inv-known").addEventListener("click", async () => {
     try {
       const r = await api("/api/inventory/known", { method: "POST" });

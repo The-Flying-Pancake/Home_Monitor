@@ -612,6 +612,31 @@ def t_message_rows(b):
     return f"message box {box:.0f} px of a {card:.0f} px card"
 
 
+@check("Notifications, Changed alerts: shown with Telegram off, lists a changed rule and a network rule with links")
+def t_changed_alerts(b):
+    import database
+    import inventory
+    api("/api/settings", {"telegram_enabled": "off"})
+    database.set_alert_overrides("global", "", [("unreachable", "for_minutes", "3")])
+    inventory.set_wifi_net_alerts({"Guest": "off"})
+    try:
+        goto(b, "#/settings/notify")
+        b.wait_for("!!document.querySelector('[data-ntab-go=changed]')")
+        assert b.eval("document.querySelector('[data-ntab-go=when]').classList.contains('hidden')"), "When shown without Telegram"
+        assert not b.eval("document.getElementById('ntab-bar').classList.contains('hidden')")
+        b.eval("document.querySelector('[data-ntab-go=changed]').click(); true")
+        b.wait_for("document.getElementById('notify-changed').textContent.includes('Guest')")
+        text = b.eval("document.getElementById('notify-changed').textContent")
+        assert "All devices" in text and "Device unreachable" in text, text[:300]
+        assert "weak Wi-Fi never reported" in text, text[:300]
+        assert b.eval("!!document.querySelector('#notify-changed a[href=\"#/settings/alerts\"]')")
+        assert b.eval("document.querySelector('[data-card=notify] .setting-row:not(.ntab-off):not(.hidden)') === null"), "settings rows on the tab"
+    finally:
+        database.set_alert_overrides("global", "", [("unreachable", "for_minutes", None)])
+        database.delete_settings([inventory.WIFI_NET_ALERT_KEY])
+    return "tab shown without Telegram, rule and network listed with links"
+
+
 @check("Notifications, Commands: the builder edits /status and adds, previews and deletes a command of your own")
 def t_command_replies(b):
     api("/api/settings", {"telegram_enabled": "on"})
@@ -928,18 +953,26 @@ def t_inventory_quiet(b):
             c.execute("INSERT OR REPLACE INTO inventory (mac, ip, seen_name, vendor, where_seen, via, first_seen, last_seen, known, ssid) "
                       "VALUES (?, '', ?, 'Acme', 'ap-kitchen (Wi-Fi, -70 dBm)', 'wifi', ?, ?, 0, ?);", (mac, name, now, now, ssid))
         c.commit()
-    database.delete_settings([inventory.QUIET_SSIDS_KEY])
+    database.delete_settings([inventory.QUIET_SSIDS_KEY, inventory.WIFI_NET_ALERT_KEY])
     try:
         goto(b, "#/inventory")
         b.eval("window.__noAutoDialog = true; true")       # these windows are filled in by the check itself
         b.wait_for("document.getElementById('inventory-body').textContent.includes('tenant-tv')")
         assert "Wi-Fi network" in b.eval("document.querySelector('#tbl-inventory thead').textContent")
         assert "Home" in b.eval("document.querySelector('[data-inv-edit=\"aa:aa:aa:00:01:02\"]').closest('tr').textContent")
-        # Quiet networks: tick Tenant, save; its device leaves the list (and is not known).
+        # Wi-Fi networks: Tenant quiet with its weak signal never reported, save; its device leaves the
+        # list (and is not known). The own line input shows only for "its own line".
         run(b, "document.getElementById('btn-inv-quiet-nets').click(); true")
-        b.wait_for("!!document.querySelector('[data-net=\"Tenant\"]')")
-        run(b, "document.querySelector('[data-net=\"Tenant\"]').checked = true; document.querySelector('[data-net=\"Tenant\"]').closest('form').requestSubmit(); true")
+        b.wait_for("!!document.querySelector('[data-net-row=\"Tenant\"]')")
+        row = "document.querySelector('[data-net-row=\"Tenant\"]')"
+        assert b.eval(f"{row}.querySelector('[data-net-line]').classList.contains('hidden')")
+        run(b, f"const w = {row}.querySelector('[data-net-weak]'); w.value = 'line'; w.dispatchEvent(new Event('change', {{bubbles: true}})); true")
+        assert not b.eval(f"{row}.querySelector('[data-net-line]').classList.contains('hidden')")
+        run(b, f"const w = {row}.querySelector('[data-net-weak]'); w.value = 'off'; w.dispatchEvent(new Event('change', {{bubbles: true}})); "
+               f"{row}.querySelector('[data-net-quiet]').checked = true; {row}.closest('form').requestSubmit(); true")
         b.wait_for("!document.getElementById('inventory-body').textContent.includes('tenant-tv')")
+        rules = api("/api/inventory")["wifi_net_alerts"]
+        assert rules == {"Tenant": "off"}, rules
         assert "1 quiet not shown" in b.eval("document.getElementById('inv-count').textContent")
         assert "No quiet networks" not in b.eval("document.getElementById('toast-stack').textContent"), "saved twice"
         run(b, "const s = document.getElementById('inv-show'); s.value = 'quiet'; s.dispatchEvent(new Event('change')); true")
@@ -968,7 +1001,7 @@ def t_inventory_quiet(b):
         assert not b.eval("document.querySelector('[data-inv-edit=\"aa:aa:aa:00:01:09\"]').closest('tr').classList.contains('inv-new')")
     finally:
         b.eval("window.__noAutoDialog = false; document.querySelectorAll('.inv-editor').forEach(f => f.closest('.modal-backdrop').remove()); true")
-        database.delete_settings([inventory.QUIET_SSIDS_KEY, inventory.WIFI_ALERT_KEY])
+        database.delete_settings([inventory.QUIET_SSIDS_KEY, inventory.WIFI_ALERT_KEY, inventory.WIFI_NET_ALERT_KEY])
         with database.get_connection() as c:
             c.execute("DELETE FROM inventory WHERE mac LIKE 'aa:aa:aa:00:01:%';")
             c.commit()

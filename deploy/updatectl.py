@@ -652,6 +652,7 @@ def _rollback(args, runner) -> dict:
             raise UpdateError("The backup from before the update could not be restored; the current version is "
                               "running again. " + _last_lines(r.stdout + r.stderr))
     runner(["chown", "-hR", "homelab-monitor:homelab-monitor", data, "/etc/homelab-monitor"], capture_output=True, text=True)
+    _port_free(runner)
     runner(["systemctl", "start", "homelab-monitor"], capture_output=True, text=True)
     if not _answers(runner):
         _swap_back(cur, runner)
@@ -670,10 +671,11 @@ def _swap_back(cur: str, runner) -> None:
     if os.path.isdir(cur + ".rolledback"):
         os.rename(cur, cur + ".old")
         os.rename(cur + ".rolledback", cur)
+    _port_free(runner)
     runner(["systemctl", "start", "homelab-monitor"], capture_output=True, text=True)
 
 
-def _answers(runner, tries: int = 45) -> bool:
+def _port() -> str:
     port = os.environ.get("HM_PORT", "")
     if not port:
         try:
@@ -681,6 +683,23 @@ def _answers(runner, tries: int = 45) -> bool:
                 port = (re.search(r"MONITOR_PORT=(\d+)", f.read()) or [None, "8080"])[1]
         except OSError:
             port = "8080"
+    return port if re.fullmatch(r"\d{1,5}", port) else "8080"
+
+
+def _port_free(runner, tries: int = 90) -> None:
+    """Waits until nothing holds the web port, at most three minutes. Versions before 0.11.1 open it
+    without address reuse, so the connections the stopped version leaves behind keep the port from
+    them for a minute or two."""
+    port = _port()
+    for _ in range(tries):
+        r = runner(["ss", "-Htan", f"( sport = :{port} )"], capture_output=True, text=True)
+        if r.returncode != 0 or f":{port}" not in (r.stdout or ""):
+            return
+        time.sleep(2)
+
+
+def _answers(runner, tries: int = 45) -> bool:
+    port = _port()
     for _ in range(tries):
         r = runner(["curl", "-fsS", f"http://127.0.0.1:{port}/api/auth/status"], capture_output=True, text=True)
         if r.returncode == 0:

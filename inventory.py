@@ -19,6 +19,8 @@ Weak Wi-Fi, per device (WIFI_ALERT_KEY): an access point's "Wi-Fi devices on wea
 lists every device below the weak line. One that is always weak (a sensor at the far end of the
 garden) can be left out ("off") or given a lower line of its own (a dBm figure), from the
 Inventory's Edit window. Kept by MAC, so it follows the device from one access point to another.
+A whole Wi-Fi network can have such a rule too (WIFI_NET_ALERT_KEY), for a guest network whose
+phones change their address; a device's own rule wins over its network's.
 
 Quiet (kept, not announced): a device can be marked quiet, and whole Wi-Fi networks can be
 (QUIET_SSIDS_KEY, for example a tenant's SSID). A quiet device is still recorded and kept up to
@@ -42,6 +44,7 @@ WIFI_ALERT_KEY = "inventory_wifi_alert"     # {mac: "off" | dBm}, internal setti
 WIFI_LINE_RANGE = (-95, -40)
 QUIET_SSIDS_KEY = "inventory_quiet_ssids"   # JSON list of SSIDs, internal setting
 MAX_QUIET_SSIDS = 20
+WIFI_NET_ALERT_KEY = "inventory_wifi_net_alert"   # {network name: "off" | dBm}, internal setting
 
 
 class InventoryError(ValueError):
@@ -232,7 +235,7 @@ def listing(now: Optional[float] = None) -> Dict[str, Any]:
             ssids[r["ssid"]] = ssids.get(r["ssid"], 0) + 1
     return {"rows": rows, "learning_until": started + LEARN_SECONDS if started and now - started < LEARN_SECONDS else None,
             "now": now, "ssids": [{"ssid": k, "count": v, "quiet": k.lower() in quiet_nets} for k, v in sorted(ssids.items(), key=lambda kv: kv[0].lower())],
-            "quiet_ssids": quiet_ssid_list()}
+            "quiet_ssids": quiet_ssid_list(), "wifi_net_alerts": wifi_net_alerts()}
 
 
 def edit(mac: str, fields: Dict[str, Any]) -> None:
@@ -315,9 +318,52 @@ def set_wifi_alert(mac: str, value: Any) -> None:
     database.set_internal_setting(WIFI_ALERT_KEY, json.dumps(alerts, sort_keys=True))
 
 
-def weak_line(mac: Any, usual: float, alerts: Optional[Dict[str, Any]] = None) -> Optional[float]:
-    """The weak line for this device: its own, the usual one, or None when it is never reported."""
+def wifi_net_alerts() -> Dict[str, Any]:
+    """Each Wi-Fi network's own weak Wi-Fi rule: {network name: "off" | dBm}. A guest network full of
+    phones that change their address is set here once, instead of per device."""
+    try:
+        raw = json.loads(database.get_all_settings().get(WIFI_NET_ALERT_KEY) or "{}")
+    except ValueError:
+        return {}
+    out: Dict[str, Any] = {}
+    for k, v in (raw.items() if isinstance(raw, dict) else ()):
+        try:
+            v = clean_wifi_alert(v)
+        except InventoryError:
+            continue
+        if isinstance(k, str) and k.strip() and v != "":
+            out[k.strip()] = v
+    return out
+
+
+def set_wifi_net_alerts(rules: Any) -> Dict[str, Any]:
+    """Replaces every network's rule: {network name: "" (as usual) | "off" | dBm}."""
+    if not isinstance(rules, dict):
+        raise InventoryError("Weak Wi-Fi rules per network name")
+    out: Dict[str, Any] = {}
+    for name, value in rules.items():
+        name = str(name or "").strip()
+        if not name:
+            continue
+        if len(name) > 32 or any(ord(c) < 32 for c in name):
+            raise InventoryError("A Wi-Fi network name is at most 32 characters")
+        value = clean_wifi_alert(value)
+        if value != "" and name.lower() not in {k.lower() for k in out}:
+            out[name] = value
+    if len(out) > MAX_QUIET_SSIDS:
+        raise InventoryError(f"Weak Wi-Fi rules for up to {MAX_QUIET_SSIDS} networks")
+    database.set_internal_setting(WIFI_NET_ALERT_KEY, json.dumps(out, sort_keys=True))
+    return out
+
+
+def weak_line(mac: Any, usual: float, alerts: Optional[Dict[str, Any]] = None, ssid: Any = None,
+              nets: Optional[Dict[str, Any]] = None) -> Optional[float]:
+    """The weak line for this device: its own, else its network's, else the usual one; None when it is
+    never reported."""
     own = (alerts if alerts is not None else wifi_alerts()).get(normalise_mac(mac) or "")
+    if own in ("", None) and ssid:
+        rules = nets if nets is not None else wifi_net_alerts()
+        own = next((v for k, v in rules.items() if k.lower() == str(ssid).lower()), "")
     if own == "off":
         return None
     return float(own) if isinstance(own, int) else usual

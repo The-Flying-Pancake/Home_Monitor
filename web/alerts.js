@@ -352,3 +352,44 @@ function initAlertRules() {
     }
   });
 }
+
+/** Settings, Notifications, Changed alerts: every place an alert was changed from its default, so
+ *  nothing set months ago has to be remembered. Each line links to where it is changed. */
+async function loadChangedAlerts() {
+  const box = document.getElementById("notify-changed");
+  if (!box) return;
+  let d;
+  try {
+    d = await api("/api/alerts/changed");
+  } catch (err) {
+    box.innerHTML = `<div class="form-error">Could not load the changed alerts: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  const wifiRule = r => r === "off" ? "never reported" : `reported below ${r} dBm`;
+  const section = (title, link, linkText, help, lines) => !lines.length ? "" : `<div class="chg-section">
+      <div class="chg-head"><strong>${escapeHtml(title)}</strong><span class="ar-spacer"></span>
+        <a class="btn btn-small" href="${escapeHtml(link)}">${escapeHtml(linkText)}</a></div>
+      ${help ? `<div class="form-help">${escapeHtml(help)}</div>` : ""}
+      <ul class="chg-list">${lines.join("")}</ul></div>`;
+  const li = (name, detail, link) => `<li>${link ? `<a href="${escapeHtml(link)}">${escapeHtml(name)}</a>` : `<strong>${escapeHtml(name)}</strong>`}${detail ? ` <span class="dim">${escapeHtml(detail)}</span>` : ""}</li>`;
+  const rules = (d.rules || []).map(g => li(`${AR_SCOPE_LABEL[g.scope] || g.scope}: ${g.name}`,
+    g.changes.map(c => `${c.label}, ${(AR_FIELD_LABEL[c.field] || c.field).toLowerCase()} ${arFieldText(c.field, c.value, c.unit)} (default ${arFieldText(c.field, c.default, c.unit)})`).join("; "),
+    g.link));
+  const maint = (d.maintenance || []).map(w => li(w.what,
+    `${w.state === "active" ? "on now, until" : `from ${formatTime(w.start)} until`} ${formatTime(w.end)}${w.note ? `: ${w.note}` : ""}`));
+  const inv = d.inventory;
+  const nets = inv ? [
+    ...inv.quiet_networks.map(n => li(n, "quiet: new devices are not announced")),
+    ...inv.network_wifi.map(n => li(n.name, `weak Wi-Fi ${wifiRule(n.rule)}`)),
+  ] : [];
+  const devs = inv ? [
+    ...inv.quiet_devices.map(n => li(n, "quiet: never announced")),
+    ...inv.device_wifi.map(x => li(x.name, `weak Wi-Fi ${wifiRule(x.rule)}`)),
+  ] : [];
+  const html = section("Alert rules", "#/settings/alerts/overview", "Open alert rules", "Values changed from the defaults, for all devices, a template, a tag or one device.", rules)
+    + section("Maintenance windows", "#/settings/maintenance", "Open maintenance", "While a window is on, its devices raise no problems and send no messages.", maint)
+    + section("Wi-Fi networks", "#/inventory", "Open inventory", "Set in Inventory, Wi-Fi networks.", nets)
+    + section("Devices in the inventory", "#/inventory", "Open inventory", "Set in each device's Edit window in the Inventory.", devs);
+  box.innerHTML = `<p class="form-help">Everything that makes alerts behave differently from the defaults, wherever it was set.</p>`
+    + (html || `<div class="ok-state">Nothing changed: every alert works as it came.</div>`);
+}

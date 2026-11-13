@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 
 from tests import _env  # noqa: F401
 
@@ -515,6 +516,53 @@ class UpdateTests(unittest.TestCase):
         self.assertTrue(r["newer"])
         self.assertEqual(r["latest"], "9.9.9")
         self.assertFalse(os.path.exists(os.path.join(self.data, "update.result.json")))  # nothing installed
+
+
+class PortFreeTests(unittest.TestCase):
+    """Versions before 0.11.1 open the web port without address reuse: before one is started again
+    (rollback, Undo) or a newer one after it, the port must be completely free."""
+
+    def test_waits_while_connections_hold_the_port(self):
+        answers = ["TIME-WAIT 0 0 192.0.2.5:8080 192.0.2.9:51000", "TIME-WAIT 0 0 192.0.2.5:8080 192.0.2.9:51001", ""]
+        calls = []
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, answers.pop(0), "")
+        saved = os.environ.get("HM_PORT")
+        os.environ["HM_PORT"] = "8080"
+        try:
+            with unittest.mock.patch.object(updatectl.time, "sleep") as nap:
+                updatectl._port_free(runner)
+        finally:
+            if saved is None:
+                os.environ.pop("HM_PORT", None)
+            else:
+                os.environ["HM_PORT"] = saved
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(nap.call_count, 2)
+        self.assertEqual(calls[0], ["ss", "-Htan", "( sport = :8080 )"])
+
+    def test_gives_up_after_three_minutes_and_without_ss(self):
+        busy = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "ESTAB 0 0 127.0.0.1:8080 127.0.0.1:40000", "")
+        with unittest.mock.patch.object(updatectl.time, "sleep") as nap:
+            updatectl._port_free(busy)
+        self.assertEqual(nap.call_count, 90)
+        missing = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 127, "", "ss: not found")
+        with unittest.mock.patch.object(updatectl.time, "sleep") as nap:
+            updatectl._port_free(missing)
+        nap.assert_not_called()
+
+    def test_installer_waits_before_starting_either_version(self):
+        tpl = open(os.path.join(ROOT, "deploy", "install-template.sh"), encoding="utf-8").read()
+        replace = tpl[tpl.index("  s_replace() {"):tpl.index("  s_health()")]
+        self.assertLess(replace.index("systemctl stop homelab-monitor"), replace.index('ct "$(port_free_cmd)"'))
+        self.assertLess(replace.index('ct "$(port_free_cmd)"'), replace.index("install_helpers yes"))
+        back = tpl[tpl.index("Putting the previous code and the data from just before back"):]
+        back = back[:back.index("if healthy")]
+        self.assertLess(back.index("$(port_free_cmd)"), back.rindex("systemctl start homelab-monitor"))
+        self.assertIn("sport = :${PORT}", tpl)
+        self.assertIn('[[ "$PORT" =~ ^[0-9]{1,5}$ ]] || return 0', tpl)
 
 
 if __name__ == "__main__":

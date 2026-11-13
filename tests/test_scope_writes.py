@@ -135,11 +135,47 @@ class ScopeWriteTests(unittest.TestCase):
     # --- Network-wide routes and shared objects -------------------------------------------------
 
     ROUTES = [("POST", "/api/pihole/blocking"), ("POST", "/api/wifi/reconnect"), ("POST", "/api/inventory"),
-              ("POST", "/api/inventory/known"), ("PUT", "/api/inventory/quiet-ssids"),
+              ("POST", "/api/inventory/known"), ("PUT", "/api/inventory/quiet-ssids"), ("PUT", "/api/inventory/wifi-networks"),
               ("PUT", "/api/inventory/aa:bb:cc:dd:ee:ff"), ("DELETE", "/api/inventory/aa:bb:cc:dd:ee:ff"),
               ("POST", "/api/map/objects"), ("DELETE", "/api/map/objects/999999"), ("POST", "/api/map/links"),
               ("PUT", "/api/map/positions"), ("PUT", "/api/dashboard"), ("POST", "/api/dashboards"),
               ("DELETE", "/api/dashboards/sw-none"), ("PUT", "/api/taxonomy"), ("POST", "/api/backups/passphrase")]
+
+    def test_changed_alerts_lists_everything_and_respects_scope(self):
+        """Settings, Notifications, Changed alerts: every change in one list, with links; a user limited to
+        some devices sees changes on their devices only and none of the inventory's network-wide rules."""
+        import inventory
+        now = time.time()
+        database.set_alert_overrides("device", str(self.in1), [("unreachable", "for_minutes", "5")])
+        database.set_alert_overrides("device", str(self.out), [("unreachable", "telegram", "never")])
+        maintenance.add("device", str(self.in2), now - 60, now + 3600, "New disk", "admin", now=now)
+        maintenance.add("device", str(self.out), now + 7200, now + 9000, "", "admin", now=now)
+        inventory.set_quiet_ssids(["Guest"])
+        inventory.set_wifi_net_alerts({"Guest": "off"})
+        try:
+            status, body, _ = self.as_(self.wide, "GET", "/api/alerts/changed")
+            self.assertEqual(status, 200, body)
+            dev = {g["name"]: g for g in body["rules"] if g["scope"] == "device"}
+            self.assertEqual(dev["sw-in1"]["link"], f"#/settings/alerts/device/{self.in1}")
+            self.assertEqual(dev["sw-in1"]["changes"][0]["value"], 5)
+            self.assertIn("sw-out", dev)
+            states = {w["what"]: w["state"] for w in body["maintenance"]}
+            self.assertEqual(states.get("sw-in2"), "active")
+            self.assertEqual(states.get("sw-out"), "scheduled")
+            self.assertEqual(body["inventory"]["quiet_networks"], ["Guest"])
+            self.assertEqual(body["inventory"]["network_wifi"], [{"name": "Guest", "rule": "off"}])
+            status, body, _ = self.as_(self.scoped, "GET", "/api/alerts/changed")
+            self.assertEqual(status, 200, body)
+            names = {g["name"] for g in body["rules"]}
+            self.assertIn("sw-in1", names)
+            self.assertNotIn("sw-out", names)
+            self.assertNotIn("All devices", names)
+            self.assertEqual([w["what"] for w in body["maintenance"]], ["sw-in2"])
+            self.assertIsNone(body["inventory"])
+        finally:
+            database.set_alert_overrides("device", str(self.in1), [("unreachable", "for_minutes", None)])
+            database.set_alert_overrides("device", str(self.out), [("unreachable", "telegram", None)])
+            database.delete_settings([inventory.QUIET_SSIDS_KEY, inventory.WIFI_NET_ALERT_KEY])
 
     def test_network_wide_routes_refused_when_scoped(self):
         self.assertEqual(len(self.ROUTES), len(rbac.UNSCOPED_ROUTES))

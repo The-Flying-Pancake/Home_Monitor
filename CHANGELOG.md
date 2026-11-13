@@ -15,6 +15,12 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 0.13.0: Release 34, Guest Wi-Fi and one list of changed alerts (2026-11-13)
+
+- Each Wi-Fi network can now have its own weak signal rule: never reported or below a line of its own. Phones on a guest network that change their address no longer fill the weak signal problem. Set it in Inventory, Wi-Fi networks, beside Quiet. A device's own rule still wins.
+- Settings, Notifications has a new tab, Changed alerts. It lists everything you changed from the defaults in one place: alert rules, maintenance windows, quiet networks and devices and weak Wi-Fi rules. Each line links to where it is changed.
+- Updating from 0.11.0 or older could fail because the old version kept its web port busy for a minute or two after it stopped. The update now waits until the port is free before starting the new version. Undo waits the same way.
+
 ### 0.12.1: Release 33, Set the backup passphrase in the app (2026-11-10)
 
 - You can now set or change the backup passphrase in Settings, Backups. It asks for your password first, then the container saves the passphrase and makes a sealed backup at once. Telegram sends a security alert when it changes. The command in the container still works too.

@@ -2273,6 +2273,13 @@ CMDS
 # 5. health: the new version must answer within HEALTH_TRIES x 2 s. If it does not: the previous
 #    code and the backup from step 3 are put back and started, and the upgrade reports the failure.
 ct() { pct exec "${CTID}" -- bash -lc "$1"; }
+# Shell lines for the container that wait until nothing holds the web port any more, at most three
+# minutes. Versions before 0.11.1 opened the port without address reuse: the connections they leave
+# behind when stopped keep the port from the next version (and from them) for a minute or two.
+port_free_cmd() {
+  [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || return 0
+  echo "if command -v ss >/dev/null; then for i in \$(seq 1 90); do [ -z \"\$(ss -Htan '( sport = :${PORT} )' 2>/dev/null)\" ] && break; sleep 2; done; fi"
+}
 rebuild_help() {
   say ""
   if [[ "$TARGET" == "local" ]]; then
@@ -2476,6 +2483,7 @@ if [[ "$MODE" == "upgrade" || "$MODE" == "check" ]]; then
     # app.old must mean "the code that was running": a leftover from an earlier upgrade goes first.
     ct "rm -rf ${APP_DIR}.old ${APP_DIR}.rolledback"
     pct exec "${CTID}" -- systemctl stop homelab-monitor
+    ct "$(port_free_cmd)" || true
     push_app
     install_helpers yes
     # Unprivileged: the Syncthing identity comes in through this host, then the site settings are applied again.
@@ -2534,6 +2542,7 @@ if [[ "$MODE" == "upgrade" || "$MODE" == "check" ]]; then
                if grep -q -- --expect-sha256 ${APP_DIR}/sitectl.py; then python3 ${APP_DIR}/sitectl.py restore ${BACKUP_FILE} --data ${DATA_DIR} --key ${KEY_DIR}/vault.key ${BACKUP_SHA:+--expect-sha256 ${BACKUP_SHA}}
                else python3 ${APP_DIR}/sitectl.py restore ${BACKUP_FILE} --data ${DATA_DIR} --key ${KEY_DIR}/vault.key; fi; }
         chown -hR ${SERVICE_USER}:${SERVICE_USER} ${DATA_DIR} ${KEY_DIR}
+        $(port_free_cmd)
         systemctl start homelab-monitor"
     } >> "$LOG" 2>&1
     if healthy >> "$LOG" 2>&1; then
