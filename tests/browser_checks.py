@@ -762,6 +762,33 @@ def t_map_wifi_traffic(b):
         database.replace_device_table(DEV_GRAPH, "wifi_clients", {}, now)
 
 
+@check("Map: a box folds away what is below it; Tidy closes up around it without saving")
+def t_map_fold(b):
+    goto(b, "#/map")
+    run(b, "mapData = null; loadMap(); true")
+    b.wait_for("!!mapData && document.querySelectorAll('#map-svg [data-node]').length >= 2")
+    # A parent with a child to fold: the first two drawn boxes, linked in the page's copy only.
+    run(b, "const ks = mapData.nodes.filter(mapShown).map(n => n.key); window.__p = ks[0]; window.__c = ks[1]; "
+           "mapData.parent[window.__c] = window.__p; mapFolded = new Set(); drawMap(); true")
+    assert b.eval("!!document.querySelector(`[data-fold=\"${window.__p}\"]`)"), "no fold button on the parent"
+    saved = b.eval("JSON.stringify(mapData.positions)")
+    run(b, "document.querySelector(`[data-fold=\"${window.__p}\"]`).dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); true")
+    assert not b.eval("!!document.querySelector(`[data-node=\"${window.__c}\"]`)"), "the child is still drawn"
+    label = b.eval("document.querySelector(`[data-fold=\"${window.__p}\"]`).textContent")
+    assert label.startswith("+") and "below it" in label, label
+    # Tidy: arranged for the view, the saved positions are untouched; Edit hides the Tidy button.
+    run(b, "if (!mapTidy) document.getElementById('map-tidy').click(); true")
+    assert b.eval("JSON.stringify(mapData.positions)") == saved, "Tidy changed the saved positions"
+    run(b, "document.getElementById('map-tidy').click(); true")
+    # The side panel unfolds it again.
+    run(b, "mapSelected = window.__p; drawMap(); true")
+    b.wait_for("!!document.querySelector('[data-fold-side]')")
+    run(b, "document.querySelector('[data-fold-side]').click(); true")
+    assert b.eval("!!document.querySelector(`[data-node=\"${window.__c}\"]`)"), "not shown again"
+    run(b, "mapSelected = null; delete mapData.parent[window.__c]; drawMap(); true")
+    return "folded, Tidy left the saved layout alone, unfolded from the side panel"
+
+
 @check("Inventory: groups by where it connects that fold, sorting by name")
 def t_inventory_groups(b):
     import database
@@ -2247,7 +2274,7 @@ def main() -> int:
 
         print(f"Browser checks against {BASE} (isolated database {_env.TMP})")
         for test in shard_checks([t_login, t_dashboard, t_resize, t_move, t_columns, t_graph_tile, t_content_follows, t_map, t_sort, t_groups,
-                     t_ack, t_live, t_snmp_check, t_snmp_v3_fields, t_snmp_test_before_saving, t_reload_after_update, t_reports, t_alert_wifi, t_map_wifi_traffic, t_inventory_groups, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_backup_passphrase_bar, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_guide_search, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
+                     t_ack, t_live, t_snmp_check, t_snmp_v3_fields, t_snmp_test_before_saving, t_reload_after_update, t_reports, t_alert_wifi, t_map_wifi_traffic, t_map_fold, t_inventory_groups, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_backup_passphrase_bar, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_guide_search, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
             test(browser)
     finally:
         if browser:

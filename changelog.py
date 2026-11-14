@@ -320,6 +320,10 @@ RELEASES: List[Dict[str, Any]] = [
         "The inventory sorts itself into folding groups: by where a device connects, its Wi-Fi network, its maker, new or known, monitored or not.",
         "Sort the inventory by last seen, first seen, name, IP address or maker. Your browser remembers the choice.",
     ]},
+    {"id": 40, "date": "2026-11-15", "title": "A tidier map", "items": [
+        "A box on the map with devices below it can fold them away with the small button under it. It then shows how many are hidden.",
+        "Tidy arranges what is shown as a neat tree while you look, so the rest closes up around a folded branch. Your own arrangement stays as it is.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 

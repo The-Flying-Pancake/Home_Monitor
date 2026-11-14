@@ -15,6 +15,11 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 0.17.0: Release 40, A tidier map (2026-11-15)
+
+- A box on the map with devices below it can fold them away with the small button under it. It then shows how many are hidden.
+- Tidy arranges what is shown as a neat tree while you look, so the rest closes up around a folded branch. Your own arrangement stays as it is.
+
 ### 0.16.0: Release 39, A livelier map and an organised inventory (2026-11-14)
 
 - The map has a Wi-Fi button. It draws the devices on each access point around it, green for a good signal and orange for a weak one.

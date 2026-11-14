@@ -2405,3 +2405,11 @@ html:not([data-auth="in"]) .modal-backdrop:not(.dialog-backdrop), html:not([data
 .inv-group { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 12px; background: none; border: 0; color: var(--text); font: inherit; cursor: pointer; text-align: left; }
 .inv-group:hover { background: var(--hover); }
 .inv-group-caret { color: var(--text-dim); width: 12px; }
+
+/* Map: the fold button under a box with devices below it. */
+.map-fold { cursor: pointer; }
+.map-fold rect { fill: var(--panel); stroke: var(--border-highlight); }
+.map-fold text { fill: var(--text-dim); font-size: 11px; font-weight: 600; text-anchor: middle; }
+.map-fold:hover rect { stroke: var(--blue); }
+.map-fold.folded rect { fill: var(--info-bg); stroke: var(--blue); }
+.map-fold.folded text { fill: var(--blue); }

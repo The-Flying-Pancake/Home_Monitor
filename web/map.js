@@ -43,7 +43,40 @@ let mapView = { x: -40, y: -40, scale: 1 };
 let mapFitted = false;
 let mapAnim = null;          // spring state while a branch follows a drag
 const MAP_HIDDEN_KEYS = new Set(["monitor"]);   // in the data (dependencies), not drawn
-const mapShown = n => !MAP_HIDDEN_KEYS.has(n.key) && n.kind !== "monitor";
+const mapShown = n => !MAP_HIDDEN_KEYS.has(n.key) && n.kind !== "monitor" && !mapFoldHidden.has(n.key);
+
+/* Folding: a box with devices below it can hide them (its fold button, or the side panel). Tidy
+ * arranges what is shown as a tree while you look, without saving it, so the rest closes up around a
+ * folded branch. Both are remembered in this browser. */
+const MAP_FOLD_STORE = "monitor.map.folded";
+const MAP_TIDY_STORE = "monitor.map.tidy";
+let mapFolded = new Set();
+let mapFoldHidden = new Set();
+let mapTidy = false;
+let mapDrawnPos = {};
+
+function mapComputeFolded() {
+  const children = mapChildren(mapData);
+  const out = new Set();
+  const walk = k => (children[k] || []).forEach(c => { if (!out.has(c)) { out.add(c); walk(c); } });
+  mapFolded.forEach(k => walk(k));
+  mapFoldHidden = out;
+}
+
+function mapBelowCount(key) {
+  const children = mapChildren(mapData);
+  let n = 0;
+  const walk = k => (children[k] || []).forEach(c => { n += 1; walk(c); });
+  walk(key);
+  return n;
+}
+
+function mapToggleFold(key) {
+  if (mapFolded.has(key)) mapFolded.delete(key); else mapFolded.add(key);
+  storeSet(MAP_FOLD_STORE, JSON.stringify([...mapFolded]));
+  drawMap();
+  if (mapTidy) fitMap();
+}
 
 function initMap() {
   document.getElementById("map-edit").addEventListener("click", () => {
@@ -52,6 +85,7 @@ function initMap() {
     document.getElementById("map-edit").textContent = mapEditing ? "Done" : "Edit";
     document.getElementById("map-edit").classList.toggle("btn-primary", mapEditing);
     document.querySelectorAll(".map-edit-only").forEach(el => el.classList.toggle("hidden", !mapEditing));
+    document.querySelectorAll(".map-view-only").forEach(el => el.classList.toggle("hidden", mapEditing));
     updateMapHint();
     drawMap();
   });
@@ -94,6 +128,18 @@ function initMap() {
     });
   }
   mapTraffic = storeGet(MAP_TRAFFIC_STORE) === "1";
+  try { mapFolded = new Set(JSON.parse(storeGet(MAP_FOLD_STORE) || "[]")); } catch (e) { mapFolded = new Set(); }
+  mapTidy = storeGet(MAP_TIDY_STORE) === "1";
+  const tidyBtn = document.getElementById("map-tidy");
+  const syncTidy = () => { tidyBtn.classList.toggle("btn-primary", mapTidy); tidyBtn.setAttribute("aria-pressed", String(mapTidy)); };
+  syncTidy();
+  tidyBtn.addEventListener("click", () => {
+    mapTidy = !mapTidy;
+    storeSet(MAP_TIDY_STORE, mapTidy ? "1" : "0");
+    syncTidy();
+    drawMap();
+    fitMap();
+  });
   mapWifi = storeGet(MAP_WIFI_STORE) === "1";
   const wifiBtn = document.getElementById("map-wifi");
   const syncWifi = () => { wifiBtn.classList.toggle("btn-primary", mapWifi); wifiBtn.setAttribute("aria-pressed", String(mapWifi)); };
@@ -121,6 +167,12 @@ function initMap() {
   const svg = document.getElementById("map-svg");
   let drag = null;
   svg.addEventListener("pointerdown", (ev) => {
+    const fold = ev.target.closest("[data-fold]");
+    if (fold) {
+      ev.stopPropagation();
+      mapToggleFold(fold.dataset.fold);
+      return;
+    }
     const g = ev.target.closest("[data-node]");
     const pt = mapPoint(ev);
     if (g) {
@@ -137,6 +189,7 @@ function initMap() {
   svg.addEventListener("pointermove", (ev) => {
     if (!drag) return;
     if (drag.kind === "node") {
+      if (mapTidy && !mapEditing) return;
       const pt = mapPoint(ev);
       const x = Math.round(pt.x - drag.dx), y = Math.round(pt.y - drag.dy);
       if (Math.abs(drag.start[0] - x) + Math.abs(drag.start[1] - y) > 2) drag.moved = true;
@@ -258,7 +311,7 @@ async function loadMap() {
 /** Zooms and pans so every node is visible with a margin, never enlarging past 100 %. */
 function fitMap() {
   const svg = document.getElementById("map-svg");
-  const pts = mapData.nodes.filter(mapShown).map(n => mapData.positions[n.key]).filter(Boolean);
+  const pts = mapData.nodes.filter(mapShown).map(n => (mapDrawnPos[n.key] || mapData.positions[n.key])).filter(Boolean);
   if (!pts.length || !svg.clientWidth) return setViewBox();
   const pad = 40;
   const minX = Math.min(...pts.map(p => p[0])) - pad, maxX = Math.max(...pts.map(p => p[0])) + MAP_NODE_W + pad;
@@ -292,7 +345,7 @@ function mapChildren(data) {
 function autoLayout(data, all) {
   const children = mapChildren(data);
   const positions = {};
-  const kidsOf = k => children[k] || [];
+  const kidsOf = k => mapFolded.has(k) ? [] : children[k] || [];
 
   // Blocks: a laid-out piece with a width and a place(left, top) function.
   const block = (node) => {
@@ -736,7 +789,9 @@ function mapPortTag(text, at) {
 function drawMap() {
   if (!mapData) return;
   const svg = document.getElementById("map-svg");
-  const pos = mapData.positions;
+  mapComputeFolded();
+  const pos = mapTidy && !mapEditing ? autoLayout(mapData, true) : mapData.positions;
+  mapDrawnPos = pos;
   const affected = new Set(mapSelected ? mapDownstream(mapSelected) : []);
   const shownKeys = new Set(mapData.nodes.filter(mapShown).map(n => n.key));
   // The background grid (one dot per snap step) and the links under the boxes.
@@ -791,6 +846,8 @@ function drawMap() {
     }
   });
 
+  const below = {};
+  for (const n of mapData.nodes) if (pos[n.key] && mapShown(n)) below[n.key] = mapBelowCount(n.key);
   for (const n of mapData.nodes) {
     if (!pos[n.key] || !mapShown(n)) continue;
     const [x, y] = pos[n.key].map(Math.round);
@@ -809,6 +866,10 @@ function drawMap() {
       `<text class="map-sub" x="48" y="39">${escapeHtml(sub)}</text>` +
       `<text class="map-kind" x="48" y="54">${escapeHtml(kind)}</text>` +
       (n.problems ? `<g class="map-badge" transform="translate(${MAP_NODE_W - 14},12)"><circle r="8"></circle><text y="3.5">${Number(n.problems)}</text></g>` : "") +
+      (below[n.key] ? `<g class="map-fold${mapFolded.has(n.key) ? " folded" : ""}" data-fold="${escapeHtml(n.key)}" transform="translate(${MAP_NODE_W / 2},${MAP_NODE_H})">` +
+        `<rect x="${mapFolded.has(n.key) ? -22 : -11}" y="-8" width="${mapFolded.has(n.key) ? 44 : 22}" height="16" rx="8"></rect>` +
+        `<text y="4">${mapFolded.has(n.key) ? `+${Number(below[n.key])}` : "\u2013"}</text>` +
+        `<title>${escapeHtml(mapFolded.has(n.key) ? `Show the ${below[n.key]} device${below[n.key] === 1 ? "" : "s"} below it` : "Hide what is below it")}</title></g>` : "") +
       `<title>${escapeHtml(n.label)}${n.problems ? ` (${escapeHtml(n.problems)} problem${n.problems > 1 ? "s" : ""})` : ""}</title></g>`;
   }
   let under = mapEditing ? "" : mapInternet(pos);
@@ -868,7 +929,11 @@ function renderMapInfo(affected) {
     <div class="map-info-head">Affected by a restart: ${list.length} device${list.length === 1 ? "" : "s"}${hosts ? `, about ${escapeHtml(hosts)} other host${hosts === 1 ? "" : "s"}` : ""}</div>
     <ul class="map-affected">${list.map(x => `<li>${escapeHtml(x.label)} <span class="dim">${escapeHtml(MAP_KIND_LABEL[x.kind] || x.kind)}</span></li>`).join("") || "<li class=\"dim\">Nothing downstream</li>"}</ul>
     ${mapWifiInfo(n)}
+    ${mapBelowCount(n.key) ? `<div><button type="button" class="btn btn-small" data-fold-side="${escapeHtml(n.key)}">${mapFolded.has(n.key)
+      ? `Show the ${escapeHtml(mapBelowCount(n.key))} device${mapBelowCount(n.key) === 1 ? "" : "s"} below it` : "Hide what is below it"}</button></div>` : ""}
     ${unmanaged}`;
+  const sideFold = box.querySelector("[data-fold-side]");
+  if (sideFold) sideFold.addEventListener("click", () => mapToggleFold(sideFold.dataset.foldSide));
   const del = box.querySelector("[data-delete-object]");
   if (del) {
     del.addEventListener("click", async () => {
