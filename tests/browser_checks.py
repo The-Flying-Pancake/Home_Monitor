@@ -736,6 +736,23 @@ def t_map_wifi_traffic(b):
         b.wait_for("!!document.querySelector('#map-info .map-wifi li.weak')")
         assert "kitchen-tablet" in b.eval("document.querySelector('#map-info .map-wifi li.weak').textContent")
         run(b, "mapSelected = null; drawMap(); true")
+        # Wi-Fi button: the devices around the access point, the weak one in orange; off again.
+        run(b, "if (document.getElementById('map-wifi').getAttribute('aria-pressed') === 'true') document.getElementById('map-wifi').click(); true")
+        assert not b.eval("!!document.querySelector('.map-wifi-dot')"), "Wi-Fi devices drawn while off"
+        run(b, "document.getElementById('map-wifi').click(); true")
+        assert b.eval("document.querySelectorAll('.map-wifi-dot').length") == 2
+        assert b.eval("document.querySelectorAll('.map-wifi-dot.weak').length") == 1
+        run(b, "document.getElementById('map-wifi').click(); true")
+        assert not b.eval("!!document.querySelector('.map-wifi-dot')")
+        # The internet above the gateway, and flowing traffic on a link with a measured port.
+        run(b, "mapData.root = mapData.root || mapData.nodes[0].key; mapData.internet = {down: 85e6, up: 9e6, speed: 1000, links: ['wan']}; "
+               "const l = mapData.links[0]; if (l) l.rate = {in: 2e6, out: 40e6, speed: 100, at: l.a}; "
+               "if (document.getElementById('map-traffic').getAttribute('aria-pressed') !== 'true') document.getElementById('map-traffic').click(); drawMap(); true")
+        assert b.eval("!!document.querySelector('.map-internet')"), "no globe"
+        assert "85M" in b.eval("[...document.querySelectorAll('.map-rate-tag')].map(t => t.textContent).join(' ')")
+        assert b.eval("!!document.querySelector('.map-flow.down') && !!document.querySelector('.map-flow.up')"), "no flow"
+        run(b, "document.getElementById('map-traffic').click(); true")
+        assert not b.eval("!!document.querySelector('.map-flow')"), "flow left after Traffic off"
         pressed = b.eval("document.getElementById('map-traffic').getAttribute('aria-pressed')")
         run(b, "document.getElementById('map-traffic').click(); true")
         assert b.eval("document.getElementById('map-traffic').getAttribute('aria-pressed')") != pressed
@@ -743,6 +760,39 @@ def t_map_wifi_traffic(b):
         return "Wi-Fi count and weak device on the access point; Traffic switches"
     finally:
         database.replace_device_table(DEV_GRAPH, "wifi_clients", {}, now)
+
+
+@check("Inventory: groups by where it connects that fold, sorting by name")
+def t_inventory_groups(b):
+    import database
+    now = int(time.time())
+    rows = (("aa:aa:aa:00:03:01", "zeta-cam", "ap-garden (Wi-Fi, -60 dBm)", "192.0.2.31"), ("aa:aa:aa:00:03:02", "alpha-tv", "ap-garden (Wi-Fi, -70 dBm)", "192.0.2.30"),
+            ("aa:aa:aa:00:03:03", "nas-box", "core-switch port 4", "192.0.2.9"))
+    with database.get_connection() as c:
+        for mac, name, where, ip in rows:
+            c.execute("INSERT OR REPLACE INTO inventory (mac, ip, seen_name, vendor, where_seen, via, first_seen, last_seen, known) "
+                      "VALUES (?, ?, ?, 'Acme', ?, 'wifi', ?, ?, 1);", (mac, ip, name, where, now, now))
+        c.commit()
+    try:
+        goto(b, "#/inventory")
+        run(b, "loadInventory(); true")
+        b.wait_for("document.getElementById('inventory-body').textContent.includes('zeta-cam')")
+        run(b, "const g = document.getElementById('inv-group'); g.value = 'where'; g.dispatchEvent(new Event('change')); "
+               "const s = document.getElementById('inv-sort'); s.value = 'name'; s.dispatchEvent(new Event('change')); true")
+        groups = b.eval("[...document.querySelectorAll('[data-inv-group]')].map(g => g.dataset.invGroup)")
+        assert "where:ap-garden" in groups and "where:core-switch" in groups, groups
+        order = b.eval("(() => { const g = document.querySelector('[data-inv-group=\"where:ap-garden\"]').closest('tr'); "
+                       "const out = []; let r = g.nextElementSibling; while (r && !r.classList.contains('inv-group-row')) { out.push(r.querySelector('strong').textContent); r = r.nextElementSibling; } return out; })()")
+        assert order[:2] == ["alpha-tv", "zeta-cam"], order
+        run(b, "document.querySelector('[data-inv-group=\"where:ap-garden\"]').click(); true")
+        assert not b.eval("document.getElementById('inventory-body').textContent.includes('zeta-cam')"), "group did not fold"
+        run(b, "document.querySelector('[data-inv-group=\"where:ap-garden\"]').click(); true")
+        assert b.eval("document.getElementById('inventory-body').textContent.includes('zeta-cam')")
+        return f"{len(groups)} groups, sorted by name inside, folding"
+    finally:
+        with database.get_connection() as c:
+            c.execute("DELETE FROM inventory WHERE mac LIKE 'aa:aa:aa:00:03:%';")
+            c.commit()
 
 
 @check("Reports: a template, the customizer, the preview, saving with a schedule and its kept files")
@@ -1141,6 +1191,8 @@ def t_inventory_quiet(b):
     try:
         goto(b, "#/inventory")
         b.eval("window.__noAutoDialog = true; true")       # these windows are filled in by the check itself
+        run(b, "const g = document.getElementById('inv-group'); g.value = ''; g.dispatchEvent(new Event('change')); true")
+        run(b, "loadInventory(); true")
         b.wait_for("document.getElementById('inventory-body').textContent.includes('tenant-tv')")
         assert "Wi-Fi network" in b.eval("document.querySelector('#tbl-inventory thead').textContent")
         # Tiles count each kind and filter the list with a click.
@@ -2195,7 +2247,7 @@ def main() -> int:
 
         print(f"Browser checks against {BASE} (isolated database {_env.TMP})")
         for test in shard_checks([t_login, t_dashboard, t_resize, t_move, t_columns, t_graph_tile, t_content_follows, t_map, t_sort, t_groups,
-                     t_ack, t_live, t_snmp_check, t_snmp_v3_fields, t_snmp_test_before_saving, t_reload_after_update, t_reports, t_alert_wifi, t_map_wifi_traffic, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_backup_passphrase_bar, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_guide_search, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
+                     t_ack, t_live, t_snmp_check, t_snmp_v3_fields, t_snmp_test_before_saving, t_reload_after_update, t_reports, t_alert_wifi, t_map_wifi_traffic, t_inventory_groups, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_backup_passphrase_bar, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_guide_search, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
             test(browser)
     finally:
         if browser:

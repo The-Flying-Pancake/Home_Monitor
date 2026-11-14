@@ -94,6 +94,16 @@ function initMap() {
     });
   }
   mapTraffic = storeGet(MAP_TRAFFIC_STORE) === "1";
+  mapWifi = storeGet(MAP_WIFI_STORE) === "1";
+  const wifiBtn = document.getElementById("map-wifi");
+  const syncWifi = () => { wifiBtn.classList.toggle("btn-primary", mapWifi); wifiBtn.setAttribute("aria-pressed", String(mapWifi)); };
+  syncWifi();
+  wifiBtn.addEventListener("click", () => {
+    mapWifi = !mapWifi;
+    storeSet(MAP_WIFI_STORE, mapWifi ? "1" : "0");
+    syncWifi();
+    drawMap();
+  });
   const traffic = document.getElementById("map-traffic");
   const syncTraffic = () => { traffic.classList.toggle("btn-primary", mapTraffic); traffic.setAttribute("aria-pressed", String(mapTraffic)); };
   syncTraffic();
@@ -634,6 +644,69 @@ function mapTrunks(pos, shownKeys) {
 // Traffic on links (the Traffic button, remembered in this browser).
 const MAP_TRAFFIC_STORE = "monitor.map.traffic";
 let mapTraffic = false;            // read from storage in initMap (storeGet is in shell.js, loaded later)
+const MAP_WIFI_STORE = "monitor.map.wifi";
+let mapWifi = false;               // the Wi-Fi button: each access point's devices drawn around it
+
+/* Traffic flowing along a link: blue dashes towards the child (down), green towards the parent (up).
+ * More traffic flows faster; the dashes are faint, so the map stays calm. */
+function mapFlow(l, up, d) {
+  const r = l.rate;
+  if (!r) return "";
+  const fromUp = r.at === up;
+  const down = fromUp ? r.out : r.in, upward = fromUp ? r.in : r.out;
+  const speed = bps => typeof bps === "number" && bps > 1000 ? Math.max(0.8, 6 - Math.log10(bps) * 0.6) : 0;
+  const line = (cls, bps) => speed(bps) ? `<path class="map-flow ${escapeHtml(cls)}" d="${escapeHtml(d)}" style="animation-duration:${speed(bps).toFixed(1)}s"></path>` : "";
+  return line("down", down) + line("up", upward);
+}
+
+/* The internet above the gateway: a globe, linked to it, with the gateway's WAN traffic when Traffic is on. */
+function mapInternet(pos) {
+  const root = mapData.root;
+  if (!root || !pos[root] || !mapShown(mapData.nodes.find(n => n.key === root) || {})) return "";
+  const gx = Math.round(pos[root][0] + MAP_NODE_W / 2), gy = Math.round(pos[root][1]);
+  const cx = gx, cy = gy - 70;
+  const net = mapData.internet;
+  let html = `<path class="map-link internet" d="M${cx},${cy + 18} L${gx},${gy}"></path>`;
+  if (mapTraffic && net) {
+    const speed = bps => typeof bps === "number" && bps > 1000 ? Math.max(0.8, 6 - Math.log10(bps) * 0.6) : 0;
+    // Down comes from the internet to the gateway: the path runs globe to gateway.
+    if (speed(net.down)) html += `<path class="map-flow down" d="M${cx},${cy + 18} L${gx},${gy}" style="animation-duration:${speed(net.down).toFixed(1)}s"></path>`;
+    if (speed(net.up)) html += `<path class="map-flow up" d="M${cx},${cy + 18} L${gx},${gy}" style="animation-duration:${speed(net.up).toFixed(1)}s"></path>`;
+  }
+  html += `<g class="map-internet" transform="translate(${cx},${cy})"><circle r="18"></circle>
+    <g transform="translate(-12,-12)"><svg width="24" height="24" viewBox="0 0 24 24">${MAP_ICONS.gateway}</svg></g>
+    <text y="-24">Internet</text><title>The internet${net ? `, through ${escapeHtml(net.links.join(", "))}` : ""}</title></g>`;
+  if (mapTraffic && net) {
+    const text = `\u2193${mapRate(net.down)} \u2191${mapRate(net.up)}`;
+    const w = text.length * 6.3 + 12;
+    html += `<g class="map-rate-tag" transform="translate(${Math.round(cx + 26)},${Math.round(cy - 8)})"><title>${escapeHtml(`Internet: down ${mapRate(net.down)}bit/s, up ${mapRate(net.up)}bit/s`)}</title>` +
+      `<rect width="${Math.round(w)}" height="16" rx="8"></rect><text x="${Math.round(w / 2)}" y="11.5">${escapeHtml(text)}</text></g>`;
+  }
+  return html;
+}
+
+/* The Wi-Fi button: an access point's devices in a fan below it, coloured by signal (weak in orange). */
+function mapWifiFan(n, p) {
+  if (!n.wifi || !n.wifi.clients.length) return "";
+  const shown = n.wifi.clients.slice(0, 24);
+  const cx = p[0] + MAP_NODE_W / 2, cy = p[1] + MAP_NODE_H;
+  const count = shown.length;
+  const radius = 70 + Math.min(60, count * 3);
+  let html = "";
+  shown.forEach((c, i) => {
+    const a = Math.PI * (0.15 + 0.7 * (count === 1 ? 0.5 : i / (count - 1)));
+    const x = Math.round(cx + Math.cos(a) * radius * 1.4), y = Math.round(cy + Math.sin(a) * radius);
+    const weak = typeof c.signal === "number" && c.signal < n.wifi.weak_dbm;
+    const label = String(c.name || "").length > 14 ? String(c.name).slice(0, 13) + "…" : String(c.name || "");
+    html += `<path class="map-link wifi map-wifi-link" d="M${Math.round(cx)},${Math.round(cy)} L${x},${y}"></path>
+      <g class="map-wifi-dot${weak ? " weak" : ""}" transform="translate(${x},${y})"><circle r="7"></circle>
+        <text y="19">${escapeHtml(label)}</text><title>${escapeHtml(`${c.name}${c.ssid ? `, ${c.ssid}` : ""}${typeof c.signal === "number" ? `, ${Math.round(c.signal)} dBm` : ""}`)}</title></g>`;
+  });
+  if (n.wifi.count > count) {
+    html += `<text class="map-wifi-more" x="${Math.round(cx)}" y="${Math.round(cy + radius + 34)}">+${escapeHtml(n.wifi.count - count)} more</text>`;
+  }
+  return html;
+}
 
 function mapRate(bps) {
   if (typeof bps !== "number") return "-";
@@ -709,6 +782,7 @@ function drawMap() {
       if (upPort) tags.push(mapPortTag(upPort, off(route.sa, c[0])));
       if (downPort) tags.push(mapPortTag(downPort, off(route.sb, c[3])));
     }
+    if (mapTraffic && l.rate && !mapEditing) html += mapFlow(l, up, d);
     if (mapTraffic && l.rate && !mapEditing) {
       // The middle of the line: of the curve's two control points, or of the trunk branch.
       const mid = route.trunk ? [(route.trunk[0] + c[3][0]) / 2, route.trunk[1]]
@@ -737,7 +811,11 @@ function drawMap() {
       (n.problems ? `<g class="map-badge" transform="translate(${MAP_NODE_W - 14},12)"><circle r="8"></circle><text y="3.5">${Number(n.problems)}</text></g>` : "") +
       `<title>${escapeHtml(n.label)}${n.problems ? ` (${escapeHtml(n.problems)} problem${n.problems > 1 ? "s" : ""})` : ""}</title></g>`;
   }
-  svg.innerHTML = html + tags.join("");
+  let under = mapEditing ? "" : mapInternet(pos);
+  if (mapWifi && !mapEditing) {
+    for (const n of mapData.nodes) if (pos[n.key] && mapShown(n)) under += mapWifiFan(n, pos[n.key]);
+  }
+  svg.innerHTML = under + html + tags.join("");
   renderMapInfo(affected);
 }
 

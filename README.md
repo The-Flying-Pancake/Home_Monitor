@@ -32,7 +32,7 @@ installs with one file and backs itself up.
 | 🚨 **Alerts** | Rules with thresholds, durations and severities. Problems group sensibly (a switch going down does not page you for everything behind it). Quiet hours, maintenance windows and acknowledgements. |
 | 📱 **Telegram** | Alerts with your own message texts, plus a read-only bot you can ask for status. |
 | 🤖 **Automation** | A visual workflow builder: SSH commands on your hosts, waits, conditions and schedules, or a trigger when something happens. Ready-made host actions for common Linux chores. |
-| 🗺️ **Map and dashboards** | A network map that understands upstream links and shows Wi-Fi devices and link traffic, plus several dashboards built from tiles. |
+| 🗺️ **Map and dashboards** | A network map that understands upstream links and can show your Wi-Fi devices and live traffic flowing all the way up to the internet, plus several dashboards built from tiles. |
 | 📄 **Reports** | Ready-made reports you can adjust (availability, problems, device health, storage, Wi-Fi, Pi-hole and more), downloaded as a PDF or a CSV file. Save one to run every day, week or month and have it sent to Telegram. |
 | 🔌 **Integrations** | Proxmox (guests, storage, start and stop), UniFi (clients, Wi-Fi, switch ports) and Pi-hole. |
 | 👥 **Users** | Roles and per-device access, two-factor authentication and an audit log. |

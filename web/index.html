@@ -1406,10 +1406,18 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
         <option value="wifi">On Wi-Fi</option><option value="cable">On a cable</option><option value="gone">Not seen for 30 days</option>
         <option value="quiet">Quiet only</option><option value="all">Everything, quiet too</option>
       </select>
+      <select id="inv-group" title="Group by">
+        <option value="where">Group by where it connects</option><option value="">No groups</option><option value="ssid">Group by Wi-Fi network</option>
+        <option value="vendor">Group by maker</option><option value="state">Group by new or known</option><option value="monitored">Group by monitored or not</option>
+      </select>
+      <select id="inv-sort" title="Sort by">
+        <option value="last">Last seen, newest first</option><option value="first">First seen, newest first</option><option value="name">Name, A to Z</option>
+        <option value="ip">IP address</option><option value="vendor">Maker, A to Z</option>
+      </select>
       <span class="dim filter-bar-end" id="inv-count"></span>
     </form>
     <div class="panel">
-      <table id="tbl-inventory" class="sortable">
+      <table id="tbl-inventory">
         <thead><tr><th>Name</th><th>MAC address</th><th>IP address</th><th>Connected</th><th>Wi-Fi network</th><th>Maker</th><th data-type="num">First seen</th><th data-type="num">Last seen</th><th></th></tr></thead>
         <tbody id="inventory-body"></tbody>
       </table>
@@ -1462,6 +1470,7 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
         </form>
         <button id="map-link" class="btn map-edit-only hidden" title="Click two nodes to connect them">Link</button>
         <button id="map-layout" class="btn map-edit-only hidden">Arrange as tree</button>
+        <button id="map-wifi" class="btn" type="button" aria-pressed="false" title="Show the devices on each access point's Wi-Fi">Wi-Fi</button>
         <button id="map-traffic" class="btn" type="button" aria-pressed="false" title="Show the traffic on links whose port the monitor reads over SNMP">Traffic</button>
         <button id="map-edit" data-perm="map.edit" data-unscoped class="btn">Edit</button>
       </div>

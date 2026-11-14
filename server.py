@@ -2672,7 +2672,15 @@ def map_view() -> Dict[str, Any]:
             if port and end.startswith("d:") and (int(end[2:]), str(port)) in rates:
                 link["rate"] = dict(rates[(int(end[2:]), str(port))], at=end)
                 break
-    return {"nodes": nodes, "links": links_list, "root": root, "parent": parent,
+    internet = None
+    if root and root.startswith("d:"):
+        wans = [w for w in wan_interfaces() if w["device_id"] == int(root[2:]) and w.get("oper") != "down"]
+        if wans:
+            total = lambda key: sum(w[key] for w in wans if isinstance(w.get(key), (int, float))) if any(
+                isinstance(w.get(key), (int, float)) for w in wans) else None
+            internet = {"down": total("in_bps"), "up": total("out_bps"), "speed": total("speed_mbps"),
+                        "links": [w["label"] for w in wans]}
+    return {"nodes": nodes, "links": links_list, "root": root, "parent": parent, "internet": internet,
             "positions": database.get_map_positions(), "object_kinds": list(database.MAP_OBJECT_KINDS)}
 
 
@@ -7136,7 +7144,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "0.15.0"
+APP_VERSION = "0.16.0"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:

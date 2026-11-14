@@ -55,6 +55,57 @@ function renderInventoryTiles() {
   }).join("");
 }
 
+/* Groups and order (remembered in this browser). Where it connects is the access point or switch
+ * before "(Wi-Fi, -70 dBm)" or "port 5". Groups fold with a click; the biggest come first. */
+const INV_VIEW_STORE = "monitor.inventory.view";
+const invCollapsed = new Set();
+
+function invGroupOf(r, by) {
+  if (by === "where") return String(r.where_seen || "").split(/ \(| port /)[0].trim() || "Not seen on a switch or access point";
+  if (by === "ssid") return r.ssid || (r.via === "cable" ? "On a cable" : "No Wi-Fi network known");
+  if (by === "vendor") return r.vendor || "Unknown maker";
+  if (by === "state") return r.hushed ? "Quiet" : r.known ? "Known" : "New";
+  if (by === "monitored") return r.device_id ? "Monitored" : "Not monitored";
+  return "";
+}
+
+function invIpKey(ip) {
+  const parts = String(ip || "").split(".").map(Number);
+  return parts.length === 4 && parts.every(n => n >= 0) ? parts.reduce((a, n) => a * 256 + n, 0) : Infinity;
+}
+
+function invSorted(rows, by) {
+  const name = r => (r.name || r.device_name || r.seen_name || "\uffff").toLowerCase();
+  const cmp = {
+    last: (a, b) => b.last_seen - a.last_seen,
+    first: (a, b) => b.first_seen - a.first_seen,
+    name: (a, b) => name(a).localeCompare(name(b)),
+    ip: (a, b) => invIpKey(a.ip) - invIpKey(b.ip),
+    vendor: (a, b) => (a.vendor || "\uffff").localeCompare(b.vendor || "\uffff") || name(a).localeCompare(name(b)),
+  }[by] || ((a, b) => b.last_seen - a.last_seen);
+  return [...rows].sort(cmp);
+}
+
+function invRowHtml(r) {
+  const title = r.name || r.device_name || r.seen_name || "";
+  const sub = [r.name && r.seen_name && r.seen_name !== r.name ? `reports itself as ${r.seen_name}` : "", r.location, r.note,
+    r.wifi_alert === "off" ? "weak Wi-Fi not reported" : r.wifi_alert !== "" ? `weak Wi-Fi below ${r.wifi_alert} dBm` : ""].filter(Boolean).join(" · ");
+  const pill = r.hushed ? `<span class="status-pill status-unknown" title="${escapeHtml(r.quiet_net ? `On the quiet network ${r.ssid}` : "Marked quiet")}: kept, never announced">quiet</span> `
+    : r.known ? "" : '<span class="status-pill status-warn">new</span> ';
+  return `<tr class="${r.known || r.hushed ? "" : "inv-new"}">
+      <td class="text-cell">${pill}<strong>${escapeHtml(title || "Unnamed")}</strong>
+        ${r.device_id ? `<a class="dim" href="#/device/${escapeHtml(r.device_id)}">monitored</a>` : ""}${sub ? `<div class="dim inv-sub">${escapeHtml(sub)}</div>` : ""}</td>
+      <td class="mono-cell">${escapeHtml(r.mac)}${r.private ? ' <span class="dim" title="A private (randomised) address: phones and laptops use these to hide their real one">private</span>' : ""}</td>
+      <td class="mono-cell">${escapeHtml(r.ip || "-")}</td>
+      <td class="text-cell">${escapeHtml(r.where_seen || "-")}</td>
+      <td class="text-cell">${r.ssid ? escapeHtml(r.ssid) : '<span class="dim">-</span>'}</td>
+      <td class="text-cell">${escapeHtml(r.vendor || "-")}</td>
+      <td class="dim">${escapeHtml(formatAgo(r.first_seen))}</td>
+      <td class="dim">${escapeHtml(formatAgo(r.last_seen))}</td>
+      <td class="actions-cell">${!r.known && !r.hushed ? `<button type="button" class="btn btn-small" data-perm="devices.manage" data-inv-known="${escapeHtml(r.mac)}" title="Known: no longer new (works while it is offline too)">Known</button> ` : ""}${!r.device_id && r.ip ? `<button type="button" class="btn btn-small" data-perm="devices.manage" data-inv-monitor="${escapeHtml(r.mac)}">Monitor</button> ` : ""}<button type="button" class="btn btn-small" data-perm="devices.manage" data-inv-edit="${escapeHtml(r.mac)}">Edit</button></td>
+    </tr>`;
+}
+
 function renderInventory() {
   renderInventoryTiles();
   const q = document.getElementById("inv-q").value.trim().toLowerCase();
@@ -65,25 +116,24 @@ function renderInventory() {
   document.getElementById("inv-count").textContent = `${rows.length} of ${invData.rows.length}${fresh ? `, ${fresh} new` : ""}`
     + (hushed && show !== "quiet" && show !== "all" ? `, ${hushed} quiet not shown` : "");
   document.getElementById("btn-inv-known").classList.toggle("hidden", !fresh || !can("devices.manage"));
-  fillTable("inventory-body", rows.map(r => {
-    const title = r.name || r.device_name || r.seen_name || "";
-    const sub = [r.name && r.seen_name && r.seen_name !== r.name ? `reports itself as ${r.seen_name}` : "", r.location, r.note,
-      r.wifi_alert === "off" ? "weak Wi-Fi not reported" : r.wifi_alert !== "" ? `weak Wi-Fi below ${r.wifi_alert} dBm` : ""].filter(Boolean).join(" · ");
-    const pill = r.hushed ? `<span class="status-pill status-unknown" title="${escapeHtml(r.quiet_net ? `On the quiet network ${r.ssid}` : "Marked quiet")}: kept, never announced">quiet</span> `
-      : r.known ? "" : '<span class="status-pill status-warn">new</span> ';
-    return `<tr class="${r.known || r.hushed ? "" : "inv-new"}">
-      <td class="text-cell">${pill}<strong>${escapeHtml(title || "Unnamed")}</strong>
-        ${r.device_id ? `<a class="dim" href="#/device/${escapeHtml(r.device_id)}">monitored</a>` : ""}${sub ? `<div class="dim inv-sub">${escapeHtml(sub)}</div>` : ""}</td>
-      <td class="mono-cell">${escapeHtml(r.mac)}${r.private ? ' <span class="dim" title="A private (randomised) address: phones and laptops use these to hide their real one">private</span>' : ""}</td>
-      <td class="mono-cell">${escapeHtml(r.ip || "-")}</td>
-      <td class="text-cell">${escapeHtml(r.where_seen || "-")}</td>
-      <td class="text-cell">${r.ssid ? escapeHtml(r.ssid) : '<span class="dim">-</span>'}</td>
-      <td class="text-cell">${escapeHtml(r.vendor || "-")}</td>
-      <td data-sort="${escapeHtml(r.first_seen)}" class="dim">${escapeHtml(formatAgo(r.first_seen))}</td>
-      <td data-sort="${escapeHtml(r.last_seen)}" class="dim">${escapeHtml(formatAgo(r.last_seen))}</td>
-      <td class="actions-cell">${!r.known && !r.hushed ? `<button type="button" class="btn btn-small" data-perm="devices.manage" data-inv-known="${escapeHtml(r.mac)}" title="Known: no longer new (works while it is offline too)">Known</button> ` : ""}${!r.device_id && r.ip ? `<button type="button" class="btn btn-small" data-perm="devices.manage" data-inv-monitor="${escapeHtml(r.mac)}">Monitor</button> ` : ""}<button type="button" class="btn btn-small" data-perm="devices.manage" data-inv-edit="${escapeHtml(r.mac)}">Edit</button></td>
-    </tr>`;
-  }).join(""), invData.rows.length ? "Nothing matches." : "Nothing seen yet: the inventory fills as the switches and the gateway are polled.", 9);
+  const by = document.getElementById("inv-group").value;
+  const sorted = invSorted(rows, document.getElementById("inv-sort").value);
+  let body;
+  if (!by) {
+    body = sorted.map(invRowHtml).join("");
+  } else {
+    const groups = new Map();
+    sorted.forEach(r => { const g = invGroupOf(r, by); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(r); });
+    body = [...groups.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])).map(([g, list]) => {
+      const shut = invCollapsed.has(`${by}:${g}`);
+      const fresh = list.filter(r => !r.known && !r.hushed).length;
+      return `<tr class="inv-group-row"><td colspan="9"><button type="button" class="inv-group" data-inv-group="${escapeHtml(`${by}:${g}`)}" aria-expanded="${!shut}">
+          <span class="inv-group-caret">${shut ? "&#9656;" : "&#9662;"}</span> <strong>${escapeHtml(g)}</strong>
+          <span class="dim">${escapeHtml(list.length)} device${list.length === 1 ? "" : "s"}${fresh ? `, ${escapeHtml(fresh)} new` : ""}</span></button></td></tr>`
+        + (shut ? "" : list.map(invRowHtml).join(""));
+    }).join("");
+  }
+  fillTable("inventory-body", body, invData.rows.length ? "Nothing matches." : "Nothing seen yet: the inventory fills as the switches and the gateway are polled.", 9);
 }
 
 function editInventory(mac) {
@@ -300,6 +350,19 @@ function editWifiNetworks() {
 }
 
 function initInventory() {
+  try {
+    const saved = JSON.parse(storeGet(INV_VIEW_STORE) || "{}");
+    if (saved.group !== undefined) document.getElementById("inv-group").value = saved.group;
+    if (saved.sort) document.getElementById("inv-sort").value = saved.sort;
+  } catch (e) { /* nothing remembered */ }
+  const remember = () => storeSet(INV_VIEW_STORE, JSON.stringify({ group: document.getElementById("inv-group").value, sort: document.getElementById("inv-sort").value }));
+  ["inv-group", "inv-sort"].forEach(id => document.getElementById(id).addEventListener("change", () => { remember(); if (typeof invData !== "undefined" && invData) renderInventory(); }));
+  document.getElementById("inventory-body").addEventListener("click", ev => {
+    const g = ev.target.closest("[data-inv-group]");
+    if (!g) return;
+    if (invCollapsed.has(g.dataset.invGroup)) invCollapsed.delete(g.dataset.invGroup); else invCollapsed.add(g.dataset.invGroup);
+    renderInventory();
+  });
   document.getElementById("inv-tiles").addEventListener("click", ev => {
     const tile = ev.target.closest("[data-inv-tile]");
     if (!tile) return;

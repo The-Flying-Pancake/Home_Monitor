@@ -111,6 +111,20 @@ class MapApiTests(unittest.TestCase):
         others = [l for l in view["links"] if {l["a"], l["b"]} == {f"d:{self.a}", f"d:{self.b}"}]
         self.assertTrue(all("rate" not in l for l in others))
 
+    def test_internet_traffic_of_the_gateway(self):
+        from unittest import mock
+        import server
+        root = server.map_view()["root"]
+        if not root or not root.startswith("d:"):
+            self.skipTest("no gateway device at the top of this map")
+        wans = [{"device_id": int(root[2:]), "label": "wan", "oper": "up", "in_bps": 80e6, "out_bps": 9e6, "speed_mbps": 1000},
+                {"device_id": int(root[2:]), "label": "wan2", "oper": "down", "in_bps": 5e6, "out_bps": 1e6, "speed_mbps": 100}]
+        with mock.patch.object(server, "wan_interfaces", return_value=wans):
+            net = server.map_view()["internet"]
+        self.assertEqual(net, {"down": 80e6, "up": 9e6, "speed": 1000, "links": ["wan"]})     # a WAN that is down does not count
+        with mock.patch.object(server, "wan_interfaces", return_value=[]):
+            self.assertIsNone(server.map_view()["internet"])
+
     def test_device_delete_cleans_map(self):
         c = add_device("map-c", "192.0.2.73")
         key = f"d:{c}"

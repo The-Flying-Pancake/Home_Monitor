@@ -15,6 +15,14 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 0.16.0: Release 39, A livelier map and an organised inventory (2026-11-14)
+
+- The map has a Wi-Fi button. It draws the devices on each access point around it, green for a good signal and orange for a weak one.
+- With Traffic on, blue dashes flow down a measured link and green ones flow up. The more traffic, the faster they move.
+- A globe above your gateway stands for the internet. With Traffic on it shows what comes down from the internet and what goes up.
+- The inventory sorts itself into folding groups: by where a device connects, its Wi-Fi network, its maker, new or known, monitored or not.
+- Sort the inventory by last seen, first seen, name, IP address or maker. Your browser remembers the choice.
+
 ### 0.15.0: Release 38, Reports, a tidier Settings and a guide that understands questions (2026-11-14)
 
 - A new Reports page: ready-made reports you can adjust, shown as a table with charts and downloaded as a PDF or a CSV file.

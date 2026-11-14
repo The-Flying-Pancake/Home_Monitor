@@ -313,6 +313,13 @@ RELEASES: List[Dict[str, Any]] = [
         "The guide search reads whole questions. It skips small words like how do I, also finds other forms of a word and finds related words (SSID also finds Wi-Fi networks).",
         "Best answers above the guide lists the paragraphs that fit best. Click one and the guide scrolls to it and makes it pulse.",
     ]},
+    {"id": 39, "date": "2026-11-14", "title": "A livelier map and an organised inventory", "items": [
+        "The map has a Wi-Fi button. It draws the devices on each access point around it, green for a good signal and orange for a weak one.",
+        "With Traffic on, blue dashes flow down a measured link and green ones flow up. The more traffic, the faster they move.",
+        "A globe above your gateway stands for the internet. With Traffic on it shows what comes down from the internet and what goes up.",
+        "The inventory sorts itself into folding groups: by where a device connects, its Wi-Fi network, its maker, new or known, monitored or not.",
+        "Sort the inventory by last seen, first seen, name, IP address or maker. Your browser remembers the choice.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 
