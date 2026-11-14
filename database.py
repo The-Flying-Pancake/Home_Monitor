@@ -13,12 +13,14 @@ import threading
 import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-from vault import VAULT
+from vault import VAULT, VaultError
 
 # Settings whose values are secrets: encrypted at rest, decrypted on read.
 SECRET_SETTINGS = {"default_snmp_community", "telegram_token", "proxmox_token_secret", "tls_key", "pihole_secret", "unifi_secret",
                    "proxmox_action_secret"}
 COMMUNITY_CONTEXT = "device:snmp_community"
+# A device's SNMPv3 settings (user, level, protocols and both passwords), as JSON sealed by the vault.
+SNMP_V3_CONTEXT = "device:snmp_v3"
 
 # MONITOR_DB_PATH overrides the default location. Production deployments should
 # point this at local disk (e.g. /var/lib/homelab-monitor/monitor.db) since
@@ -35,8 +37,8 @@ DB_FILE = os.environ.get(
 # is brought forward on start. A file with a higher number was written by a newer build: this code
 # does not know its tables and would misread them, so it refuses to start on it rather than guess.
 # Raise SCHEMA_VERSION with every schema change; tests/test_compat.py holds the fingerprint of each.
-SCHEMA_VERSION = 7                 # 4: inventory.ssid and inventory.quiet; 5: action_runs; 6: workflows.saved_by;
-                                   # 7: audit_log.actor and audit_log.source
+SCHEMA_VERSION = 8                 # 4: inventory.ssid and inventory.quiet; 5: action_runs; 6: workflows.saved_by;
+                                   # 7: audit_log.actor and audit_log.source; 8: devices.snmp_v3
 # The oldest version this build can migrate from (raise only if a migration is ever dropped).
 MIN_SCHEMA_VERSION = 0
 
@@ -628,7 +630,8 @@ def init_db() -> None:
         # {"status": "200-399", "keyword": "...", "insecure": false}).
         for col, ddl in (("device_group", "TEXT"), ("upstream_device_id", "INTEGER"), ("upstream_port", "TEXT"),
                          ("overrides", "TEXT NOT NULL DEFAULT '{}'"), ("service_kind", "TEXT NOT NULL DEFAULT 'tcp'"),
-                         ("service_url", "TEXT"), ("service_expect", "TEXT NOT NULL DEFAULT '{}'")):
+                         ("service_url", "TEXT"), ("service_expect", "TEXT NOT NULL DEFAULT '{}'"),
+                         ("snmp_v3", "TEXT NOT NULL DEFAULT ''")):
             if col not in device_cols:
                 cursor.execute(f"ALTER TABLE devices ADD COLUMN {col} {ddl};")
 
@@ -727,7 +730,7 @@ def list_devices() -> List[Dict[str, Any]]:
             SELECT id, hostname, ip_address, profile_id, snmp_version, snmp_community, snmp_port,
                    poll_interval, ping_interval, status, last_ping_ms, last_seen, created_at, tags,
                    inventory, snmp_status, service_port, device_group, upstream_device_id, upstream_port, overrides,
-                   service_kind, service_url, service_expect
+                   service_kind, service_url, service_expect, snmp_v3
             FROM devices
             ORDER BY hostname ASC;
             """
@@ -753,7 +756,22 @@ def _decode_inventory(device: Dict[str, Any]) -> Dict[str, Any]:
             device["service_expect"] = {}
     if "snmp_community" in device:
         device["snmp_community"] = VAULT.decrypt(device["snmp_community"], COMMUNITY_CONTEXT)
+    if "snmp_v3" in device:
+        try:
+            v3 = json.loads(VAULT.decrypt(device["snmp_v3"], SNMP_V3_CONTEXT) or "{}") if device["snmp_v3"] else {}
+        except (ValueError, VaultError):
+            v3 = {}
+        device["snmp_v3"] = v3 if isinstance(v3, dict) else {}
     return device
+
+
+def set_device_snmp(device_id: int, version: str, settings: Optional[Dict[str, Any]]) -> None:
+    """A device's SNMP version ("v2c" or "v3") and its SNMPv3 settings sealed by the vault (None or {}
+    clears them). The v2c community stays as it is, so switching back needs nothing typed again."""
+    value = VAULT.encrypt(json.dumps(settings, sort_keys=True), SNMP_V3_CONTEXT) if settings else ""
+    with get_connection() as conn:
+        conn.execute("UPDATE devices SET snmp_version = ?, snmp_v3 = ? WHERE id = ?;", (version, value, device_id))
+        conn.commit()
 
 
 def ensure_settings(defaults: List[tuple]) -> None:
@@ -848,7 +866,7 @@ def get_device(device_id: int) -> Optional[Dict[str, Any]]:
             SELECT id, hostname, ip_address, profile_id, snmp_version, snmp_community, snmp_port,
                    poll_interval, ping_interval, status, last_ping_ms, last_seen, created_at, tags,
                    inventory, snmp_status, service_port, device_group, upstream_device_id, upstream_port, overrides,
-                   service_kind, service_url, service_expect
+                   service_kind, service_url, service_expect, snmp_v3
             FROM devices
             WHERE id = ?;
             """,

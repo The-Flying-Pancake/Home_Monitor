@@ -105,7 +105,7 @@ class SessionGateTests(unittest.TestCase):
         auth.LIMITER.failures.clear()
         request("POST", "/api/auth/login", {"username": TEST_USER, "password": "audit-probe-secret"}, session=False)
         auth.LIMITER.failures.clear()
-        logs = database.list_audit_logs(limit=20)
+        logs = database.list_audit_logs(limit=500)   # other tests may write many rows in the same second
         self.assertTrue(any(l["category"] == "auth" and l["message"] == "Failed login" for l in logs))
         self.assertNotIn("audit-probe-secret", repr(logs))
 

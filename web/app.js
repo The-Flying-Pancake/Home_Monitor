@@ -300,6 +300,10 @@ async function api(path, options = {}, retried = false) {
     await promptEnrol();
     return api(path, options, true);
   }
+  if (!retried && res.status === 403 && data.auth === "required") {
+    await promptRequired(data.steps || []);
+    return api(path, options, true);
+  }
   if (!retried && res.status === 403 && data.auth === "confirm") {
     if (!(await promptConfirm(data))) throw new Error("Cancelled: not confirmed");
     return api(path, options, true);
@@ -1206,6 +1210,9 @@ function initDetailPage() {
   document.getElementById("btn-detail-fixsnmp").addEventListener("click", () => {
     if (activeDeviceId) openFixSnmp(lastDetail.device);
   });
+  document.getElementById("btn-detail-snmpcheck").addEventListener("click", () => {
+    if (activeDeviceId) openSnmpCheck(lastDetail.device);
+  });
   document.getElementById("btn-detail-hostact").addEventListener("click", () => {
     if (activeDeviceId) openHostActions(activeDeviceId);
   });
@@ -1294,6 +1301,9 @@ async function loadDeviceDetail(id, isRefresh = false) {
   document.getElementById("btn-detail-fixsnmp").classList.toggle("hidden", !!d.service_port || d.snmp === false || (d.profile_id !== "linux_host" && d.snmp_status === "ok"));
   document.getElementById("btn-detail-fixsnmp").classList.toggle("btn-primary", d.snmp_status !== "ok" || data.problems.some(p => p.problem_key === "snmp_view"));
   document.getElementById("btn-detail-hostact").classList.toggle("hidden", !haEligible(d));
+  // SNMP check: for every device read over SNMP; it stands out while SNMP does not answer.
+  document.getElementById("btn-detail-snmpcheck").classList.toggle("hidden", !!d.service_port || d.snmp === false);
+  document.getElementById("btn-detail-snmpcheck").classList.toggle("btn-primary", !d.service_port && d.snmp !== false && d.snmp_status !== "ok");
   document.getElementById("detail-header-sub").textContent =
     (d.service_port ? [`${d.ip_address}:${d.service_port}`, "port check"] : d.snmp === false ? [d.ip_address, "ping only"]
       : [d.ip_address, inv.model, inv.firmware]).filter(Boolean).join("  •  ");
@@ -2768,6 +2778,7 @@ function initModals() {
     document.getElementById("input-port").value = cachedSettings.default_snmp_port || "161";
     // The stored default community is never sent to the browser: empty uses it.
     document.getElementById("input-community").value = "";
+    fillSnmpFields("input", null);
     document.getElementById("input-community").placeholder = cachedSettings.default_snmp_community__set
       ? "Default community (stored, hidden)" : "public";
     document.getElementById("check-allow-unverified").checked = false;
@@ -2898,7 +2909,8 @@ function initModals() {
         body: {
           ip_address: ip,
           community: document.getElementById("input-community").value.trim(),
-          port: parseInt(document.getElementById("input-port").value, 10) || 161
+          port: parseInt(document.getElementById("input-port").value, 10) || 161,
+          ...snmpFields("input")
         }
       });
 
@@ -2913,10 +2925,12 @@ function initModals() {
       probeVerified = true;
       probeBox.className = "probe-box probe-success";
       const pingText = isNum(result.latency_ms) ? `${result.latency_ms.toFixed(1)} ms` : "OK";
-      const snmpText = result.snmp_active ? `Responded (${escapeHtml(result.sys_descr.slice(0, 60))})` : "No SNMP response (check community string)";
+      const v3 = document.getElementById("input-snmp-version").value === "v3";
+      const snmpText = result.snmp_active ? `Responded (${escapeHtml(result.sys_descr.slice(0, 60))})`
+        : v3 ? escapeHtml(result.snmp_error || "No SNMPv3 response") : "No SNMP response (check community string)";
       probeBox.innerHTML = `
         <div>&check; <strong>ICMP echo:</strong> ${escapeHtml(pingText)}</div>
-        <div>${result.snmp_active ? "&check;" : "&times;"} <strong>SNMP v2c:</strong> ${snmpText}</div>
+        <div>${result.snmp_active ? "&check;" : "&times;"} <strong>SNMP ${v3 ? "v3" : "v2c"}:</strong> ${snmpText}</div>
         <div class="probe-suggestion">Suggested profile: <strong>${escapeHtml(result.profile_name)}</strong></div>
       `;
       if (result.sys_name && !document.getElementById("input-hostname").value) {
@@ -2955,6 +2969,7 @@ function initModals() {
       ip_address: ip,
       profile_id: document.getElementById("select-profile").value,
       snmp_community: document.getElementById("input-community").value.trim(),
+      ...snmpFields("input"),
       snmp_port: parseInt(document.getElementById("input-port").value, 10) || 161,
       poll_interval: readIntervalField("input-poll"),
       ping_interval: readIntervalField("input-ping"),
@@ -2998,6 +3013,7 @@ function initModals() {
       ip_address: ip,
       profile_id: document.getElementById("edit-profile").value,
       snmp_community: document.getElementById("edit-community").value.trim(),
+      ...snmpFields("edit"),
       snmp_port: parseInt(document.getElementById("edit-port").value, 10) || 161,
       poll_interval: readIntervalField("edit-poll"),
       ping_interval: readIntervalField("edit-ping"),
@@ -3104,6 +3120,7 @@ async function openEditModal(id) {
     document.getElementById("edit-community").value = "";
     document.getElementById("edit-community").placeholder = d.snmp_community_set
       ? "Stored (hidden): empty keeps it" : "public";
+    fillSnmpFields("edit", d);
     document.getElementById("edit-port").value = d.snmp_port;
     document.getElementById("edit-profile").value = d.profile_id;
     document.getElementById("edit-poll").value = d.poll_interval || "";
@@ -4885,4 +4902,72 @@ function initHostKeys() {
       showToast(err.message, "error");
     }
   });
+}
+
+/* SNMP version in Add and Edit device. v3: user, security level, protocols and passwords; the
+ * community field is hidden (and the privacy fields for "signed only"). Stored passwords never come
+ * to the browser: an empty field keeps them. */
+function snmpFields(p) {
+  const version = document.getElementById(`${p}-snmp-version`).value;
+  if (version !== "v3") return { snmp_version: "v2c" };
+  const val = id => document.getElementById(`${p}-v3-${id}`).value;
+  return { snmp_version: "v3", snmp_v3: { user: val("user").trim(), level: document.getElementById(`${p}-v3-privacy`).checked ? "authPriv" : "authNoPriv", auth_protocol: val("auth-proto"),
+    auth_password: val("auth-pass"), priv_protocol: val("priv-proto"), priv_password: val("priv-pass") } };
+}
+
+function applySnmpVersion(p) {
+  const v3 = document.getElementById(`${p}-snmp-version`).value === "v3";
+  document.getElementById(`${p}-v3`).classList.toggle("hidden", !v3);
+  document.getElementById(`${p}-community-group`).classList.toggle("hidden", v3);
+  document.getElementById(`${p}-v3-priv`).classList.toggle("hidden", !document.getElementById(`${p}-v3-privacy`).checked);
+}
+
+function fillSnmpFields(p, d) {
+  const v3 = (d && d.snmp_v3) || {};
+  const set = (id, v) => { document.getElementById(`${p}-v3-${id}`).value = v; };
+  document.getElementById(`${p}-snmp-version`).value = d && d.snmp_version === "v3" ? "v3" : "v2c";
+  set("user", v3.user || "");
+  document.getElementById(`${p}-v3-privacy`).checked = (v3.level || "authPriv") === "authPriv";
+  set("auth-proto", v3.auth_protocol || "SHA");
+  set("priv-proto", v3.priv_protocol || "AES");
+  set("auth-pass", "");
+  set("priv-pass", "");
+  document.getElementById(`${p}-v3-auth-pass`).placeholder = v3.auth_password_set ? "Stored (hidden): empty keeps it" : "";
+  document.getElementById(`${p}-v3-priv-pass`).placeholder = v3.priv_password_set ? "Stored (hidden): empty keeps it" : "";
+  applySnmpVersion(p);
+}
+
+document.addEventListener("change", ev => {
+  const m = /^(input|edit)-(snmp-version|v3-privacy)$/.exec(ev.target.id || "");
+  if (m) applySnmpVersion(m[1]);
+});
+
+/* SNMP check: the server tries the device step by step (ping, an answer, the user and password or the
+ * community, then values) and says in plain words what to change. Shown in its own window. */
+async function openSnmpCheck(device) {
+  const back = document.createElement("div");
+  back.className = "modal-backdrop dialog-backdrop";
+  back.innerHTML = `<div class="modal dialog snmp-check" role="dialog" aria-modal="true">
+    <div class="modal-header"><span>SNMP check: ${escapeHtml(device.hostname)}</span></div>
+    <div class="modal-body"><div class="dim" data-sc-body>Checking ${escapeHtml(device.ip_address)}... this takes a few seconds.</div></div>
+    <div class="modal-footer"><span class="topbar-spacer"></span>
+      <button type="button" class="btn" data-sc-edit>Edit device</button><button type="button" class="btn btn-primary" data-sc-close>Close</button></div></div>`;
+  document.body.appendChild(back);
+  const close = () => { document.removeEventListener("keydown", onKey, true); back.remove(); };
+  const onKey = ev => { if (ev.key === "Escape") { ev.preventDefault(); close(); } };
+  document.addEventListener("keydown", onKey, true);
+  back.querySelector("[data-sc-close]").addEventListener("click", close);
+  back.querySelector("[data-sc-edit]").addEventListener("click", () => { close(); openEditModal(device.id); });
+  back.querySelector("[data-sc-close]").focus();
+  const body = back.querySelector("[data-sc-body]");
+  try {
+    const r = await api(`/api/devices/${device.id}/snmp-check`, { method: "POST", body: {} });
+    const mark = ok => ok === true ? '<span class="sc-mark ok">&check;</span>' : ok === false ? '<span class="sc-mark fail">&times;</span>' : '<span class="sc-mark note">i</span>';
+    body.className = "";
+    body.innerHTML = `<ul class="sc-steps">${r.steps.map(s => `<li>${mark(s.ok)}<div><strong>${escapeHtml(s.step)}</strong><div class="dim">${escapeHtml(s.detail)}</div></div></li>`).join("")}</ul>
+      ${r.ok ? '<div class="sc-result ok">Everything works. Values arrive with the next poll.</div>'
+        : `<div class="sc-result warn"><strong>What to change:</strong> ${escapeHtml(r.advice || "See the steps above.")}</div>`}`;
+  } catch (err) {
+    body.innerHTML = `<div class="form-error">${escapeHtml(err.message)}</div>`;
+  }
 }

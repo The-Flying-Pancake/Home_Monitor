@@ -14,8 +14,15 @@ snmpd.conf instead:
   address (/32) and localhost only
   sysLocation, sysContact, sysName and "master agentx" kept when present
 
-Everything else is dropped, including includeDir (old drop-in files under
-snmpd.conf.d stay on disk but are no longer read). The old file is kept as
+A device set to SNMPv3 in the monitor gets no community at all: its user is
+written as a createUser line (the device's own settings in the monitor, in a
+file only root can read) with read-only access to the whole tree (rouser).
+
+Lines that grant access are dropped (community and com2sec lines, their group,
+access and view lines, write users, include lines: old drop-in files under
+snmpd.conf.d stay on disk but are no longer read). Other SNMPv3 users and
+extension or check lines (extend, exec, pass, proc, disk, load) are kept; the
+preview lists every line removed. The old file is kept as
 snmpd.conf.hm-backup-<time>.
 
 Over SSH: READ_SCRIPT reports what is installed, whether the login is root
@@ -47,12 +54,17 @@ MASK = "••••"
 HEREDOC_END = "HM_SNMPD_CONF_END"
 # Lines from the old file that are kept: identity of the host and AgentX for subagents.
 _KEEP = re.compile(r"^\s*(syslocation|syscontact|sysname|sysservices|master)\b\s*(.*)$", re.I)
+# Kept from the old file (Q6): extension and check lines, and other SNMPv3 users (read-only).
+_KEEP_AS_IS = re.compile(r"^\s*(extend|exec|pass|pass_persist|proc|disk|load|createuser|rouser)\b", re.I)
+_USER_OF = re.compile(r"^\s*(?:createuser|rouser)\s+(?:-s\s+\S+\s+)?(\S+)", re.I)
+_CREATEUSER = re.compile(r"^(\s*createuser\b.*)$", re.I)
 _COMMUNITY_FIELD = re.compile(r"^(\s*(?:ro|rw)community6?\s+)(\S+)|^(\s*com2sec6?\s+(?:-Cn\s+\S+\s+)?\S+\s+\S+\s+)(\S+)", re.I)
 # What the old file had, by kind, for the plain-words list of changes.
 _KINDS = [
     (re.compile(r"^\s*(ro|rw)community6?\b", re.I), "community access line"),
     (re.compile(r"^\s*com2sec6?\b", re.I), "com2sec line"),
-    (re.compile(r"^\s*(ro|rw)user\b", re.I), "SNMPv3 user line"),
+    (re.compile(r"^\s*rwuser\b", re.I), "SNMPv3 write user line"),
+    (re.compile(r"^\s*rouser\b", re.I), "SNMPv3 user line"),
     (re.compile(r"^\s*createuser\b", re.I), "SNMPv3 user definition"),
     (re.compile(r"^\s*view\b", re.I), "view line"),
     (re.compile(r"^\s*(group|access)\b", re.I), "VACM group or access line"),
@@ -205,13 +217,45 @@ def community_problem(community: str) -> Optional[str]:
     return None
 
 
-def build_conf(current: str, community: str, monitor_ip: str, now: Optional[float] = None) -> Dict[str, Any]:
-    """The complete new snmpd.conf and a plain-words list of what changes."""
+def v3_problem(cred: Any) -> Optional[str]:
+    """snmpd.conf holds the v3 user in a createUser line: a name it can parse, passwords in double quotes."""
+    if not re.fullmatch(r"[A-Za-z0-9._@-]{1,32}", cred.user or ""):
+        return "The SNMPv3 user name may only hold letters, digits and . _ @ - for snmpd.conf"
+    for label, pw in (("authentication", cred.auth_password), ("privacy", cred.priv_password if cred.level == "authPriv" else "")):
+        if pw and (re.search(r'["\\\r\n]', pw) or len(pw) > 64):
+            return f"The SNMPv3 {label} password contains quotes or backslashes, which snmpd.conf cannot hold"
+    return None
+
+
+def build_conf(current: str, community: Optional[str], monitor_ip: str, now: Optional[float] = None,
+               v3: Any = None) -> Dict[str, Any]:
+    """The complete new snmpd.conf and a plain-words list of what changes. v3: the device's SNMPv3
+    credentials (snmpv3.Credential): its user instead of a community."""
     kept: List[str] = []
+    kept_as_is: List[str] = []
     counts: Dict[str, int] = {}
-    for line in current.splitlines():
+    # Users really defined in this file (createUser); a rouser line for anyone else is a placeholder
+    # (Debian ships "rouser authPrivUser ... -V systemonly" with no such user) and goes. Views a kept
+    # user reads through are kept with it, so nothing points at a view that is gone.
+    lines = current.splitlines()
+    defined = {u.group(1).strip('"') for l in lines if re.match(r"^\s*createuser\b", l, re.I) and (u := _USER_OF.match(l))}
+    if v3 is not None:
+        defined.discard(v3.user)
+    keep_user_line = lambda l: (lambda u: bool(u) and u.group(1).strip('"') in defined)(_USER_OF.match(l))
+    views = {v.group(1) for l in lines if re.match(r"^\s*rouser\b", l, re.I) and keep_user_line(l)
+             and (v := re.search(r"-V\s+(\S+)", l))}
+    for line in lines:
         text = line.strip()
         if not text or text.startswith("#"):
+            continue
+        if _KEEP_AS_IS.match(line):
+            is_user_line = bool(re.match(r"^\s*(createuser|rouser)\b", line, re.I))
+            if not is_user_line or keep_user_line(line):
+                kept_as_is.append(text)
+                continue
+        view = re.match(r"^\s*view\s+(\S+)", line, re.I)
+        if view and view.group(1) in views and view.group(1) != VIEW:
+            kept_as_is.append(text)
             continue
         m = _KEEP.match(line)
         if m and m.group(2).strip():
@@ -228,18 +272,27 @@ def build_conf(current: str, community: str, monitor_ip: str, now: Optional[floa
     if not any(k.startswith("sysContact") for k in kept):
         kept.insert(1, f"{'sysContact':<12} root")
     stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(now))
+    if v3 is not None:
+        priv = f' AES "{v3.priv_password}"' if v3.level == "authPriv" else ""
+        access = [f'createUser {v3.user} {v3.auth_protocol} "{v3.auth_password}"{priv}',
+                  f"rouser -s usm {v3.user} {'priv' if v3.level == 'authPriv' else 'auth'} -V {VIEW}"]
+        who = f"SNMPv3 user {v3.user} ({'signed and encrypted' if v3.level == 'authPriv' else 'signed'}), no community"
+    else:
+        access = [f"rocommunity  {community} {monitor_ip}/32 -V {VIEW}",
+                  f"rocommunity  {community} 127.0.0.1 -V {VIEW}"]
+        who = f"this monitor ({monitor_ip}) and the host itself"
     content = "\n".join([
-        f"# snmpd.conf written by Homelab Monitor on {stamp}.",
-        f"# Read-only SNMP for the monitor at {monitor_ip} and for this host itself. The previous",
+        f"# snmpd.conf written by Home Monitor on {stamp}.",
+        f"# Read-only SNMP for {who}. The previous",
         "# file is kept beside this one as snmpd.conf.hm-backup-<time>.",
         "agentAddress udp:161",
         f"view   {VIEW}  included   .1",
-        f"rocommunity  {community} {monitor_ip}/32 -V {VIEW}",
-        f"rocommunity  {community} 127.0.0.1 -V {VIEW}",
+        *access,
         *kept,
+        *kept_as_is,
         "",
     ])
-    changes = [f"Writes a clean snmpd.conf: read-only access for this monitor ({monitor_ip}) and the host itself, nothing else",
+    changes = [f"Writes a clean snmpd.conf: read-only access for {who}, nothing else",
                "Listens on all IPv4 addresses (UDP 161)"]
     if counts:
         changes.append("Removes from the old file: " + ", ".join(f"{n} {k}{'s' if n > 1 else ''}" for k, n in counts.items()))
@@ -247,6 +300,9 @@ def build_conf(current: str, community: str, monitor_ip: str, now: Optional[floa
                   if not k.endswith(" Unknown") and " ".join(k.split()) != "sysContact root"]
     if keep_names:
         changes.append("Keeps " + ", ".join(keep_names) + " from the old file")
+    if kept_as_is:
+        changes.append(f"Keeps {len(kept_as_is)} line{'s' if len(kept_as_is) != 1 else ''} as they were: "
+                       + ", ".join(sorted({l.split()[0] for l in kept_as_is})))
     return {"content": content, "changes": changes, "removed": counts}
 
 
@@ -255,6 +311,8 @@ def mask(text: str, secrets: List[str]) -> str:
     out = []
     for line in text.splitlines():
         line = _COMMUNITY_FIELD.sub(lambda m: (m.group(1) or m.group(3)) + MASK, line)
+        if _CREATEUSER.match(line):
+            line = re.sub(r'"[^"]*"', f'"{MASK}"', line)
         for s in secrets:
             if s:
                 line = line.replace(s, MASK)
@@ -299,8 +357,12 @@ def source_address(target: str) -> Optional[str]:
         return None
 
 
-def verify(device: Dict[str, Any], community: str, attempts: int = 5) -> bool:
-    """True when the interface table answers from the monitor: the restricted view hides it."""
+def verify(device: Dict[str, Any], community: Any, attempts: int = 5) -> bool:
+    """True when the interface table answers from the monitor: the restricted view hides it.
+    community: the v2c community or the device's SNMPv3 credentials."""
+    if not isinstance(community, str):
+        import snmpv3
+        snmpv3.forget(device["ip_address"], device.get("snmp_port") or 161)   # snmpd restarted: a new engine time
     for _ in range(attempts):
         rows = poller.snmp_walk(device["ip_address"], "1.3.6.1.2.1.2.2.1.2", community, device.get("snmp_port") or 161,
                                 2.0, 0, max_rows=5)

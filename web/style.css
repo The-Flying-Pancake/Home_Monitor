@@ -696,6 +696,7 @@ select:focus {
 
 .toast.toast-success { border-left-color: var(--green-bright); }
 .toast.toast-error { border-left-color: var(--red-bright); }
+.toast.toast-warning { border-left-color: var(--yellow-bright); }
 .toast.leaving { opacity: 0; }
 
 .toast-msg { flex: 1; }
@@ -2238,3 +2239,24 @@ html:not([data-auth="in"]) .modal-backdrop:not(.dialog-backdrop), html:not([data
 .notify-changed .chg-head { display: flex; align-items: center; gap: 8px; }
 .notify-changed .chg-list { margin: 8px 0 0; padding-left: 18px; }
 .notify-changed .chg-list li { margin: 4px 0; overflow-wrap: anywhere; }
+
+/* SNMP check window */
+.snmp-check .sc-steps { list-style: none; margin: 0 0 12px; padding: 0; }
+.snmp-check .sc-steps li { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.snmp-check .sc-steps li:last-child { border-bottom: none; }
+.snmp-check .sc-mark { flex: 0 0 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+.snmp-check .sc-mark.ok { background: rgba(46, 160, 67, 0.18); color: var(--green-hover); }
+.snmp-check .sc-mark.fail { background: rgba(248, 81, 73, 0.18); color: var(--red-bright); }
+.snmp-check .sc-mark.note { background: rgba(127, 127, 127, 0.18); color: var(--text-dim); font-style: italic; }
+.snmp-check .sc-result { padding: 10px 12px; border-radius: 6px; font-size: 14px; line-height: 1.45; }
+.snmp-check .sc-result.ok { background: rgba(46, 160, 67, 0.14); color: var(--green-hover); }
+.snmp-check .sc-result.warn { background: rgba(210, 153, 34, 0.14); color: var(--text); border: 1px solid rgba(210, 153, 34, 0.45); }
+
+/* SNMPv3 fields: one per line in Edit device's narrow SNMP box; the privacy box on a line of its own. */
+.edit-sub .snmp-v3 .form-row { grid-template-columns: minmax(0, 1fr); }
+.snmp-v3 .v3-privacy-row { margin: 2px 0 10px; }
+
+/* Required after an update */
+.required-card .required-step { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin: 12px 0; text-align: left; }
+.required-card .required-step p { margin: 6px 0 10px; font-size: 13px; color: var(--text-dim); }
+

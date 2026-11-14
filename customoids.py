@@ -152,7 +152,7 @@ def poll(device: Dict[str, Any], timeout: float = 2.0, retries: int = 0, store: 
     defs = for_device(device)
     if not defs:
         return {}
-    answers = poller.snmp_get_many(device["ip_address"], [d["oid"] for d in defs], device.get("snmp_community") or "public",
+    answers = poller.snmp_get_many(device["ip_address"], [d["oid"] for d in defs], poller.snmp_target(device),
                                    device.get("snmp_port") or 161, timeout, retries)
     now = now if now is not None else time.time()
     metrics: Dict[str, float] = {}
@@ -218,7 +218,7 @@ def walk(device: Dict[str, Any], oid: str, max_rows: int = 500, timeout: float =
         base = oid.strip().lstrip(".") if re.fullmatch(r"\.?\d+(\.\d+)+", oid.strip()) else None
     if not base:
         raise ValueError("Enter a numeric OID to walk, for example 1.3.6.1.4.1")
-    rows = poller.snmp_walk(device["ip_address"], base, device.get("snmp_community") or "public",
+    rows = poller.snmp_walk(device["ip_address"], base, poller.snmp_target(device),
                             device.get("snmp_port") or 161, timeout, 0, max_repetitions=30, max_rows=max_rows + 1)
     out = []
     for suffix, value in list(rows.items())[:max_rows]:

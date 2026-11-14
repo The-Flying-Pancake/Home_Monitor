@@ -5,17 +5,30 @@ How the application is tested, what is covered, and the latest recorded result o
 ## 1. How to run
 
 ```
-py -3.15 tests/run_all.py            # unit + API tests: isolated, no network, about 3 s
-py -3.15 tests/run_all.py --browser  # + browser tests in headless Edge/Chrome (isolated server), about 2 min
+py -3.15 tests/run_parallel.py       # the full run: unit and browser tests in 9 shards side by side
+py -3.15 -m unittest tests.test_lan  # one test file, while working on what it covers
+HM_ONLY=t_users,t_shell py -3.15 tests/browser_checks.py   # some browser checks (login always runs first)
+py -3.15 tests/run_all.py            # unit + API tests in one process
+py -3.15 tests/run_all.py --browser  # + browser tests in headless Edge/Chrome (isolated server)
 py -3.15 tests/run_all.py --live     # + live checks against the running server and real devices
 py -3.15 tests/run_all.py --all      # everything
 ```
+
+**When to run what.** While working, run only the tests for the files you changed. Run the full set
+(`run_parallel.py`) once at the end of a round, after the last code change, and once when shipping,
+after the version is set. After a fix to a test file only, rerun that file or check, not everything.
+
+**Shards.** `run_all.py --shard N/M` and `browser_checks.py --shard N/M` each run part of the tests;
+shards 1 to M together run all of them. Each shard has its own database, key and port. They are
+balanced by the time each test file and browser check took last time (`tests/shard_weights.json`;
+`run_parallel.py --save-weights` updates it). The default of 9 shards uses about a third of the
+development PC's 24 threads; keep it at half at most so the PC stays usable.
 
 - Set `HM_TEST_SSH_HOST=<ip>` to include SSH host key and task run checks. A dummy credential is used, so the target logs one failed login per run.
 - Live checks log in to the web UI: set `HM_TEST_USER` and `HM_TEST_PASSWORD`. Without them only the login gate is checked and the run is reported as skipped. To run them without your own password, start the app on a copy of the database (SQLite backup API, real vault key through `MONITOR_KEY_FILE`, its own port, a throwaway account) and point `MONITOR_URL`, `MONITOR_DB_PATH` and the two login variables at it. That is how the 2026-10-31 snapshot was taken.
 - Unit, API and browser tests run against a throwaway database, vault key and port (`tests/_env.py`). They never touch `monitor.db`, the real vault key or the server on 8080.
 - Live checks read the real database and query real devices. They decrypt community strings in-process only to confirm they are absent from the raw file, and never print them.
-- Results land in `tests/results/unit.json`, `browser.json` and `live.json` (excluded from packaging).
+- Results land in `tests/results/unit.json`, `browser.json` and `live.json` (excluded from packaging); a sharded run writes `unit-shardNofM.json` and `browser-shardNofM.json`, with each shard's output in `tests/results/logs/`.
 - Add `-W error::ResourceWarning` to treat leaked files or database connections as failures.
 
 ## 2. Coverage

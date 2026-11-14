@@ -31,6 +31,7 @@ SCHEMA_FINGERPRINTS = {
     5: "50a2b3702d203e96ff54c108d566235c93b18a1066b7b57b11c784a5f1e261e4",   # action_runs (host actions)
     6: "6ae966f4af4e9e6325436068e706aa24ad84fc8874a81ec9f25ea67e8fa81275",   # workflows.saved_by (rights checked at run)
     7: "53d0aa0ca4ec6cdbfb290b9e723eb942f7c785cfddc56e748e39cd3032bafec7",   # audit_log.actor and audit_log.source
+    8: "8593391624b36e3ddacd15c5ffc24c96d81a94b33025d4e48e06884b6322bbec",   # devices.snmp_v3
 }
 
 
@@ -263,7 +264,11 @@ class CompatTests(unittest.TestCase):
         conn.close()
         self.assertTrue({"actor", "source"} <= cols)
         self.assertEqual(old, ("", "", "By someone"))
-        self.assertEqual(database.schema_version(db), 7)
+        self.assertEqual(database.schema_version(db), database.SCHEMA_VERSION)
+        conn = sqlite3.connect(db)
+        device_cols = {row[1] for row in conn.execute("PRAGMA table_info(devices);")}
+        conn.close()
+        self.assertIn("snmp_v3", device_cols)          # schema 8: SNMPv3 settings per device
 
     def test_retention_split_on_a_0_11_2_database(self):
         for before, events, audit, rows in (("30", "30", "90", 1), ("200", "200", "200", 0)):

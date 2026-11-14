@@ -15,6 +15,18 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 0.14.0: Release 36, SNMPv3 and an SNMP check (2026-11-14)
+
+- Devices can now be read with SNMPv3: a user name and passwords instead of a community. Choose v3 in Add or Edit device, one device at a time. Devices without v3 stay on v2c.
+- Use privacy (encryption) is a tick box. With it on, nobody on the network can read what the device sends. Leave it off for devices that only sign their answers. You can turn it on later.
+- A new SNMP check on each device's page tries the device step by step and says what to change. It even spots a device set to the old MD5 method and tells you to choose SHA on it.
+- Fix SNMP writes the SNMPv3 user for a device on v3. It keeps other SNMPv3 users and extension lines from the old file and removes only what grants access.
+- The guide has a new page: Setting up SNMPv3 on a device.
+- After an update that needs something done, like setting a backup passphrase, an administrator sees one screen that keeps the app closed until it is done. Everyone else is just told.
+- The SNMP version setting is gone from Settings: each device chooses its own.
+- The Dashboard and Back to top icons are drawn afresh for Home Monitor.
+- Behind the scenes, the automatic tests now run in a third of the time.
+
 ### 0.13.0: Release 34, Guest Wi-Fi and one list of changed alerts (2026-11-13)
 
 - Each Wi-Fi network can now have its own weak signal rule: never reported or below a line of its own. Phones on a guest network that change their address no longer fill the weak signal problem. Set it in Inventory, Wi-Fi networks, beside Quiet. A device's own rule still wins.

@@ -286,6 +286,17 @@ RELEASES: List[Dict[str, Any]] = [
         "Settings, Notifications has a new tab, Changed alerts. It lists everything you changed from the defaults in one place: alert rules, maintenance windows, quiet networks and devices and weak Wi-Fi rules. Each line links to where it is changed.",
         "Updating from 0.11.0 or older could fail because the old version kept its web port busy for a minute or two after it stopped. The update now waits until the port is free before starting the new version. Undo waits the same way.",
     ]},
+    {"id": 36, "date": "2026-11-14", "title": "SNMPv3 and an SNMP check", "items": [
+        "Devices can now be read with SNMPv3: a user name and passwords instead of a community. Choose v3 in Add or Edit device, one device at a time. Devices without v3 stay on v2c.",
+        "Use privacy (encryption) is a tick box. With it on, nobody on the network can read what the device sends. Leave it off for devices that only sign their answers. You can turn it on later.",
+        "A new SNMP check on each device's page tries the device step by step and says what to change. It even spots a device set to the old MD5 method and tells you to choose SHA on it.",
+        "Fix SNMP writes the SNMPv3 user for a device on v3. It keeps other SNMPv3 users and extension lines from the old file and removes only what grants access.",
+        "The guide has a new page: Setting up SNMPv3 on a device.",
+        "After an update that needs something done, like setting a backup passphrase, an administrator sees one screen that keeps the app closed until it is done. Everyone else is just told.",
+        "The SNMP version setting is gone from Settings: each device chooses its own.",
+        "The Dashboard and Back to top icons are drawn afresh for Home Monitor.",
+        "Behind the scenes, the automatic tests now run in a third of the time.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 

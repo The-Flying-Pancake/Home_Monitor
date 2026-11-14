@@ -32,6 +32,23 @@ class _Recorder(unittest.TextTestResult):
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self.records = []
+        self.seconds = {}           # "test_file.Class" -> seconds, for balancing the shards
+        self.methods = {}           # "test_file.Class.test_name" -> seconds (a slow class is split by these)
+        self._started = 0.0
+
+    def startTest(self, test):
+        self._started = time.monotonic()
+        super().startTest(test)
+
+    def stopTest(self, test):
+        super().stopTest(test)
+        parts = test.id().split(".")
+        if parts[0] == "tests":
+            parts = parts[1:]
+        took = time.monotonic() - self._started
+        unit = ".".join(parts[:2])          # test file and class: the shards are balanced per class
+        self.seconds[unit] = self.seconds.get(unit, 0.0) + took
+        self.methods[".".join(parts[:3])] = took
 
     def addSuccess(self, test):
         super().addSuccess(test)
@@ -46,10 +63,79 @@ class _Recorder(unittest.TextTestResult):
         self.records.append({"test": test.id(), "ok": False, "detail": self._exc_info_to_string(err, test)[-600:]})
 
 
-def shard_files(n: int, m: int) -> list:
-    """Shard n of m: every m-th test file (sorted), starting with the n-th. Shards 1..m cover each file once."""
+WEIGHTS_FILE = os.path.join(HERE, "shard_weights.json")
+
+
+def load_weights(kind: str) -> dict:
+    """Seconds per test file (or browser check) from the last measured run (tests/shard_weights.json)."""
+    try:
+        with open(WEIGHTS_FILE, encoding="utf-8") as f:
+            data = json.load(f).get(kind) or {}
+        return {str(k): float(v) for k, v in data.items()}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def balance(names: list, m: int, weights: dict) -> list:
+    """Splits names into m groups of about the same running time: the longest first, each into the
+    group with the least time so far (an unmeasured name counts as the median). Deterministic, so
+    every shard computes the same split; each name is in exactly one group."""
+    known = sorted(weights[n] for n in names if n in weights)
+    guess = known[len(known) // 2] if known else 1.0
+    groups = [[] for _ in range(m)]
+    totals = [0.0] * m
+    for name in sorted(names, key=lambda n: (-weights.get(n, guess), n)):
+        i = min(range(m), key=lambda k: (totals[k], k))
+        groups[i].append(name)
+        totals[i] += weights.get(name, guess)
+    return groups
+
+
+SPLIT_CLASS_SECONDS = 60     # a class that took longer is shared out per test method
+
+
+def test_methods() -> list:
+    """Every test as "test_file.ClassName.test_name"."""
+    sys.path.insert(0, ROOT)
     files = sorted(f[:-3] for f in os.listdir(HERE) if f.startswith("test_") and f.endswith(".py"))
-    return [f for i, f in enumerate(files) if i % m == n - 1]
+    found = []
+
+    def walk(suite):
+        for item in suite:
+            if isinstance(item, unittest.TestSuite):
+                walk(item)
+            else:
+                found.append(f"{type(item).__module__.split('.')[-1]}.{type(item).__name__}.{item._testMethodName}")
+    walk(unittest.defaultTestLoader.loadTestsFromNames([f"tests.{f}" for f in files]))
+    return sorted(set(found))
+
+
+def shard_units() -> tuple:
+    """What the shards share out, with their weights: every test class, except that a class which took
+    longer than SPLIT_CLASS_SECONDS last time (the installer tests run the whole installer in bash, slow
+    on Windows) is shared out per test method. Its setUpClass then runs once in each shard that has some."""
+    classes = load_weights("unit")
+    methods = load_weights("unit_methods")
+    units, weights = [], {}
+    by_class = {}
+    for m in test_methods():
+        by_class.setdefault(m.rsplit(".", 1)[0], []).append(m)
+    for cls, ms in sorted(by_class.items()):
+        if classes.get(cls, 0) > SPLIT_CLASS_SECONDS:
+            units += ms
+            weights.update({m: methods[m] for m in ms if m in methods})
+        else:
+            units.append(cls)
+            if cls in classes:
+                weights[cls] = classes[cls]
+    return units, weights
+
+
+def shard_files(n: int, m: int) -> list:
+    """Shard n of m: test classes (or a slow class's methods) balanced by their last measured time.
+    Shards 1..m together run every test once."""
+    units, weights = shard_units()
+    return sorted(balance(units, m, weights)[n - 1])
 
 
 def run_unit(shard: tuple = None) -> bool:
@@ -65,7 +151,9 @@ def run_unit(shard: tuple = None) -> bool:
     out = f"unit-shard{shard[0]}of{shard[1]}.json" if shard else "unit.json"
     with open(os.path.join(RESULTS_DIR, out), "w", encoding="utf-8") as f:
         json.dump({"run_at": time.strftime("%Y-%m-%d %H:%M:%S"), "passed": result.testsRun - len(result.failures) - len(result.errors),
-                   "failed": len(result.failures) + len(result.errors), "results": result.records}, f, indent=2)
+                   "failed": len(result.failures) + len(result.errors), "results": result.records,
+                   "seconds": {k: round(v, 1) for k, v in sorted(result.seconds.items())},
+                   "methods": {k: round(v, 2) for k, v in sorted(result.methods.items())}}, f, indent=2)
     return result.wasSuccessful()
 
 

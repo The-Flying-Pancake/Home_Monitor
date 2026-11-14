@@ -45,6 +45,66 @@ rocommunity  s3cret-comm default -V systemonly
 """
 
 
+class BuildConfV3Tests(unittest.TestCase):
+    """Fix SNMP for a device on SNMPv3, and what is kept from the old file (Q6)."""
+
+    OLD = "\n".join([
+        "rocommunity public default",
+        "com2sec readonly default public",
+        "view systemonly included .1.3.6.1.2.1.1",
+        "view nasview included .1.3.6.1.4.1",
+        "rouser authPrivUser authpriv -V systemonly",          # Debian's placeholder: no such user
+        "rouser readonly priv -V nasview",
+        'createUser readonly SHA "old-auth-1234" AES "old-priv-5678"',
+        "rwuser admin",
+        "extend nas /usr/local/bin/check.sh",
+        "disk / 10%",
+        "includeDir /etc/snmp/snmpd.conf.d",
+        "sysLocation Rack 2",
+    ])
+
+    def cred(self, **kw):
+        import snmpv3
+        base = dict(user="monitor", level="authPriv", auth_protocol="SHA-256", auth_password="auth pass 123",
+                    priv_protocol="AES", priv_password="priv-pass-456")
+        base.update(kw)
+        return snmpv3.Credential(**base)
+
+    def test_v3_user_written_no_community(self):
+        c = self.cred()
+        plan = snmpfix.build_conf(self.OLD, None, "192.0.2.174", now=0, v3=c)
+        lines = plan["content"].splitlines()
+        self.assertIn('createUser monitor SHA-256 "auth pass 123" AES "priv-pass-456"', lines)
+        self.assertIn("rouser -s usm monitor priv -V hmmonitor", lines)
+        self.assertFalse(any(l.startswith(("rocommunity", "com2sec", "rwuser", "includeDir")) for l in lines))
+        # Kept (Q6): the real v3 user with its view, extension and check lines, the location.
+        for kept in ("rouser readonly priv -V nasview", "view nasview included .1.3.6.1.4.1",
+                     "extend nas /usr/local/bin/check.sh", "disk / 10%"):
+            self.assertIn(kept, lines)
+        self.assertFalse(any("authPrivUser" in l or "systemonly" in l for l in lines))
+        removed = plan["changes"][2]
+        self.assertIn("1 community access line", removed)
+        self.assertIn("1 SNMPv3 write user line", removed)
+        # The preview never shows the passwords.
+        shown = snmpfix.mask(plan["content"], [c.auth_password, c.priv_password])
+        self.assertNotIn("auth pass 123", shown)
+        self.assertNotIn("old-priv-5678", shown)
+
+    def test_signed_only_and_names_snmpd_cannot_hold(self):
+        plan = snmpfix.build_conf("", None, "192.0.2.174", now=0, v3=self.cred(level="authNoPriv", priv_password=""))
+        self.assertIn('createUser monitor SHA-256 "auth pass 123"', plan["content"].splitlines())
+        self.assertIn("rouser -s usm monitor auth -V hmmonitor", plan["content"].splitlines())
+        self.assertIsNone(snmpfix.v3_problem(self.cred()))
+        self.assertIn("quotes", snmpfix.v3_problem(self.cred(auth_password='has"quote1')))
+        self.assertIn("user name", snmpfix.v3_problem(self.cred(user="two words")))
+
+    def test_same_user_is_replaced_not_doubled(self):
+        old = 'createUser monitor SHA "older-pass-1"\nrouser monitor auth'
+        lines = snmpfix.build_conf(old, None, "192.0.2.174", now=0, v3=self.cred())["content"].splitlines()
+        self.assertEqual(sum(1 for l in lines if l.startswith("createUser monitor")), 1)
+        self.assertNotIn("older-pass-1", "\n".join(lines))
+
+
 class BuildConfTests(unittest.TestCase):
     def test_clean_file_replaces_artefacts(self):
         plan = snmpfix.build_conf(HAND_MADE_CONF, "labcomm", "192.0.2.174", now=0)

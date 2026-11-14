@@ -120,6 +120,97 @@ function promptEnrol() {
   return enrolPending;
 }
 
+// Required after an update (server.py REQUIRED_STEPS): one screen shared by every request refused
+// for it, shown once What's changed is closed. It checks every few seconds and lets the app go on
+// (the refused requests are sent again) as soon as nothing is needed any more.
+let requiredPending = null;
+function promptRequired(steps) {
+  if (requiredPending) return requiredPending;
+  requiredPending = new Promise(resolve => {
+    const screen = document.getElementById("required-screen");
+    const body = document.getElementById("required-body");
+    const error = document.getElementById("required-error");
+    const status = document.getElementById("required-status");
+    let timer = null;
+    const draw = list => {
+      body.innerHTML = list.map(s => `<div class="required-step">
+          <strong>${escapeHtml(s.title)}</strong>
+          <p>${escapeHtml(s.why)}</p>
+          ${s.id === "backup_passphrase" ? '<button type="button" class="btn btn-primary" data-required="backup_passphrase">Set backup passphrase</button>' : ""}
+          ${s.other_way ? `<div class="form-help">${escapeHtml(s.other_way)}</div>` : ""}
+        </div>`).join("");
+    };
+    const check = async () => {
+      let r;
+      try {
+        const res = await fetch("/api/required", { credentials: "same-origin" });
+        if (!res.ok) return;
+        r = await res.json();
+      } catch (e) { return; }
+      if (!r.mine.length) {
+        clearInterval(timer);
+        hide(screen);
+        body.innerHTML = "";
+        showToast("Done: the app is open again", "success");
+        resolve();
+        return;
+      }
+      draw(r.mine);
+      status.textContent = r.passphrase_pending ? "Saving the passphrase in the container..." : "";
+      error.textContent = r.passphrase_error || "";
+      error.classList.toggle("hidden", !r.passphrase_error);
+    };
+    body.onclick = async ev => {
+      if (!ev.target.closest("[data-required=backup_passphrase]")) return;
+      const value = await passphraseDialog(false);
+      if (value === null) return;
+      try {
+        await api("/api/backups/passphrase", { method: "POST", body: { passphrase: value } });
+        status.textContent = "Saving the passphrase in the container...";
+        error.classList.add("hidden");
+      } catch (err) {
+        error.textContent = err.message;
+        error.classList.remove("hidden");
+      }
+      check();
+    };
+    draw(steps);
+    // What's changed comes first: the screen waits until that window is closed.
+    const open = () => {
+      if (document.querySelector(".changes-window")) { setTimeout(open, 400); return; }
+      show(screen);
+      check();
+      timer = setInterval(check, 3000);
+    };
+    open();
+  }).finally(() => { requiredPending = null; });
+  return requiredPending;
+}
+
+// Someone who cannot do a required step is not locked out; they are told once per visit.
+function noteRequiredForOthers() {
+  setTimeout(async () => {
+    try {
+      const res = await fetch("/api/required", { credentials: "same-origin" });
+      if (!res.ok) return;
+      const r = await res.json();
+      if (r.others && r.others.length) {
+        showToast(`An administrator needs to finish: ${r.others.map(s => s.title).join(", ")}`, "warning");
+      }
+    } catch (e) { /* not logged in yet, or offline */ }
+  }, 4000);
+}
+
+function initRequiredScreen() {
+  const out = document.getElementById("required-logout");
+  if (!out) return;
+  out.addEventListener("click", async () => {
+    try { await fetch("/api/auth/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); } catch (e) { /* gone already */ }
+    location.reload();
+  });
+  noteRequiredForOthers();
+}
+
 function initEnrolScreen() {
   const out = document.getElementById("enrol-logout");
   if (!out) return;
@@ -131,6 +222,7 @@ function initEnrolScreen() {
 
 function initTwoFactor() {
   initEnrolScreen();
+  initRequiredScreen();
   const box = document.getElementById("account-2fa");
   if (!box) return;
   box.addEventListener("click", async ev => {

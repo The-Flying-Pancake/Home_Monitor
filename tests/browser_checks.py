@@ -41,16 +41,19 @@ def api(path, body=None, method=None):
         return json.load(r)
 
 
+DEFINED = []          # every check written, so none can be left out of the run list by mistake
+
+
 def check(name):
     def wrap(fn):
         def run(b):
             t = time.time()
             try:
                 detail = fn(b) or ""
-                RESULTS.append({"test": name, "ok": True, "detail": detail, "seconds": round(time.time() - t, 1)})
+                RESULTS.append({"test": name, "fn": fn.__name__, "ok": True, "detail": detail, "seconds": round(time.time() - t, 1)})
                 print(f"  PASS  {name}  {detail}")
             except Exception as exc:
-                RESULTS.append({"test": name, "ok": False, "detail": f"{type(exc).__name__}: {exc}", "seconds": round(time.time() - t, 1)})
+                RESULTS.append({"test": name, "fn": fn.__name__, "ok": False, "detail": f"{type(exc).__name__}: {exc}", "seconds": round(time.time() - t, 1)})
                 print(f"  FAIL  {name}  {type(exc).__name__}: {exc}")
                 traceback.print_exc(limit=1)
                 # A screenshot of the moment it failed, for whoever reads the result.
@@ -63,6 +66,7 @@ def check(name):
                 except Exception:
                     pass
         run.__name__ = fn.__name__
+        DEFINED.append(fn.__name__)
         return run
     return wrap
 
@@ -497,7 +501,7 @@ def t_settings_sidebar(b):
     return "menu swapped in Settings and back on leaving"
 
 
-@check("Settings, Backups: no backup passphrase shows the warning and the command; a passphrase hides it")
+@check("Settings, Backups: no backup passphrase shows the warning and Set backup passphrase; a passphrase hides it")
 def t_backup_passphrase_bar(b):
     goto(b, "#/settings/backups")
     b.wait_for("!!document.getElementById('backups-panel')")
@@ -508,12 +512,13 @@ def t_backup_passphrase_bar(b):
                  f"d.innerHTML = backupsSection({base} passphrase_set: false}}); "
                  "const bar = d.querySelector('#bk-no-passphrase'); "
                  f"const e = document.createElement('div'); e.innerHTML = backupsSection({base} passphrase_set: true, key_state: 'sealed'}}); "
-                 "const dev = document.createElement('div'); dev.innerHTML = backupsSection(Object.assign({base} passphrase_set: false}}, {{installed: false}})); "
-                 "[!!bar && bar.textContent.includes('/root/backup-passphrase.sh'), d.textContent.includes('Left out of backups that leave this box'), "
+                 f"const dev = document.createElement('div'); dev.innerHTML = backupsSection(Object.assign({base} passphrase_set: false}}, {{installed: false}})); "
+                 "const btn = x => (x.querySelector('[data-backup-action=passphrase]') || {}).textContent || ''; "
+                 "[!!bar && bar.textContent.includes('Set backup passphrase'), d.textContent.includes('Left out of backups that leave this box'), "
                  "!!e.querySelector('#bk-no-passphrase'), e.textContent.includes('Sealed with your passphrase'), "
-                 "!!dev.querySelector('#bk-no-passphrase')]")
-    assert got == [True, True, False, True, False], got
-    return "warning and command shown without a passphrase, hidden with one and on a development copy"
+                 "!!dev.querySelector('#bk-no-passphrase'), btn(d).trim(), btn(e).trim(), btn(dev)]")
+    assert got == [True, True, False, True, False, "Set backup passphrase", "Change backup passphrase", ""], got
+    return "warning and Set button without a passphrase, Change with one, nothing on a development copy"
 
 
 @check("Updates: red number on Settings while a version waits, skip hides it; new version card, live progress and result")
@@ -612,6 +617,64 @@ def t_message_rows(b):
     return f"message box {box:.0f} px of a {card:.0f} px card"
 
 
+@check("SNMP check: the button on an SNMP device, the steps and what to change")
+def t_snmp_check(b):
+    goto(b, f"#/device/{DEV_GRAPH}")
+    b.wait_for("!document.getElementById('btn-detail-snmpcheck').classList.contains('hidden')")
+    b.eval("document.getElementById('btn-detail-snmpcheck').click(); true")
+    b.wait_for("!!document.querySelector('.snmp-check .sc-steps')", timeout=40)
+    steps = b.eval("[...document.querySelectorAll('.snmp-check .sc-steps strong')].map(x => x.textContent)")
+    assert steps[:2] == ["Ping", "SNMP v2c answer"], steps
+    assert "What to change" in b.eval("document.querySelector('.snmp-check .sc-result').textContent")
+    b.eval("document.querySelector('.snmp-check [data-sc-close]').click(); true")
+    b.wait_for("!document.querySelector('.snmp-check')")
+    return f"{len(steps)} steps and advice for a device that does not answer"
+
+
+@check("Edit device, SNMPv3: the fields fill the SNMP box one per line; Use privacy shows and hides its fields")
+def t_snmp_v3_fields(b):
+    goto(b, f"#/device/{DEV_GRAPH}")
+    b.eval(f"openEditModal({DEV_GRAPH}); true")
+    b.wait_for("!document.getElementById('modal-edit-device').classList.contains('hidden') && !!document.getElementById('edit-snmp-version')")
+    run(b, "const s = document.getElementById('edit-snmp-version'); s.value = 'v3'; s.dispatchEvent(new Event('change', {bubbles: true})); true")
+    assert not b.eval("document.getElementById('edit-v3').classList.contains('hidden')")
+    assert b.eval("document.getElementById('edit-community-group').classList.contains('hidden')"), "community shown with v3"
+    width = lambda sel: b.eval(f"document.querySelector('{sel}').getBoundingClientRect().width")
+    box = width("#modal-edit-device .edit-sub.snmp-only")
+    for sel in ("#edit-snmp-version", "#edit-v3-user", "#edit-v3-auth-proto", "#edit-v3-auth-pass", "#edit-v3-priv-pass"):
+        assert width(sel) > box * 0.85, (sel, width(sel), box)
+    run(b, "const c = document.getElementById('edit-v3-privacy'); c.checked = false; c.dispatchEvent(new Event('change', {bubbles: true})); true")
+    assert b.eval("document.getElementById('edit-v3-priv').classList.contains('hidden')")
+    run(b, "const c = document.getElementById('edit-v3-privacy'); c.checked = true; c.dispatchEvent(new Event('change', {bubbles: true})); true")
+    assert not b.eval("document.getElementById('edit-v3-priv').classList.contains('hidden')")
+    try:
+        import base64
+        shot = b.send("Page.captureScreenshot", {"format": "png"})
+        os.makedirs(os.path.join(_env.ROOT, "tests", "results"), exist_ok=True)
+        with open(os.path.join(_env.ROOT, "tests", "results", "edit-device-snmpv3.png"), "wb") as f:
+            f.write(base64.b64decode(shot.get("data") or shot.get("result", {}).get("data", "")))
+    except Exception:
+        pass
+    b.eval("document.getElementById('modal-edit-device').classList.add('hidden'); true")
+    return f"fields fill the {box:.0f} px box, privacy fields follow the box"
+
+
+@check("Required after an update: the screen waits for What's changed, shows the step, lets the app go once done")
+def t_required_screen(b):
+    goto(b, "#/devices")
+    run(b, "const w = document.createElement('div'); w.className = 'changes-window'; w.id = 'fake-changes'; document.body.appendChild(w); "
+           "window.__req = 'waiting'; promptRequired([{id: 'backup_passphrase', title: 'Set a backup passphrase', why: 'Test', "
+           "other_way: 'Or in the console'}]).then(() => { window.__req = 'done'; }); true")
+    time.sleep(1.2)
+    assert b.eval("document.getElementById('required-screen').classList.contains('hidden')"), "shown over What's changed"
+    run(b, "document.getElementById('fake-changes').remove(); true")
+    # This test server is no installed box: nothing is needed, so the screen lets the app carry on.
+    b.wait_for("window.__req === 'done'", timeout=10)
+    assert b.eval("document.getElementById('required-screen').classList.contains('hidden')")
+    assert "Set a backup passphrase" not in b.eval("document.getElementById('required-body').textContent")
+    return "waited for What's changed, then opened the app as nothing was needed"
+
+
 @check("Notifications, Changed alerts: shown with Telegram off, lists a changed rule and a network rule with links")
 def t_changed_alerts(b):
     import database
@@ -620,9 +683,10 @@ def t_changed_alerts(b):
     database.set_alert_overrides("global", "", [("unreachable", "for_minutes", "3")])
     inventory.set_wifi_net_alerts({"Guest": "off"})
     try:
+        goto(b, "#/devices")                       # Settings is drawn again from the server on the way back
         goto(b, "#/settings/notify")
-        b.wait_for("!!document.querySelector('[data-ntab-go=changed]')")
-        assert b.eval("document.querySelector('[data-ntab-go=when]').classList.contains('hidden')"), "When shown without Telegram"
+        b.wait_for("!!document.querySelector('[data-ntab-go=changed]') && (document.getElementById('setting-telegram_enabled') || {}).value === 'off'")
+        b.wait_for("document.querySelector('[data-ntab-go=when]').classList.contains('hidden')")
         assert not b.eval("document.getElementById('ntab-bar').classList.contains('hidden')")
         b.eval("document.querySelector('[data-ntab-go=changed]').click(); true")
         b.wait_for("document.getElementById('notify-changed').textContent.includes('Guest')")
@@ -634,6 +698,7 @@ def t_changed_alerts(b):
     finally:
         database.set_alert_overrides("global", "", [("unreachable", "for_minutes", None)])
         database.delete_settings([inventory.WIFI_NET_ALERT_KEY])
+        goto(b, "#/devices")                       # the next check finds Settings drawn afresh
     return "tab shown without Telegram, rule and network listed with links"
 
 
@@ -1320,7 +1385,8 @@ def t_groups(b):
 
 @check("Acknowledge a problem from the devices page")
 def t_ack(b):
-    b.wait_for("!!document.querySelector('#problems-body [data-ack=\"1\"]')", timeout=60)
+    # The offline device needs a few polls to go down: in a shard this check can come soon after the start.
+    b.wait_for("!!document.querySelector('#problems-body [data-ack=\"1\"]')", timeout=150)
     b.eval("document.querySelector('#problems-body [data-ack=\"1\"]').click(); true")
     time.sleep(1.0)
     acked = [p for p in api("/api/problems")["problems"] if p["acknowledged_at"]]
@@ -1843,6 +1909,86 @@ def t_no_js_errors(b):
     return "none"
 
 
+def _shard_arg():
+    """--shard N/M: this run does part of the checks; runs 1..M side by side cover all of them."""
+    if "--shard" not in sys.argv:
+        return None
+    n, m = (int(x) for x in sys.argv[sys.argv.index("--shard") + 1].split("/"))
+    if not 1 <= n <= m:
+        raise SystemExit("--shard N/M with 1 <= N <= M")
+    return n, m
+
+
+SHARD = _shard_arg()
+# Checks that use what an earlier check left behind, so a shard must run them together: the dashboard
+# tiles and its edit mode, and Settings with the value the first check typed.
+TOGETHER = [
+    ["t_dashboard", "t_resize", "t_move", "t_columns", "t_graph_tile", "t_content_follows", "t_dashboards"],
+    ["t_settings", "t_settings_invalid", "t_alert_rules", "t_shell"],
+    ["t_message_rows", "t_changed_alerts", "t_command_replies"],   # Notifications opened with Telegram on
+    ["t_credentials", "t_task", "t_workflow", "t_quiet_steps"],   # the stored credential the steps use
+    ["t_sort", "t_groups", "t_ack"],            # the acknowledge check uses the Devices page they opened
+]
+
+
+def stretches(units: list, m: int, weights: dict) -> list:
+    """Cuts the checks, in their usual order, into m stretches of about the same time. Most checks
+    were written to follow the one before them, so keeping the order keeps nearly all of that; only
+    the m - 1 cuts change a check's neighbour (and never inside a TOGETHER group)."""
+    known = sorted(weights.values())
+    guess = known[len(known) // 2] if known else 1.0
+    time_of = [weights.get(u, guess) for u in units]
+    target = sum(time_of) / m
+    out, current, total = [], [], 0.0
+    for u, secs in zip(units, time_of):
+        current.append(u)
+        total += secs
+        if len(out) < m - 1 and total >= target * (len(out) + 1):
+            out.append(current)
+            current = []
+    out.append(current)
+    while len(out) < m:
+        out.append([])
+    return out
+
+
+def shard_checks(checks: list) -> list:
+    """The checks this run does, in their usual order. Login always comes first and the check for
+    JavaScript errors always last (it reads what this run's page collected). HM_ONLY=t_users,t_shell
+    runs a named subset while debugging. With --shard the rest are balanced by their last measured
+    time (tests/shard_weights.json), in stretches that keep the usual order."""
+    missing = sorted(set(DEFINED) - {c.__name__ for c in checks})
+    if missing:
+        raise SystemExit(f"Checks written but not in the run list in main(): {', '.join(missing)}")
+    first, last = checks[0], checks[-1]
+    middle = checks[1:-1]
+    only = os.environ.get("HM_ONLY")
+    if only:
+        wanted = only.split(",")
+        middle = [c for c in middle if c.__name__ in wanted]
+    if SHARD:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import run_all
+        weights = run_all.load_weights("browser")
+        names = [c.__name__ for c in middle]
+        # Checks that build on an earlier one stay in its shard (they keep their usual order there).
+        leader = {}
+        for group in TOGETHER:
+            for n in group:
+                leader[n] = group[0]
+        units, unit_weight = [], {}
+        for n in names:
+            u = leader.get(n, n)
+            if u not in units:
+                units.append(u)
+            if n in weights:
+                unit_weight[u] = unit_weight.get(u, 0.0) + weights[n]
+        mine = set(stretches(units, SHARD[1], unit_weight)[SHARD[0] - 1])
+        middle = [c for c in middle if leader.get(c.__name__, c.__name__) in mine]
+    tail = [last] if not only or last.__name__ in only.split(",") or SHARD else []
+    return [first] + middle + tail
+
+
 def main() -> int:
     global DEV_GRAPH, DEV_SSH
     env = dict(os.environ)
@@ -1893,12 +2039,8 @@ def main() -> int:
         browser.wait_for("document.readyState === 'complete' && typeof loadDashboard === 'function'")
 
         print(f"Browser checks against {BASE} (isolated database {_env.TMP})")
-        for test in (t_login, t_dashboard, t_resize, t_move, t_columns, t_graph_tile, t_content_follows, t_map, t_sort, t_groups,
-                     t_ack, t_live, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_updates, t_demo_card, t_message_rows, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors):
-            # HM_ONLY=t_users,t_shell runs a subset (login always runs first) while debugging.
-            only = os.environ.get("HM_ONLY")
-            if only and test is not t_login and test.__name__ not in only.split(","):
-                continue
+        for test in shard_checks([t_login, t_dashboard, t_resize, t_move, t_columns, t_graph_tile, t_content_follows, t_map, t_sort, t_groups,
+                     t_ack, t_live, t_snmp_check, t_snmp_v3_fields, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_backup_passphrase_bar, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
             test(browser)
     finally:
         if browser:
@@ -1910,7 +2052,7 @@ def main() -> int:
             server.kill()
     out = os.path.join(_env.ROOT, "tests", "results")
     os.makedirs(out, exist_ok=True)
-    with open(os.path.join(out, "browser.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out, f"browser-shard{SHARD[0]}of{SHARD[1]}.json" if SHARD else "browser.json"), "w", encoding="utf-8") as f:
         json.dump({"run_at": time.strftime("%Y-%m-%d %H:%M:%S"), "ssh_host": bool(SSH_HOST), "results": RESULTS}, f, indent=2)
     failed = [r for r in RESULTS if not r["ok"]]
     print(f"\n{len(RESULTS) - len(failed)} passed, {len(failed)} failed")

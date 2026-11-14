@@ -755,7 +755,7 @@ class WorkflowRun:
                     if streak >= UP_STREAK:
                         return True, f"{device['hostname']} answered again after {time.time() - started:.0f} s"
             else:
-                value = poller.snmp_get(device["ip_address"], "1.3.6.1.2.1.1.3.0", device.get("snmp_community") or "public",
+                value = poller.snmp_get(device["ip_address"], "1.3.6.1.2.1.1.3.0", poller.snmp_target(device),
                                         device.get("snmp_port") or 161, 2.0, 0)
                 if value is not None and poller.has_value(value):
                     return True, f"SNMP answered after {time.time() - (deadline - step['timeout_s']):.0f} s"

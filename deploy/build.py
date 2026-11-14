@@ -36,7 +36,7 @@ MODULES = ["server.py", "poller.py", "database.py", "vault.py", "ssh_runner.py",
            "workflows.py", "snmpfix.py", "notify.py", "discovery.py", "setup.py", "alerts.py", "schedule.py", "rbac.py",
            "availability.py", "proxmox.py", "customoids.py", "totp.py", "compat.py", "taxonomy.py", "tls.py", "changelog.py", "maintenance.py", "forecast.py",
            "inventory.py", "hostactions.py", "lanhttp.py", "pihole.py", "unifi.py", "digest.py", "telebot.py", "botcmds.py", "tpl.py", "sitecheck.py", "safefile.py",
-           "demo.py", "report.py"]
+           "demo.py", "report.py", "snmpv3.py"]
 WEB = ["index.html", "app.js", "map.js", "workflows.js", "wftemplates.js", "hostactions.js", "telegram.js", "workflows.css", "setup.js", "alerts.js", "theme.js", "shell.js", "users.js", "security.js","adddevice.js", "backups.js", "updates.js", "snmp.js",
        "charts.js", "availability.js", "proxmox.js", "taxonomy.js", "tls.js", "changes.js", "lan.js", "inventory.js", "botcmds.js", "guide.js", "guide.html", "style.css"]
 

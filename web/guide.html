@@ -47,7 +47,7 @@ ssh-keygen -Y verify -f release-signers -I release@home-monitor -n home-monitor-
   <table>
     <tr><th>Kind</th><th>What you get</th><th>Needs</th></tr>
     <tr><td><strong>Ping</strong></td><td>Up or down, response time, availability, the unreachable alert</td><td>Only an address. Good for phones, TVs, cameras, smart plugs, anything without SNMP</td></tr>
-    <tr><td><strong>Device statistics (SNMP)</strong></td><td>Everything above, plus interfaces and traffic, CPU, memory, storage, temperatures, processes and more, depending on the template</td><td>SNMP running on the device (v2c, with a community string)</td></tr>
+    <tr><td><strong>Device statistics (SNMP)</strong></td><td>Everything above, plus interfaces and traffic, CPU, memory, storage, temperatures, processes and more, depending on the template</td><td>SNMP running on the device: v2c with a community string, or v3 with a user and passwords</td></tr>
     <tr><td><strong>Service</strong></td><td>A TCP port that must accept a connection or a web page that must answer with the right status (and optionally contain a word)</td><td>The port or the page address</td></tr>
   </table>
   <h3>One address</h3>
@@ -89,13 +89,48 @@ ssh-keygen -Y verify -f release-signers -I release@home-monitor -n home-monitor-
   <p>The window has two columns:</p>
   <ul>
     <li><strong>The device</strong>: its name; for a service the check (TCP port or web page) and the address or port; its group; its tags, shown as coloured labels, with <em>Change tags</em> to open the tag manager.</li>
-    <li><strong>How it is watched</strong>: the template and how often it is pinged. For a device read over SNMP, a box holds the community, the port and how often it is read. SSH for host actions and workflows is not set here: it uses a stored credential (Automation, Credentials).</li>
+    <li><strong>How it is watched</strong>: the template and how often it is pinged. For a device read over SNMP, a box holds the SNMP version, the community (v2c) or the v3 user and passwords, the port and how often it is read. SSH for host actions and workflows is not set here: it uses a stored credential (Automation, Credentials).</li>
+    <li><strong>SNMPv3</strong>: choose <em>v3</em> as the SNMP version and type the same user, protocols and passwords you set on the device. <em>Use privacy</em> (authPriv, on by default) is the safe choice: nobody on the network can read or change what the device sends. Untick it when the device has privacy off: the answers are still signed, so they are genuine, but readable on the network (authNoPriv). Authentication is SHA or SHA-256; privacy is AES-128. MD5 and DES are not offered because they are no longer safe: where a device offers both, choose SHA and AES on it. The passwords are kept in the vault and never shown again: an empty field keeps them. Going back to v2c keeps the community you had.</li>
   </ul>
   <p>Below them, <strong>Place on the map and details</strong> holds the device it is connected to (its uplink, for the map), the port on that uplink and corrected details (location, model) that replace what the device reports.</p>
   <h3>Fix SNMP (Linux hosts)</h3>
   <p>Many Linux hosts only show basic system information over SNMP. <strong>Fix SNMP</strong> logs in over SSH, shows you the new <code>/etc/snmp/snmpd.conf</code> before anything is written, keeps a dated backup, restarts snmpd and checks from the monitor that interfaces, CPU, memory and storage now answer. If they do not, the backup is put back. It needs a stored credential (root or a user with passwordless sudo) and the host's SSH key approved; <em>Copy as commands</em> gives the same steps to paste by hand.</p>
   <p>When the SSH login itself fails (refused, no answer or nothing listening), <strong>Copy console commands</strong> appears beside Preview changes. It copies one line to paste into the host's root shell (on Proxmox: the guest's <em>Console</em>). That line installs SSH if it is missing, lets the monitor's address log in, checks the new SSH settings before using them and restarts SSH. With an SSH key credential it adds the key for the monitor's address only and turns password logins from the monitor off; root may then log in by key only. With a password credential (or none) it turns on password login from the monitor's address, root included, and asks you first. It sets no password: if the account has none yet, it tells you to run <code>passwd</code>. Then approve the host key if asked and press Preview changes again. Host actions offer the same button after a failed login.</p>
-  <p>The new file allows only this monitor's address (and the host itself). Run it from the monitor that will poll the host.</p>
+  <p>The new file allows only this monitor's address (and the host itself). Run it from the monitor that will poll the host. For a device set to SNMPv3 in the monitor, Fix SNMP writes its v3 user instead (the same user, protocols and passwords) and no community at all.</p>
+  <p>What stays from the old file: the host's location and contact, other SNMPv3 users defined in it (with the views they read through) and extension or check lines such as <code>extend</code>, <code>disk</code> and <code>proc</code>. What goes: every line that grants access (communities, write users, placeholders for users that do not exist and include lines). The preview lists each one before anything is written.</p>
+</section>
+
+<section id="snmpv3" data-title="Setting up SNMPv3 on a device">
+  <h2>Setting up SNMPv3 on a device</h2>
+  <p>SNMPv3 replaces the community (a shared word anyone on the network can read) with a user name and passwords. Every answer is signed, so the monitor knows it really comes from the device, and with privacy on it is encrypted as well. Use it where a device offers it; keep v2c for devices that do not. Each device chooses its own version.</p>
+  <h3>On the device</h3>
+  <ol>
+    <li>Open the device's SNMP settings and choose <strong>SNMP v3</strong> (some devices let v2c and v3 run side by side).</li>
+    <li>Make a <strong>user</strong>. The name is case-sensitive: <em>GHome</em> and <em>ghome</em> are different users.</li>
+    <li>Turn <strong>authentication</strong> on and choose <strong>SHA</strong> (some devices call it <em>HMAC-SHA</em>; SHA-256 also works). Do not choose <em>MD5</em>: it is no longer safe and the monitor does not use it. Set a password of at least 8 characters.</li>
+    <li><strong>Privacy</strong> (encryption) is optional. If you want it, choose <strong>AES</strong> (or <em>AES-128</em>) and set a second password. If the device offers only <em>DES</em>, leave privacy off: DES is too weak to be worth it.</li>
+    <li>Apply. The device's SNMP restarts, so the monitor may show a short <em>Restarted</em> problem afterwards; it clears by itself.</li>
+  </ol>
+  <h3>In the monitor</h3>
+  <ol>
+    <li>Add device (or Edit device), SNMP version <strong>v3</strong>.</li>
+    <li>Type the same user, choose the same authentication protocol and type its password.</li>
+    <li>Tick <strong>Use privacy</strong> only if privacy is on at the device, with the same privacy password. You can turn privacy on later: first on the device, then here.</li>
+    <li><em>Test &amp; auto-detect</em> (in Add device) or <strong>SNMP check</strong> (on the device's page) says whether it works.</li>
+  </ol>
+  <h3>SNMP check</h3>
+  <p>The <strong>SNMP check</strong> button on a device's page tries the device step by step and says what to change: whether it answers at all, whether it knows the user, whether the password and protocol match, whether privacy matches and whether values can be read. When the signature is wrong it quietly tries the other protocols too, so it can say, for example, <em>"The device is set to MD5: choose SHA on it"</em> or <em>"The device uses SHA-256, not SHA"</em>. Passwords are never shown.</p>
+  <table class="guide-table">
+    <tr><th>The check says</th><th>What to do</th></tr>
+    <tr><td>The device does not answer SNMPv3</td><td>SNMP is off, v3 is not chosen on the device, the port differs or a firewall blocks UDP 161 between the monitor and the device.</td></tr>
+    <tr><td>The device does not know the user</td><td>The user name differs; capitals count.</td></tr>
+    <tr><td>The device is set to MD5</td><td>Choose SHA (HMAC-SHA) on the device and keep the same password.</td></tr>
+    <tr><td>The device uses SHA-256, not SHA (or the other way)</td><td>Choose that protocol in Edit device.</td></tr>
+    <tr><td>The authentication password does not match</td><td>Type it again in Edit device, exactly as on the device.</td></tr>
+    <tr><td>The device refused the encrypted request</td><td>Privacy is off at the device (untick Use privacy), the privacy password differs or the device uses DES instead of AES.</td></tr>
+    <tr><td>The device wants privacy</td><td>Tick Use privacy and type the device's privacy password.</td></tr>
+    <tr><td>The device answers but shows only its basic details</td><td>Its SNMP view is limited. On Linux hosts, Fix SNMP widens it; elsewhere allow the full view for this user.</td></tr>
+  </table>
 </section>
 
 <section id="groups" data-title="Groups and tags">
@@ -436,6 +471,7 @@ ssh-keygen -Y verify -f release-signers -I release@home-monitor -n home-monitor-
   <h3>Backups</h3>
   <p>A backup is made every day by itself. <em>Back up now</em> (Settings, Backups) makes one at once. Each backup records the version that made it. Without Syncthing they stay in the container (the newest 7); with Syncthing they are written to the synced folder, so your NAS holds them. A backup has everything a rebuild needs. The key that unlocks the stored passwords goes with it sealed with your backup passphrase; without a passphrase it stays only in backups kept inside the container.</p>
   <h3>The backup passphrase</h3>
+  <p>After an update that brings a step like this, an administrator sees a screen <em>One thing to do before you carry on</em> once What's changed is closed. The app opens again as soon as the step is done; the monitor keeps watching your network meanwhile. Other users carry on and are told an administrator needs to finish it.</p>
   <p>Set one as soon as you can. The easiest way is Settings, Backups, <strong>Set backup passphrase</strong>: confirm your password (and your code, with 2FA), type a passphrase of 12 characters or more twice and keep it in your password manager, apart from the backups. The container saves it and makes a sealed backup straight away. Telegram sends a security alert and the audit log records who did it. The same button changes it later; backups made before a change still need the old passphrase. You can also do it in a root shell in the container with <code>/root/backup-passphrase.sh</code> (or <code>/root/update.sh</code>, option 7). On a new install you can also set <code>BACKUP_PASSPHRASE</code> at the top of <code>home_monitor.sh</code>.</p>
   <p>With a passphrase, every backup carries a check that proves it was not changed, and the key inside it is sealed: someone who copies the backup share gets nothing they can open. Without one, Settings, Backups shows a warning with the command. Backups that leave the box (Syncthing or a share) then go without the key, so a rebuild from them cannot use the stored passwords, and no backup can be proven unchanged.</p>
   <p>Backups you already have stay as they are until the daily clean-up removes them, with the newest 7 kept. Copies on your NAS or in Syncthing's history may still hold the key in the clear, so remove them there if you want them gone now. Changed the passphrase? A restore of an older backup asks for the passphrase it was made with.</p>
@@ -499,7 +535,7 @@ ssh-keygen -Y verify -f release-signers -I release@home-monitor -n home-monitor-
     <dt>Proxmox connects but shows almost nothing</dt>
     <dd>The token has no permission of its own. Add the API Token Permission (see <a href="#/guide/proxmox">Proxmox</a>); <em>Test connection</em> names what is missing.</dd>
     <dt>"SNMP agent not responding (host answers ping)"</dt>
-    <dd>The community is wrong, SNMP is off or a firewall blocks UDP 161. If the device has no SNMP at all, set its template to <em>Ping only</em> in Edit device.</dd>
+    <dd>The community is wrong, SNMP is off or a firewall blocks UDP 161. If the device has no SNMP at all, set its template to <em>Ping only</em> in Edit device. With SNMPv3, <strong>SNMP check</strong> on the device's page says what is wrong and what to change (see <a href="#/guide/snmpv3">Setting up SNMPv3 on a device</a>).</dd>
     <dt>"SNMP agent only exposes basic system information"</dt>
     <dd>The host's snmpd allows only the system group. On Linux hosts use <a href="#/guide/device">Fix SNMP</a>.</dd>
     <dt>Fix SNMP: "could not log in over SSH"</dt>

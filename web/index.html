@@ -20,7 +20,7 @@
     </div>
     <nav class="side-nav" aria-label="Main">
       <a href="#/dashboard" id="nav-dashboard" class="nav-link active" title="Dashboard">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="8" height="17" rx="1.5"/><rect x="14.5" y="3.5" width="6" height="7" rx="1.5"/><rect x="14.5" y="13.5" width="6" height="7" rx="1.5"/></svg>
         <span class="sidebar-text">Dashboard</span></a>
       <a href="#/devices" id="nav-devices" class="nav-link" title="Devices">
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1"/><rect x="3" y="13" width="18" height="7" rx="1"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
@@ -131,6 +131,19 @@
       <div id="enrol-body"></div>
       <div class="form-help">No phone to hand? Log out and ask an administrator. An administrator with no way in can run <code>/root/reset-admin.sh</code> on the container.</div>
       <button type="button" class="btn" id="enrol-logout">Log out</button>
+    </div>
+  </div>
+
+  <!-- Required after an update (server.py REQUIRED_STEPS): over everything until the step is done. -->
+  <div id="required-screen" class="auth-screen hidden">
+    <div class="auth-card enrol-card required-card">
+      <div class="brand">Home Monitor</div>
+      <div class="auth-title">One thing to do before you carry on</div>
+      <div class="form-help">This update needs a step only an administrator can do. The monitor keeps watching your network meanwhile; the app opens again as soon as it is done.</div>
+      <div id="required-body"></div>
+      <div class="form-error hidden" id="required-error"></div>
+      <div class="form-help dim" id="required-status"></div>
+      <button type="button" class="btn" id="required-logout">Log out</button>
     </div>
   </div>
 
@@ -298,6 +311,7 @@
         <button id="btn-live" data-perm="devices.poll" class="live-pill" title="Live mode: polls this device every few seconds while the page is open. Live samples are kept in memory only.">LIVE</button>
         <button id="btn-detail-poll" data-perm="devices.poll" class="btn btn-primary" title="Check this device now">Poll now</button>
         <button id="btn-detail-hostact" data-perm="automation.run credentials.use" class="btn hidden" title="Checks, clean-ups and restarts for this Linux host, run once over SSH">Host actions</button>
+        <button id="btn-detail-snmpcheck" data-perm="devices.manage" class="btn hidden" title="Check this device's SNMP step by step and say what to change">SNMP check</button>
         <button id="btn-detail-fixsnmp" data-perm="devices.manage" class="btn hidden" title="Widen this host's snmpd view so interfaces, CPU, memory and storage are visible">Fix SNMP</button>
         <button id="btn-detail-maint" data-perm="problems.ack" class="btn" title="Planned work: keep this device's alerts quiet for a while">Maintenance</button>
         <button id="btn-detail-alerts" data-perm="settings.alerts" class="btn" title="Thresholds, severities and Telegram choices for this device">Alert rules</button>
@@ -1530,6 +1544,13 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
 
         <div class="form-row snmp-only">
           <div class="form-group">
+            <label for="input-snmp-version">SNMP version</label>
+            <select id="input-snmp-version">
+              <option value="v2c">v2c (community)</option>
+              <option value="v3">v3 (user and passwords, encrypted)</option>
+            </select>
+          </div>
+          <div class="form-group" id="input-community-group">
             <label for="input-community">SNMP community</label>
             <input type="password" id="input-community" autocomplete="off">
           </div>
@@ -1537,6 +1558,41 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
             <label for="input-port">SNMP port</label>
             <input type="number" id="input-port" value="161">
           </div>
+        </div>
+        <div class="snmp-only">
+            <div class="snmp-v3 hidden" id="input-v3">
+              <div class="form-row form-row-stack">
+                <div class="form-group">
+                  <label for="input-v3-user">SNMPv3 user</label>
+                  <input type="text" id="input-v3-user" maxlength="32" autocomplete="off" spellcheck="false">
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="input-v3-auth-proto">Authentication</label>
+                  <select id="input-v3-auth-proto"><option value="SHA">SHA</option><option value="SHA-256">SHA-256</option></select>
+                </div>
+                <div class="form-group">
+                  <label for="input-v3-auth-pass">Authentication password</label>
+                  <input type="password" id="input-v3-auth-pass" autocomplete="new-password" maxlength="128">
+                </div>
+              </div>
+              <div class="form-group v3-privacy-row">
+                <label class="checkbox-label"><input type="checkbox" id="input-v3-privacy" checked> Use privacy (encrypt what the device sends)</label>
+                <div class="form-help">Untick when the device has privacy off (signed only). You can turn it on later, on the device and here.</div>
+              </div>
+              <div class="form-row" id="input-v3-priv">
+                <div class="form-group">
+                  <label for="input-v3-priv-proto">Privacy</label>
+                  <select id="input-v3-priv-proto"><option value="AES">AES-128</option></select>
+                </div>
+                <div class="form-group">
+                  <label for="input-v3-priv-pass">Privacy password</label>
+                  <input type="password" id="input-v3-priv-pass" autocomplete="new-password" maxlength="128">
+                </div>
+              </div>
+              <div class="form-help">The same user, protocols and passwords as set on the device (at least 8 characters each). If it does not answer, SNMP check on the device's page says what to change. MD5 and DES are not offered: they are no longer safe, so choose SHA and AES on the device.</div>
+            </div>
         </div>
 
         <div class="form-group snmp-only">
@@ -1648,8 +1704,50 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
             </div>
             <div class="edit-sub snmp-only">
               <div class="edit-sub-head">SNMP <span class="dim">ports, load, storage and Wi-Fi from devices that offer it</span></div>
-              <div class="form-row three">
+              <div class="form-row form-row-stack">
                 <div class="form-group">
+            <label for="edit-snmp-version">SNMP version</label>
+            <select id="edit-snmp-version">
+              <option value="v2c">v2c (community)</option>
+              <option value="v3">v3 (user and passwords, encrypted)</option>
+            </select>
+          </div>
+              </div>
+              <div class="snmp-v3 hidden" id="edit-v3">
+              <div class="form-row form-row-stack">
+                <div class="form-group">
+                  <label for="edit-v3-user">SNMPv3 user</label>
+                  <input type="text" id="edit-v3-user" maxlength="32" autocomplete="off" spellcheck="false">
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="edit-v3-auth-proto">Authentication</label>
+                  <select id="edit-v3-auth-proto"><option value="SHA">SHA</option><option value="SHA-256">SHA-256</option></select>
+                </div>
+                <div class="form-group">
+                  <label for="edit-v3-auth-pass">Authentication password</label>
+                  <input type="password" id="edit-v3-auth-pass" autocomplete="new-password" maxlength="128">
+                </div>
+              </div>
+              <div class="form-group v3-privacy-row">
+                <label class="checkbox-label"><input type="checkbox" id="edit-v3-privacy" checked> Use privacy (encrypt what the device sends)</label>
+                <div class="form-help">Untick when the device has privacy off (signed only). You can turn it on later, on the device and here.</div>
+              </div>
+              <div class="form-row" id="edit-v3-priv">
+                <div class="form-group">
+                  <label for="edit-v3-priv-proto">Privacy</label>
+                  <select id="edit-v3-priv-proto"><option value="AES">AES-128</option></select>
+                </div>
+                <div class="form-group">
+                  <label for="edit-v3-priv-pass">Privacy password</label>
+                  <input type="password" id="edit-v3-priv-pass" autocomplete="new-password" maxlength="128">
+                </div>
+              </div>
+              <div class="form-help">The same user, protocols and passwords as set on the device (at least 8 characters each). If it does not answer, SNMP check on the device's page says what to change. MD5 and DES are not offered: they are no longer safe, so choose SHA and AES on the device.</div>
+            </div>
+              <div class="form-row three">
+                <div class="form-group" id="edit-community-group">
                   <label for="edit-community">Community</label>
                   <input type="password" id="edit-community" autocomplete="off">
                 </div>
@@ -1732,7 +1830,7 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
   </div><!-- app-shell -->
 
   <button type="button" class="to-top hidden" id="btn-to-top" title="Back to top" aria-label="Back to top">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5h12M12 20v-11M7.5 13.5 12 9l4.5 4.5"/></svg>
   </button>
   <div id="chart-tooltip" class="chart-tooltip hidden"></div>
   <div id="toast-stack" class="toast-stack" aria-live="polite"></div>

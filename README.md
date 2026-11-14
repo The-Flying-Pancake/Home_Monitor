@@ -27,7 +27,7 @@ installs with one file and backs itself up.
 
 | | |
 | :--- | :--- |
-| 📈 **Monitoring** | Ping, SNMP (CPU, memory, disks, interfaces, temperatures, UPS, printers, NAS), port and web checks. Templates for common homelab gear, with custom OIDs for anything else. |
+| 📈 **Monitoring** | Ping, SNMP v2c and v3 (CPU, memory, disks, interfaces, temperatures, UPS, printers, NAS), port and web checks. Templates for common homelab gear, with custom OIDs for anything else. |
 | 🟢 **Availability** | Status pages and uptime history for every device. |
 | 🚨 **Alerts** | Rules with thresholds, durations and severities. Problems group sensibly (a switch going down does not page you for everything behind it). Quiet hours, maintenance windows and acknowledgements. |
 | 📱 **Telegram** | Alerts with your own message texts, plus a read-only bot you can ask for status. |

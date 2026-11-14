@@ -164,9 +164,7 @@ STATIC_FILES = {
 SETTINGS_SCHEMA = [
     # key, section, label, type, unit, min, max, default, help
     ("default_snmp_community", "snmp", "Community string", "secret", "", None, None, "public",
-     "Default SNMPv2c community for new devices. Each device can override it."),
-    ("default_snmp_version", "snmp", "SNMP version", "select:v2c", "", None, None, "v2c",
-     "SNMPv3 (authPriv) arrives with the credential vault."),
+     "Default SNMPv2c community for new devices. Each device can override it, or use SNMPv3 instead (Add or Edit device)."),
     ("default_snmp_port", "snmp", "SNMP port", "int", "UDP", 1, 65535, "161", "Standard agents listen on 161."),
     ("default_poll_interval", "polling", "SNMP poll interval", "int", "s", 10, 86400, "300",
      "How often metrics and tables are collected. Lower means finer graphs and a larger database."),
@@ -472,6 +470,7 @@ def parse_device_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         # Empty means "unchanged" on edit and "use the default community" on add: the
         # browser never receives stored community strings, so it cannot echo them back.
         "snmp_community": _get_str(payload, "snmp_community", "", max_len=128) or None,
+        "_snmp": parse_snmp_v3(payload),
         "snmp_port": _get_int(payload, "snmp_port", 161, 1, 65535),
         "poll_interval": _get_int(payload, "poll_interval", None, 10, 86400),
         "ping_interval": _get_int(payload, "ping_interval", None, 5, 86400),
@@ -739,6 +738,59 @@ def security_notice(existing: Dict[str, str], has_accounts: bool, raised: bool) 
     database.set_internal_setting(SECURITY_NOTICE_MARKER, "1")
 
 
+# --- Required after an update ---
+# Steps an install must have done before it is used, such as a backup passphrase: an update that
+# brings one adds it here. While a step is needed, an administrator who can do it sees a screen
+# that locks the app (only REQUIRED_ROUTES answer) until the check passes; everyone else only sees
+# a note. The check is cheap: it runs on every request.
+
+def backup_passphrase_needed() -> bool:
+    """An installed monitor with no backup passphrase (and none being saved right now)."""
+    conf = os.environ.get("MONITOR_INSTALL_CONF", "")
+    if not conf or not os.path.isfile(conf):
+        return False                        # a development copy: no root helper, no backups of its own
+    if os.path.exists(os.path.join(os.path.dirname(conf), "backup-passphrase")):
+        return False
+    data_dir = os.path.dirname(os.path.abspath(database.DB_FILE))
+    return not os.path.exists(os.path.join(data_dir, "requests", PASSPHRASE_REQUEST))
+
+
+REQUIRED_STEPS = [
+    {"id": "backup_passphrase", "permission": "settings.system", "needed": backup_passphrase_needed,
+     "title": "Set a backup passphrase",
+     "why": ("Without it, backups that leave this box cannot carry the key to your stored passwords, so a rebuild "
+             "would lose them. No backup can be proven unchanged either. It takes a minute. Keep the passphrase in "
+             "your password manager, apart from the backups."),
+     "other_way": "Or in the container's console as root: /root/backup-passphrase.sh"},
+]
+REQUIRED_TEXT = "Finish a required step to continue"
+# What answers while a required step locks the app: the screen's own status, the step itself (with
+# its password confirmation), What's changed and logging out. /api/auth/* is open anyway.
+REQUIRED_ROUTES = {("GET", "/api/required"), ("POST", "/api/backups/passphrase"), ("GET", "/api/changes"),
+                   ("POST", "/api/changes/seen")}
+
+
+def required_steps(user: "rbac.User") -> Dict[str, list]:
+    """The steps needed now: "mine" (this user can do them, so they lock the app) and "others"
+    (an administrator has to)."""
+    mine, others = [], []
+    for step in REQUIRED_STEPS:
+        try:
+            needed = step["needed"]()
+        except Exception:
+            log.exception("Required step check %s failed", step["id"])
+            needed = False
+        if not needed:
+            continue
+        public = {k: step[k] for k in ("id", "title", "why", "other_way")}
+        if user.can(step["permission"]) and user.scope is None:
+            mine.append(public)
+        else:
+            others.append({"id": step["id"], "title": step["title"]})
+    return {"mine": mine, "others": others}
+
+
+
 TWO_FACTOR_RULES = ("off", "admins", "all")
 ENROL_TEXT = "Set up two-factor authentication to continue"
 TIER3_NEEDS_2FA_TEXT = "This action needs two-factor authentication. Turn it on in Settings, Account."
@@ -869,10 +921,183 @@ def parse_credential_payload(payload: Dict[str, Any], require_secret: bool) -> D
             "passphrase": passphrase, "public_key": public_key}
 
 
+SNMP_V3_FIELDS = ("user", "level", "auth_protocol", "priv_protocol")
+
+
+def parse_snmp_v3(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The SNMP version and v3 settings of an Add or Edit device form, or None when the form does not
+    send a version (older pages and the setup guide: the device keeps what it has). Blank passwords
+    mean "unchanged" on edit; they are checked once merged with what is stored (finish_snmp_v3)."""
+    version = payload.get("snmp_version")
+    if version is None:
+        return None
+    if version not in ("v2c", "v3"):
+        raise RequestError(400, "The SNMP version is v2c or v3")
+    if version == "v2c":
+        return {"version": "v2c", "v3": None}
+    raw = payload.get("snmp_v3")
+    if not isinstance(raw, dict):
+        raise RequestError(400, "SNMPv3 needs a user name and passwords")
+    v3 = {k: str(raw.get(k) or "").strip() for k in SNMP_V3_FIELDS}
+    for k in ("auth_password", "priv_password"):
+        v = raw.get(k)
+        if v is not None and (not isinstance(v, str) or len(v) > 128 or chr(10) in v or chr(13) in v):
+            raise RequestError(400, "An SNMPv3 password is at most 128 characters on one line")
+        v3[k] = v or ""
+    return {"version": "v3", "v3": v3}
+
+
+def finish_snmp_v3(snmp: Optional[Dict[str, Any]], before: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Fills blank passwords from the stored settings and checks the whole; None when unchanged."""
+    if snmp is None or snmp["version"] == "v2c":
+        return snmp
+    import snmpv3
+    v3 = dict(snmp["v3"])
+    old = (before or {}).get("snmp_v3") or {}
+    for k in ("auth_password", "priv_password"):
+        if not v3[k]:
+            v3[k] = old.get(k, "")
+    if v3["level"] == "authNoPriv":
+        v3["priv_password"] = ""
+    cred = snmpv3.Credential(user=v3["user"], level=v3["level"] or "authPriv", auth_protocol=v3["auth_protocol"] or "SHA",
+                             auth_password=v3["auth_password"], priv_protocol=v3["priv_protocol"] or "AES",
+                             priv_password=v3["priv_password"])
+    problems = cred.problems()
+    if problems:
+        raise RequestError(400, "SNMPv3: " + problems[0])
+    return {"version": "v3", "v3": {"user": cred.user, "level": cred.level, "auth_protocol": cred.auth_protocol,
+                                    "auth_password": cred.auth_password, "priv_protocol": cred.priv_protocol,
+                                    "priv_password": cred.priv_password}}
+
+
+def public_snmp_v3(v3: Dict[str, Any]) -> Dict[str, Any]:
+    """SNMPv3 settings as the browser sees them: the passwords only as set or not set."""
+    v3 = v3 or {}
+    return {**{k: v3.get(k, "") for k in SNMP_V3_FIELDS},
+            "auth_password_set": bool(v3.get("auth_password")), "priv_password_set": bool(v3.get("priv_password"))}
+
+
+# --- SNMP check: what is wrong with a device's SNMP, in plain words (a device's page) ---
+
+SYS_NAME_OID = "1.3.6.1.2.1.1.5.0"
+IF_DESCR_OID = "1.3.6.1.2.1.2.2.1.2"
+# A user name no device has, to learn whether a device speaks SNMPv3 at all (it answers "unknown user").
+PROBE_V3_USER = "home-monitor-check"
+
+
+def snmp_check(device: Dict[str, Any]) -> Dict[str, Any]:
+    """Step by step: ping, an SNMP answer, the user and password (v3) or the community (v2c), then
+    whether values can be read. When a v3 signature is wrong, the other protocols are tried quietly
+    (MD5 too, only to recognise it) so the advice can say what to change. Stored secrets are used,
+    never shown."""
+    import dataclasses
+    import snmpv3
+    ip, port = device["ip_address"], int(device.get("snmp_port") or 161)
+    steps: List[Dict[str, Any]] = []
+    advice = ""
+
+    def step(name: str, ok: Optional[bool], detail: str) -> None:
+        steps.append({"step": name, "ok": ok, "detail": detail})
+
+    alive, ms = poller.ping_host(ip, 2.0)
+    step("Ping", True if alive else None,
+         f"Answers in {ms:.0f} ms" if alive and ms is not None else "Answers" if alive
+         else "No answer to ping. Some devices block ping; SNMP is checked anyway.")
+
+    def v3_get(cred) -> Optional[List[Tuple[str, Any]]]:
+        return snmpv3.request(ip, port, poller.PDU_GET, [SYS_NAME_OID], cred, 2.0, 1, diagnostic=True)
+
+    if device.get("snmp_version") == "v3":
+        cred = poller.snmp_target(device)
+        problems = cred.problems()
+        if problems:
+            step("SNMPv3 settings", False, problems[0])
+            return {"ok": False, "version": "v3", "steps": steps,
+                    "advice": "Open Edit device and fill in the SNMPv3 settings as set on the device."}
+        snmpv3.forget(ip, port)
+        got = v3_get(cred)
+        if not got:
+            err = snmpv3.last_error(ip)
+            if snmpv3._engine(ip, port) is None:
+                step("SNMPv3 answer", False, "The device does not answer SNMPv3.")
+                advice = ("Check that SNMP is switched on on the device with version 3 chosen, that the port is "
+                          f"{port} and that nothing blocks UDP {port} between the monitor and the device.")
+            else:
+                step("SNMPv3 answer", True, "The device answers SNMPv3.")
+                if "does not know this user" in err:
+                    step("User", False, f"The device does not know the user {cred.user}.")
+                    advice = "User names must match exactly, capitals included. Check the user on the device and in Edit device."
+                elif "Wrong authentication" in err or "security level" in err or "privacy" in err.lower():
+                    step("User", True, f"The device knows the user {cred.user}.")
+                    signed_only = dataclasses.replace(cred, level="authNoPriv")
+                    found = None
+                    for proto in [cred.auth_protocol] + [p for p in ("SHA", "SHA-256", "MD5") if p != cred.auth_protocol]:
+                        if v3_get(dataclasses.replace(signed_only, auth_protocol=proto)):
+                            found = proto
+                            break
+                    if found is None:
+                        step("Authentication", False, "The authentication password does not match.")
+                        advice = ("Type the authentication password again in Edit device, exactly as on the device. "
+                                  "If it is right, the device may use a protocol the monitor does not know.")
+                    elif found == "MD5":
+                        step("Authentication", False, "The device is set to MD5.")
+                        advice = ("On the device, choose SHA as the authentication protocol (it may be called HMAC-SHA) "
+                                  "and keep the same password. MD5 is no longer safe, so the monitor does not use it.")
+                    elif found != cred.auth_protocol:
+                        step("Authentication", False, f"The device uses {found}, not {cred.auth_protocol}.")
+                        advice = f"In Edit device, choose {found} as the authentication protocol."
+                    else:
+                        step("Authentication", True, f"The password and {found} are right.")
+                        if cred.level == "authPriv":
+                            step("Privacy", False, "The device refused the encrypted request.")
+                            advice = ("Privacy is on in the monitor. Either the device has privacy off (then untick Use privacy "
+                                      "in Edit device), or the privacy password differs, or the device uses DES instead of AES "
+                                      "(choose AES on the device, or leave privacy off on both).")
+                        else:
+                            step("Privacy", False, "The device wants privacy (encryption) for this user.")
+                            advice = ("Tick Use privacy in Edit device and type the privacy password set on the device. "
+                                      "The device must use AES.")
+                else:
+                    step("Answer", False, err or "The device refused the request.")
+                    advice = "Check the SNMPv3 settings on the device and in Edit device."
+            return {"ok": False, "version": "v3", "steps": steps, "advice": advice}
+        step("SNMPv3 answer", True, "The device answers SNMPv3.")
+        step("User and password", True, f"The device accepts {cred.user} with {cred.auth_protocol}"
+             + (" and privacy." if cred.level == "authPriv" else " (signed only, privacy off)."))
+        target = cred
+    else:
+        target = poller.snmp_target(device, database.get_all_settings().get("default_snmp_community") or "public")
+        name = poller.snmp_get(ip, SYS_NAME_OID, target, port, 2.0, 1)
+        if not poller.has_value(name):
+            step("SNMP v2c answer", False, "No answer with this community.")
+            snmpv3.forget(ip, port)
+            v3_get(snmpv3.Credential(user=PROBE_V3_USER, level="authNoPriv", auth_protocol="SHA",
+                                     auth_password="not-a-real-password"))
+            if snmpv3._engine(ip, port) is not None:
+                step("SNMPv3", None, "The device answers SNMPv3.")
+                advice = ("The device may have v2c switched off. Either switch v2c on there with the same community, "
+                          "or set up an SNMPv3 user on it and choose v3 in Edit device.")
+            else:
+                advice = ("Check the community (capitals count), that SNMP is switched on on the device and that "
+                          f"nothing blocks UDP {port} between the monitor and the device.")
+            return {"ok": False, "version": "v2c", "steps": steps, "advice": advice}
+        step("SNMP v2c answer", True, "The device answers with this community.")
+    rows = poller.snmp_walk(ip, IF_DESCR_OID, target, port, 2.0, 1, max_rows=200)
+    if rows:
+        step("Values", True, f"Reads {len(rows)} network interface{'s' if len(rows) != 1 else ''} and the rest of the template.")
+    else:
+        step("Values", False, "The device answers but shows only its basic details.")
+        advice = ("Its SNMP view is limited. On a Linux host, Fix SNMP widens it; on other devices, allow the full view "
+                  "(or the interfaces) for this community or user.")
+    return {"ok": bool(rows), "version": device.get("snmp_version") or "v2c", "steps": steps, "advice": advice}
+
+
+
 def public_device(device: Dict[str, Any]) -> Dict[str, Any]:
     """A device as sent to the browser: the decrypted community is replaced by a flag."""
     out = dict(device)
     out["snmp_community_set"] = bool(out.pop("snmp_community", None))
+    out["snmp_v3"] = public_snmp_v3(out.get("snmp_v3") or {})
     apply_overrides(out)
     out["group"] = device_group(out)
     out["tags"] = taxonomy.device_tags(out)
@@ -1964,6 +2189,7 @@ def device_list_view() -> list:
         ifaces_by_device.setdefault(row["device_id"], {})[row["row_key"]] = row
     for d in devices:
         d.pop("snmp_community", None)
+        d["snmp_v3"] = public_snmp_v3(d.get("snmp_v3") or {})
         apply_overrides(d)
         d["group"] = device_group(d, profiles, known_groups)
         d["tags"] = taxonomy.device_tags(d)
@@ -2524,16 +2750,25 @@ def fix_snmp(device: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
     if not monitor_ip:
         raise ActionError(409, f"Fix SNMP on {name}: could not work out this monitor's address towards the host", device["id"])
     settings = database.get_all_settings()
-    community = device.get("snmp_community") or get_setting(settings, "default_snmp_community") or "public"
-    secrets = [community, get_setting(settings, "default_snmp_community")]
-    problem = snmpfix.community_problem(community)
+    # A device on SNMPv3 gets its user written; any other its community (and the default, hidden too).
+    v3 = poller.snmp_target(device) if device.get("snmp_version") == "v3" else None
+    if v3 is not None:
+        community = None
+        secrets = [v3.auth_password, v3.priv_password]
+        problem = (v3.problems() or [None])[0] or snmpfix.v3_problem(v3)
+        target = v3
+    else:
+        community = device.get("snmp_community") or get_setting(settings, "default_snmp_community") or "public"
+        secrets = [community, get_setting(settings, "default_snmp_community")]
+        problem = snmpfix.community_problem(community)
+        target = community
     if problem:
         raise ActionError(400, f"Fix SNMP on {name}: {problem}", device["id"])
     if mode == "script" and not (cred and keys):
         # Commands to paste by hand work without SSH from here: built from an empty file
         # (sysLocation and sysContact then take their defaults).
         database.add_audit("snmp", f"Fix SNMP commands copied for {name}", f"Monitor address {monitor_ip}")
-        return {"script": snmpfix.copy_script(snmpfix.build_conf("", community, monitor_ip)["content"], monitor_ip)}
+        return {"script": snmpfix.copy_script(snmpfix.build_conf("", community, monitor_ip, v3=v3)["content"], monitor_ip)}
     if not cred:
         raise ActionError(400, f"Fix SNMP on {name}: choose a stored credential (root, or a user allowed to run sudo without a password)", device["id"])
     if not keys:
@@ -2552,7 +2787,7 @@ def fix_snmp(device: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
     if not state["installed"] and not state["apt"]:
         raise ActionError(409, f"Fix SNMP on {name}: snmpd is not installed and this host has no apt-get. Install net-snmp with the system's package manager, then try again.", device["id"])
     current = state["conf"]
-    plan = snmpfix.build_conf(current, community, monitor_ip)
+    plan = snmpfix.build_conf(current, community, monitor_ip, v3=v3)
     changes = list(plan["changes"])
     if not state["installed"]:
         changes.insert(0, "snmpd is not installed: installs it with apt-get (the host downloads the package)")
@@ -2596,7 +2831,7 @@ def fix_snmp(device: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
             outcome = f"; the previous file was restored ({backup})" if ok else f"; restoring {backup} also failed, restore it by hand"
             database.add_audit("snmp", f"Fix SNMP on {device['hostname']} rolled back", backup)
         raise ActionError(502, f"Fix SNMP on {name} failed{outcome}: {detail}", device["id"])
-    if not snmpfix.verify(device, community):
+    if not snmpfix.verify(device, target):
         if backup == "none":
             database.add_event(device["id"], "warning", "action", "Fix SNMP: snmpd installed and configured but interfaces do not answer yet")
             return {"success": False, "rolled_back": False, "backup": backup,
@@ -2811,6 +3046,7 @@ def add_devices(fields_list: List[Dict[str, Any]], community: Optional[str], dry
         if not dry_run:
             f = dict(f, snmp_community=community or database.get_all_settings().get("default_snmp_community") or "public")
             f.pop("_extra", None)
+            f.pop("_snmp", None)          # the setup guide and scans add v2c devices
             f.pop("_tags", None)
             service = f.pop("_service", None)
             device_id = database.add_device(**f)
@@ -3140,6 +3376,11 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
         # the rule was switched on. Only the setup, its password step and Log out stay open.
         if must_enrol(self.account) and (self.command, path) not in ENROL_ROUTES:
             raise AuthRequired(403, ENROL_TEXT, "enrol")
+        # Required after an update: locks the app for those who can finish the step (see REQUIRED_STEPS).
+        if not path.startswith("/api/auth/") and (self.command, path) not in REQUIRED_ROUTES:
+            mine = required_steps(self.user)["mine"]
+            if mine:
+                raise AuthRequired(403, REQUIRED_TEXT, "required", {"steps": mine})
         if not path.startswith("/api/auth/") and not rbac.allowed(self.user, self.command, path):
             raise RequestError(403, "Your account does not have permission to do that")
         # Every per-device route, any method: outside the user's device access it does not exist.
@@ -3953,6 +4194,13 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
             return
         if path == "/api/alerts/changed":
             self._send_json(200, changed_alert_settings(self.user))
+            return
+        if path == "/api/required":
+            steps = required_steps(self.user)
+            data_dir = os.path.dirname(os.path.abspath(database.DB_FILE))
+            result = _read_result(data_dir, "passphrase")
+            self._send_json(200, dict(steps, passphrase_pending=os.path.exists(os.path.join(data_dir, "requests", PASSPHRASE_REQUEST)),
+                                      passphrase_error=(result["output"] if result and not result["ok"] else "")))
             return
         if path == "/api/maintenance":
             scopes = [s for s in maintenance.SCOPES if s != "all" or self.user.scope is None]
@@ -4773,6 +5021,14 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
             self._send_json(201, {"success": True, "id": def_id})
             return
 
+        match_check = re.fullmatch(r"/api/devices/(\d+)/snmp-check", path)
+        if match_check:
+            device = self._require_device(int(match_check.group(1)))
+            if device.get("service_port") or not profile_uses_snmp(device.get("profile_id")):
+                raise RequestError(400, "This device is not read over SNMP")
+            self._send_json(200, snmp_check(device))
+            return
+
         match_fix = re.fullmatch(r"/api/devices/(\d+)/fix-snmp", path)
         if match_fix:
             device = database.get_device(int(match_fix.group(1)))
@@ -4868,8 +5124,11 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
             extra = fields.pop("_extra", None)
             service = fields.pop("_service", None)
             tags = fields.pop("_tags", None)
+            snmp = finish_snmp_v3(fields.pop("_snmp", None), None)
             self._check_upstream(extra, None)
             device_id = database.add_device(**fields)
+            if snmp:
+                database.set_device_snmp(device_id, snmp["version"], snmp["v3"])
             if extra:
                 database.set_device_overrides(device_id, **extra)
             if tags:
@@ -4911,6 +5170,22 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
             community = (_get_str(payload, "community", "", max_len=128)
                          or database.get_all_settings().get("default_snmp_community") or "public")
             port = _get_int(payload, "port", 161, 1, 65535)
+            snmp = parse_snmp_v3(payload)
+            if snmp and snmp["version"] == "v3":
+                # Test connection with v3: blank passwords come from the device being edited.
+                device_id = _get_int(payload, "device_id", None, 1, 2 ** 31 - 1)
+                before = database.get_device(device_id) if device_id else None
+                if before is not None and not self.user.sees_id(device_id):
+                    before = None
+                v3 = finish_snmp_v3(snmp, before)["v3"]
+                target = poller.snmp_target({"snmp_version": "v3", "snmp_v3": v3})
+                import snmpv3
+                snmpv3.forget(ip_address, port)        # a fresh discovery, as the first poll makes
+                result = poller.probe_device(ip_address, community=target, port=port)
+                if result.get("success") and not result.get("snmp_active"):
+                    result["snmp_error"] = snmpv3.last_error(ip_address) or "No answer to SNMPv3"
+                self._send_json(200, result)
+                return
             self._send_json(200, poller.probe_device(ip_address, community=community, port=port))
             return
 
@@ -5454,9 +5729,16 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
         if extra and extra["upstream_device_id"] == device_id:
             raise RequestError(400, "A device cannot be its own upstream")
         before = database.get_device(device_id)
+        snmp = finish_snmp_v3(fields.pop("_snmp", None), before)
         self._check_upstream(extra, before)
         if not database.update_device(device_id=device_id, **fields):
             raise RequestError(404, "Device not found")
+        if snmp:
+            database.set_device_snmp(device_id, snmp["version"], snmp["v3"])
+            if before and (before.get("snmp_version"), before.get("snmp_v3") or {}) != (snmp["version"], snmp["v3"] or {}):
+                said = f" (user {snmp['v3']['user']}, {snmp['v3']['level']})" if snmp["v3"] else ""
+                database.add_audit("device", f"SNMP settings of {before['hostname']} changed to {snmp['version']}{said}",
+                                   f"By {self.user.username}")
         if before and "ip_address" in fields and fields["ip_address"] != before["ip_address"]:
             # Approved host keys belong to the old address: another machine there must be approved anew.
             n = database.forget_host_keys(device_id)
@@ -6014,7 +6296,7 @@ class WanPeakSampler:
             if not device or device["status"] == "offline":
                 continue
             oids = [f"{poller.LIVE_IF_COLUMNS['in_octets']}.{w['if_index']}", f"{poller.LIVE_IF_COLUMNS['out_octets']}.{w['if_index']}"]
-            got = poller.snmp_get_many(device["ip_address"], oids, device.get("snmp_community") or "public",
+            got = poller.snmp_get_many(device["ip_address"], oids, poller.snmp_target(device),
                                        device.get("snmp_port") or 161, timeout, 0)
             if len(got) != 2:
                 continue
@@ -6490,7 +6772,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "0.13.0"
+APP_VERSION = "0.14.0"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:

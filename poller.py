@@ -387,6 +387,10 @@ def _snmp_request(
     """
     if _simulated(ip_address):
         return None     # Demo devices answer through demo.py, never over the network
+    if not isinstance(community, str):
+        # SNMPv3 credentials (snmpv3.Credential): the same request, signed and encrypted.
+        import snmpv3
+        return snmpv3.request(ip_address, port, pdu_type, oids, community, timeout_seconds, retries, max_repetitions)
     request_id = secrets.randbits(31)
     packet = build_snmp_packet(pdu_type, community, oids, request_id, 0, max_repetitions)
 
@@ -421,6 +425,20 @@ def _snmp_request(
         return None
     finally:
         sock.close()
+
+
+def snmp_target(device: Dict[str, Any], default_community: str = "public") -> Any:
+    """What an SNMP request to this device is made with: its SNMPv3 credentials (snmpv3.Credential)
+    when it is set to v3, otherwise its v2c community. Every SNMP call site passes this as community."""
+    if device.get("snmp_version") == "v3":
+        v3 = device.get("snmp_v3") or {}
+        import snmpv3
+        return snmpv3.Credential(user=str(v3.get("user") or ""), level=str(v3.get("level") or "authPriv"),
+                                 auth_protocol=str(v3.get("auth_protocol") or "SHA"),
+                                 auth_password=str(v3.get("auth_password") or ""),
+                                 priv_protocol=str(v3.get("priv_protocol") or "AES"),
+                                 priv_password=str(v3.get("priv_password") or ""))
+    return device.get("snmp_community") or default_community
 
 
 def snmp_get(
@@ -895,7 +913,7 @@ def _snmp_fetch(device: Dict[str, Any], specs: List[Dict[str, Any]], timeout_sec
                 retries: int) -> Tuple[List[Dict[str, Any]], Dict[str, float]]:
     """The network part of poll_snmp_metrics: GETs and walks. Returns the resolved specs and values."""
     ip = device["ip_address"]
-    community = device.get("snmp_community") or "public"
+    community = snmp_target(device)
     port = device.get("snmp_port") or 161
     results: Dict[str, float] = {}
 
@@ -1353,7 +1371,7 @@ class TableCollector:
         self.device = device
         self.profile = profile or {}
         self.ip = device["ip_address"]
-        self.community = device.get("snmp_community") or "public"
+        self.community = snmp_target(device)
         self.port = device.get("snmp_port") or 161
         self.timeout = timeout_seconds
         self.retries = retries
@@ -1819,7 +1837,7 @@ def live_sample(device: Dict[str, Any], profile: Optional[Dict[str, Any]],
     sample["metrics"]["icmp_ping_ms"] = ping_ms or 0.0
     sample["metrics"].update(poll_snmp_metrics(device, profile, timeout_seconds, retries, store=False))
     ip = device["ip_address"]
-    community = device.get("snmp_community") or "public"
+    community = snmp_target(device)
     port = device.get("snmp_port") or 161
     ins = snmp_walk(ip, LIVE_IF_COLUMNS["in_octets"], community, port, timeout_seconds, retries, max_repetitions=40)
     outs = snmp_walk(ip, LIVE_IF_COLUMNS["out_octets"], community, port, timeout_seconds, retries, max_repetitions=40)

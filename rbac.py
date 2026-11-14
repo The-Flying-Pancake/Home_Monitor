@@ -79,6 +79,7 @@ ROUTE_PERMISSIONS = [
     ("POST", r"/api/custom-oids", "devices.manage"),
     ("DELETE", r"/api/custom-oids/\d+", "devices.manage"),
     ("POST", r"/api/devices/\d+/fix-snmp(?:/preview)?", "devices.manage"),
+    ("POST", r"/api/devices/\d+/snmp-check", "devices.manage"),
     # A list means every one of them (all of); a tuple inside it means any one of those.
     # Approving a host key decides where stored credentials are sent.
     ("POST", r"/api/devices/\d+/hostkey", ["devices.manage", "credentials.manage"]),

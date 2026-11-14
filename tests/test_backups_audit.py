@@ -99,6 +99,75 @@ class BackupRouteTests(unittest.TestCase):
         os.remove(req)
 
 
+class RequiredStepTests(unittest.TestCase):
+    """Required after an update: an installed box without a backup passphrase locks the app for an
+    administrator until one is set (or being saved); someone who cannot set it is only told."""
+
+    @classmethod
+    def setUpClass(cls):
+        start_api_server()
+        cls.data = os.path.dirname(os.path.abspath(database.DB_FILE))
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="hm-req-")
+        conf = os.path.join(self.tmp, "install.conf")
+        with open(conf, "w", encoding="utf-8") as f:
+            f.write('CTID="201"' + chr(10))
+        self.saved = os.environ.get("MONITOR_INSTALL_CONF")
+        os.environ["MONITOR_INSTALL_CONF"] = conf
+        self.req = os.path.join(self.data, "requests", "backup-passphrase")
+        if os.path.exists(self.req):
+            os.remove(self.req)
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        if self.saved is None:
+            os.environ.pop("MONITOR_INSTALL_CONF", None)
+        else:
+            os.environ["MONITOR_INSTALL_CONF"] = self.saved
+        if os.path.exists(self.req):
+            os.remove(self.req)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_admin_locked_until_set(self):
+        from tests.helpers import TEST_PASSWORD
+        status, body, _ = request("GET", "/api/devices")
+        self.assertEqual(status, 403)
+        self.assertEqual(body.get("auth"), "required")
+        self.assertEqual([s["id"] for s in body["steps"]], ["backup_passphrase"])
+        # The screen's own routes still answer.
+        self.assertEqual(request("GET", "/api/required")[1]["mine"][0]["id"], "backup_passphrase")
+        self.assertEqual(request("GET", "/api/auth/status")[0], 200)
+        self.assertEqual(request("GET", "/api/changes")[0], 200)
+        self.assertEqual(request("POST", "/api/auth/confirm", {"password": TEST_PASSWORD, "tier": 3})[0], 200)
+        self.assertEqual(request("POST", "/api/backups/passphrase", {"passphrase": "a long new passphrase"})[0], 200)
+        # Being saved by root counts as done: the app opens again.
+        self.assertEqual(request("GET", "/api/devices")[0], 200)
+        self.assertEqual(request("GET", "/api/required")[1]["mine"], [])
+
+    def test_set_already_or_development_copy(self):
+        with open(os.path.join(self.tmp, "backup-passphrase"), "w") as f:
+            f.write("set" + chr(10))
+        self.assertEqual(request("GET", "/api/devices")[0], 200)
+        os.remove(os.path.join(self.tmp, "backup-passphrase"))
+        os.environ.pop("MONITOR_INSTALL_CONF")
+        self.assertEqual(request("GET", "/api/devices")[0], 200)
+
+    def test_someone_who_cannot_set_it_is_not_locked(self):
+        from tests.helpers import session_cookie
+        name, pw = "req-viewer", "a viewer password 1"
+        os.environ.pop("MONITOR_INSTALL_CONF")          # made before the step is needed: the admin is locked meanwhile
+        status, res, _ = request("POST", "/api/users", {"username": name, "password": pw, "role": "viewer"})
+        os.environ["MONITOR_INSTALL_CONF"] = os.path.join(self.tmp, "install.conf")
+        self.assertIn(status, (200, 201), res)
+        self.addCleanup(database.delete_user, name)
+        _, _, headers = request("POST", "/api/auth/login", {"username": name, "password": pw}, session=False)
+        who = {"Cookie": f"{auth.SESSION_COOKIE}={session_cookie(headers)}"}
+        self.assertEqual(request("GET", "/api/devices", headers=who, session=False)[0], 200)
+        r = request("GET", "/api/required", headers=who, session=False)[1]
+        self.assertEqual((r["mine"], [s["id"] for s in r["others"]]), ([], ["backup_passphrase"]))
+
+
 class PassphraseStatusTests(unittest.TestCase):
     """Settings, Backups: without a backup passphrase the status says so (the page shows the command)."""
 
