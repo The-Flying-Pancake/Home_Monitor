@@ -15,6 +15,16 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 0.18.0: Release 42, Reports that read like reports and a calmer map (2026-11-15)
+
+- Every report now reads like one: a header with what it covers, figures with how they changed since the period before, a short summary in plain words, a main chart, smaller charts two to a row and tables with coloured labels.
+- New report templates: Monthly health summary, Status now, Latency (ping), Interface bandwidth, Alerts and events summary and Single device.
+- The existing reports were rebuilt the same way, with targets and limits drawn on their charts. The PDF looks like the page.
+- Tidy on the map draws straight lines and stands each branch in a neat column. A device with its own services has them beside it.
+- In Tidy you can pull a box a little and it springs back into place. With Wi-Fi on, an access point gets room for its devices beside it.
+- Expand all shows every folded branch again. Folding and unfolding glide instead of jumping.
+- After an update the green tick draws itself once. Before, it kept drawing itself again every couple of seconds.
+
 ### 0.17.0: Release 40, A tidier map (2026-11-15)
 
 - A box on the map with devices below it can fold them away with the small button under it. It then shows how many are hidden.

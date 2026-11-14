@@ -101,12 +101,19 @@ function updateProgressHtml(u) {
   </div>`;
 }
 
+// The tick draws itself once per result; the panel is redrawn while the page follows an update,
+// and every redraw would start the drawing again.
+const updateTicksDrawn = new Set();
+
 function updateResultHtml(u) {
   const p = u.progress;
   if (p.state === "ok") {
     const reload = u.current === p.to;
+    const key = `${p.to}:${p.started || ""}`;
+    const still = updateTicksDrawn.has(key);
+    updateTicksDrawn.add(key);
     return `<div class="update-result ok" role="status">
-      <svg class="update-tick" viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="24"/><path d="M15 27l7 7 15-16"/></svg>
+      <svg class="update-tick${still ? " still" : ""}" viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="24"/><path d="M15 27l7 7 15-16"/></svg>
       <div><h4>Updated to ${escapeHtml(p.to)}</h4>
         <p class="form-help">Everything went through and the new version is answering. ${reload ? "Reload the page to use it." : ""}</p></div>
       ${reload ? `<button type="button" class="btn btn-primary btn-small" data-update-action="reload">Reload the page</button>`
@@ -336,7 +343,7 @@ async function refreshUpdates() {
     if (panel) {
       const fresh = document.createElement("div");
       fresh.innerHTML = updatesSection(sys.update);
-      panel.replaceWith(fresh.firstElementChild);
+      if (fresh.firstElementChild.innerHTML !== panel.innerHTML) panel.replaceWith(fresh.firstElementChild);
     } else {
       setUpdateWaiting(sys.update.waiting);
     }

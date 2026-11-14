@@ -74,8 +74,15 @@ function mapBelowCount(key) {
 function mapToggleFold(key) {
   if (mapFolded.has(key)) mapFolded.delete(key); else mapFolded.add(key);
   storeSet(MAP_FOLD_STORE, JSON.stringify([...mapFolded]));
+  mapStartGlide();
   drawMap();
-  if (mapTidy) fitMap();
+}
+
+function mapExpandAll() {
+  mapFolded.clear();
+  storeSet(MAP_FOLD_STORE, "[]");
+  mapStartGlide();
+  drawMap();
 }
 
 function initMap() {
@@ -130,6 +137,7 @@ function initMap() {
   mapTraffic = storeGet(MAP_TRAFFIC_STORE) === "1";
   try { mapFolded = new Set(JSON.parse(storeGet(MAP_FOLD_STORE) || "[]")); } catch (e) { mapFolded = new Set(); }
   mapTidy = storeGet(MAP_TIDY_STORE) === "1";
+  document.getElementById("map-expand").addEventListener("click", mapExpandAll);
   const tidyBtn = document.getElementById("map-tidy");
   const syncTidy = () => { tidyBtn.classList.toggle("btn-primary", mapTidy); tidyBtn.setAttribute("aria-pressed", String(mapTidy)); };
   syncTidy();
@@ -137,6 +145,7 @@ function initMap() {
     mapTidy = !mapTidy;
     storeSet(MAP_TIDY_STORE, mapTidy ? "1" : "0");
     syncTidy();
+    mapStartGlide();
     drawMap();
     fitMap();
   });
@@ -189,7 +198,16 @@ function initMap() {
   svg.addEventListener("pointermove", (ev) => {
     if (!drag) return;
     if (drag.kind === "node") {
-      if (mapTidy && !mapEditing) return;
+      if (mapTidy && !mapEditing) {
+        const pt = mapPoint(ev);
+        const dx = pt.x - drag.dx - drag.start[0], dy = pt.y - drag.dy - drag.start[1];
+        if (Math.abs(dx) + Math.abs(dy) > 2) drag.moved = true;
+        // Pulled, not moved: the further it goes, the harder it pulls back.
+        const ease = v => Math.sign(v) * 60 * (1 - Math.exp(-Math.abs(v) / 90));
+        mapNudge = { key: drag.key, dx: ease(dx), dy: ease(dy), held: true };
+        drawMap();
+        return;
+      }
       const pt = mapPoint(ev);
       const x = Math.round(pt.x - drag.dx), y = Math.round(pt.y - drag.dy);
       if (Math.abs(drag.start[0] - x) + Math.abs(drag.start[1] - y) > 2) drag.moved = true;
@@ -211,6 +229,10 @@ function initMap() {
     const d = drag;
     drag = null;
     if (!d) return;
+    if (d.kind === "node" && mapTidy && !mapEditing) {
+      if (d.moved) { mapSpringBack(); return; }
+      mapNudge = null;
+    }
     if (d.kind === "node" && d.moved) {
       const group = [d.key, ...Object.keys(d.offsets)];
       await springSettled();
@@ -396,6 +418,172 @@ function autoLayout(data, all) {
   for (const k of Object.keys(positions)) positions[k] = positions[k].map(Math.round);
   if (!all) for (const k of Object.keys(positions)) if (data.positions[k]) delete positions[k];
   return positions;
+}
+
+/**
+ * Tidy: the tree for the view. Children that carry branches of their own (switches with things
+ * behind them) sit side by side under their parent; the rest stand in a column under it, joined by
+ * a trunk on the left, leaves first. A column entry's own devices stand in a short column to its
+ * right. With Wi-Fi on, an access point's Wi-Fi devices get a grid of their own to its right, so they
+ * never cover other boxes. Returns the positions; mapTidyKind says how each child hangs off its
+ * parent (col, side or block) for the elbow lines, mapTidyWifi where the Wi-Fi dots go.
+ */
+const MAP_SIDE_GAP = 40;          // between a column entry and its own devices to the right
+const MAP_WIFI_CELL = [64, 30];   // one Wi-Fi device in the grid beside its access point
+const MAP_WIFI_PER_ROW = 4;
+const MAP_COL_ROWS = 6;           // column entries before a second column starts
+let mapTidyKind = {};
+let mapTidyWifi = {};
+
+function tidyLayout(data) {
+  const children = mapChildren(data);
+  const nodes = Object.fromEntries(data.nodes.map(n => [n.key, n]));
+  const kidsOf = k => mapFolded.has(k) ? [] : (children[k] || []).filter(c => nodes[c] && mapShown(nodes[c]));
+  const positions = {}, kind = {}, wifi = {};
+  const isSmall = k => kidsOf(k).every(c => !kidsOf(c).length);
+  const wifiCount = k => (mapWifi && nodes[k] && nodes[k].wifi) ? Math.min(24, nodes[k].wifi.clients.length) : 0;
+  const wifiRows = k => Math.ceil(wifiCount(k) / MAP_WIFI_PER_ROW);
+  // Rows an entry takes in a column: itself, its own devices to the right, or its Wi-Fi grid.
+  const rowsOf = k => Math.max(1, kidsOf(k).length, Math.ceil((wifiRows(k) * MAP_WIFI_CELL[1] + 8) / MAP_COMB_ROW));
+  const sideW = k => kidsOf(k).length ? MAP_SIDE_GAP + MAP_NODE_W : wifiCount(k) ? MAP_SIDE_GAP / 2 + MAP_WIFI_PER_ROW * MAP_WIFI_CELL[0] : 0;
+  const placeWifi = (k, x, y) => {
+    if (!wifiCount(k)) return;
+    wifi[k] = Array.from({ length: wifiCount(k) }, (_, i) => [x + MAP_NODE_W + MAP_SIDE_GAP / 2 + (i % MAP_WIFI_PER_ROW) * MAP_WIFI_CELL[0] + MAP_WIFI_CELL[0] / 2,
+      y + 14 + Math.floor(i / MAP_WIFI_PER_ROW) * MAP_WIFI_CELL[1]]);
+  };
+  const block = node => {
+    const kids = kidsOf(node);
+    const hubs = kids.filter(k => !isSmall(k));
+    const small = kids.filter(isSmall).sort((a, b) => (kidsOf(a).length > 0) - (kidsOf(b).length > 0));
+    const parts = hubs.map(k => ({ ...block(k), key: k }));
+    if (small.length) {
+      const cols = [];
+      let cur = [], rows = 0;
+      for (const k of small) {
+        if (cur.length && rows + rowsOf(k) > MAP_COL_ROWS) { cols.push(cur); cur = []; rows = 0; }
+        cur.push(k);
+        rows += rowsOf(k);
+      }
+      cols.push(cur);
+      const colW = col => MAP_TRUNK + MAP_NODE_W + Math.max(0, ...col.map(sideW));
+      parts.push({
+        w: cols.reduce((s, c) => s + colW(c), 0) + (cols.length - 1) * 24,
+        place: (left, top) => {
+          let x = left;
+          for (const col of cols) {
+            let y = top;
+            for (const k of col) {
+              positions[k] = [x + MAP_TRUNK, y];
+              kind[k] = "col";
+              kidsOf(k).forEach((c, i) => { positions[c] = [x + MAP_TRUNK + MAP_NODE_W + MAP_SIDE_GAP, y + i * MAP_COMB_ROW]; kind[c] = "side"; });
+              placeWifi(k, x + MAP_TRUNK, y);
+              y += rowsOf(k) * MAP_COMB_ROW;
+            }
+            x += colW(col) + 24;
+          }
+        },
+      });
+    }
+    const span = parts.reduce((s, p) => s + p.w, 0) + Math.max(0, parts.length - 1) * MAP_GAP_X;
+    const own = MAP_NODE_W + (kids.length ? 0 : sideW(node));
+    const w = Math.max(own, span);
+    return {
+      w,
+      place: (left, top) => {
+        positions[node] = [Math.round(left + (w - own) / 2), top];
+        if (!kids.length) placeWifi(node, positions[node][0], top);
+        let x = left + (w - span) / 2;
+        for (const p of parts) {
+          p.place(x, top + MAP_NODE_H + MAP_GAP_Y);
+          if (p.key) kind[p.key] = "block";
+          x += p.w + MAP_GAP_X;
+        }
+      },
+    };
+  };
+  let width = 6 * (MAP_NODE_W + MAP_GAP_X);
+  if (data.root && nodes[data.root] && mapShown(nodes[data.root])) {
+    const b = block(data.root);
+    b.place(0, 0);
+    width = Math.max(width, b.w);
+  }
+  const all = [...Object.values(positions), ...Object.values(wifi).flat()];
+  const bottom = Math.max(-MAP_NODE_H, ...all.map(p => p[1])) + MAP_NODE_H + MAP_GAP_Y + 30;
+  const perRow = Math.max(1, Math.floor((width + MAP_GAP_X) / (MAP_NODE_W + MAP_GAP_X)));
+  let loose = 0;
+  for (const n of data.nodes) {
+    if (positions[n.key] || !mapShown(n)) continue;
+    positions[n.key] = [(loose % perRow) * (MAP_NODE_W + MAP_GAP_X), bottom + Math.floor(loose / perRow) * (MAP_NODE_H + 30)];
+    loose += 1;
+  }
+  for (const k of Object.keys(positions)) positions[k] = positions[k].map(Math.round);
+  mapTidyKind = kind;
+  mapTidyWifi = wifi;
+  return positions;
+}
+
+/* The elbow line from a parent to a child in Tidy: down and across to a column's trunk, out of the
+ * right side to a column entry's own devices, or down, across and down to a branch below. */
+function mapTidyRoute(pos, up, down) {
+  const p = pos[up], c = pos[down], how = mapTidyKind[down];
+  const midY = y => Math.round(y + MAP_NODE_H / 2);
+  if (how === "side") {
+    const tx = p[0] + MAP_NODE_W + Math.round(MAP_SIDE_GAP / 2);
+    const pts = midY(p[1]) === midY(c[1]) ? [[p[0] + MAP_NODE_W, midY(p[1])], [c[0], midY(c[1])]]
+      : [[p[0] + MAP_NODE_W, midY(p[1])], [tx, midY(p[1])], [tx, midY(c[1])], [c[0], midY(c[1])]];
+    return { pts, sa: "right", sb: "left" };
+  }
+  const start = [Math.round(p[0] + MAP_NODE_W / 2), p[1] + MAP_NODE_H];
+  if (how === "col") {
+    const tx = c[0] - 22, ymid = start[1] + 18;
+    return { pts: [start, [start[0], ymid], [tx, ymid], [tx, midY(c[1])], [c[0], midY(c[1])]], sa: "bottom", sb: "left", trunk: [tx, midY(c[1])] };
+  }
+  const end = [Math.round(c[0] + MAP_NODE_W / 2), c[1]];
+  const ymid = Math.round(start[1] + Math.max(16, (end[1] - start[1]) / 2));
+  const pts = start[0] === end[0] ? [start, end] : [start, [start[0], ymid], [end[0], ymid], end];
+  return { pts, sa: "bottom", sb: "top" };
+}
+
+/* Gliding: after folding, unfolding or switching Tidy the boxes move to their new places over a
+ * moment instead of jumping; a box that appears grows out of the nearest box above it. Nudging: in
+ * Tidy a box can be pulled a little and springs back to its place in the tree. */
+const MAP_GLIDE_MS = 420;
+let mapGlide = null;
+let mapLastPos = {};
+let mapNudge = null;              // {key, dx, dy} while a box is pulled in Tidy
+
+function mapStartGlide() {
+  mapGlide = { from: { ...mapLastPos }, start: performance.now() };
+}
+
+function mapGlidePositions(target) {
+  if (!mapGlide) return target;
+  const t = Math.min(1, (performance.now() - mapGlide.start) / MAP_GLIDE_MS);
+  const e = 1 - Math.pow(1 - t, 3);
+  const out = {};
+  for (const [k, to] of Object.entries(target)) {
+    let from = mapGlide.from[k];
+    for (let a = mapData.parent[k]; !from && a; a = mapData.parent[a]) from = mapGlide.from[a];
+    from = from || to;
+    out[k] = [from[0] + (to[0] - from[0]) * e, from[1] + (to[1] - from[1]) * e];
+  }
+  if (t < 1) requestAnimationFrame(() => drawMap());
+  else mapGlide = null;
+  return out;
+}
+
+function mapSpringBack() {
+  if (!mapNudge) return;
+  const step = () => {
+    if (!mapNudge || mapNudge.held) return;
+    mapNudge.dx *= 0.78;
+    mapNudge.dy *= 0.78;
+    if (Math.abs(mapNudge.dx) + Math.abs(mapNudge.dy) < 0.6) mapNudge = null;
+    drawMap();
+    if (mapNudge) requestAnimationFrame(step);
+  };
+  mapNudge.held = false;
+  requestAnimationFrame(step);
 }
 
 /**
@@ -741,6 +929,7 @@ function mapInternet(pos) {
 /* The Wi-Fi button: an access point's devices in a fan below it, coloured by signal (weak in orange). */
 function mapWifiFan(n, p) {
   if (!n.wifi || !n.wifi.clients.length) return "";
+  if (mapTidyWifi[n.key]) return mapWifiGrid(n, p, mapTidyWifi[n.key]);
   const shown = n.wifi.clients.slice(0, 24);
   const cx = p[0] + MAP_NODE_W / 2, cy = p[1] + MAP_NODE_H;
   const count = shown.length;
@@ -758,6 +947,20 @@ function mapWifiFan(n, p) {
   if (n.wifi.count > count) {
     html += `<text class="map-wifi-more" x="${Math.round(cx)}" y="${Math.round(cy + radius + 34)}">+${escapeHtml(n.wifi.count - count)} more</text>`;
   }
+  return html;
+}
+
+/* Tidy: the Wi-Fi devices in a grid beside their access point, joined by one short line. */
+function mapWifiGrid(n, p, spots) {
+  const ax = Math.round(p[0] + MAP_NODE_W), ay = Math.round(p[1] + MAP_NODE_H / 2);
+  let html = `<path class="map-link wifi map-wifi-link" d="M${ax},${ay} L${Math.round(spots[0][0] - MAP_WIFI_CELL[0] / 2 + 6)},${ay}"></path>`;
+  n.wifi.clients.slice(0, spots.length).forEach((c, i) => {
+    const [x, y] = spots[i].map(Math.round);
+    const weak = typeof c.signal === "number" && c.signal < n.wifi.weak_dbm;
+    const label = String(c.name || "").length > 9 ? String(c.name).slice(0, 8) + "…" : String(c.name || "");
+    html += `<g class="map-wifi-dot${weak ? " weak" : ""}" transform="translate(${escapeHtml(x)},${escapeHtml(y)})"><circle r="6"></circle>
+      <text y="17">${escapeHtml(label)}</text><title>${escapeHtml(`${c.name}${c.ssid ? `, ${c.ssid}` : ""}${typeof c.signal === "number" ? `, ${Math.round(c.signal)} dBm` : ""}`)}</title></g>`;
+  });
   return html;
 }
 
@@ -790,8 +993,15 @@ function drawMap() {
   if (!mapData) return;
   const svg = document.getElementById("map-svg");
   mapComputeFolded();
-  const pos = mapTidy && !mapEditing ? autoLayout(mapData, true) : mapData.positions;
-  mapDrawnPos = pos;
+  const tidy = mapTidy && !mapEditing;
+  if (!tidy) { mapTidyKind = {}; mapTidyWifi = {}; }
+  const target = tidy ? tidyLayout(mapData) : mapData.positions;
+  mapDrawnPos = target;
+  const pos = { ...mapGlidePositions(target) };
+  if (mapNudge && pos[mapNudge.key]) pos[mapNudge.key] = [pos[mapNudge.key][0] + mapNudge.dx, pos[mapNudge.key][1] + mapNudge.dy];
+  mapLastPos = pos;
+  const expand = document.getElementById("map-expand");
+  if (expand) expand.classList.toggle("hidden", !mapFolded.size);
   const affected = new Set(mapSelected ? mapDownstream(mapSelected) : []);
   const shownKeys = new Set(mapData.nodes.filter(mapShown).map(n => n.key));
   // The background grid (one dot per snap step) and the links under the boxes.
@@ -806,9 +1016,14 @@ function drawMap() {
     // From the tree parent to the child when known, so port tags land at the right ends.
     let up = l.a, down = l.b, upPort = l.a_port, downPort = l.b_port;
     if (mapData.parent[l.a] === l.b) [up, down, upPort, downPort] = [l.b, l.a, l.b_port, l.a_port];
-    const trunk = mapData.parent[down] === up ? trunks[down] : null;
+    const trunk = mapData.parent[down] === up && !tidy ? trunks[down] : null;
     let d, c, route;
-    if (trunk) {
+    if (tidy && mapData.parent[down] === up && mapTidyKind[down]) {
+      route = mapTidyRoute(pos, up, down);
+      d = roundedPath(route.pts);
+      const a = route.pts[0], z = route.pts[route.pts.length - 1];
+      c = [a, a, z, z].map(p => p.map(v => Math.round(v)));
+    } else if (trunk) {
       // A stacked column: the shared trunk, then a branch into the child's left side.
       const cp = pos[down], midY = Math.round(cp[1] + MAP_NODE_H / 2);
       const pts = [trunk.start, [trunk.start[0], trunk.ymid], [trunk.trunkX, trunk.ymid], [trunk.trunkX, midY], [cp[0], midY]];

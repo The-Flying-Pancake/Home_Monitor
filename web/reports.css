@@ -1,0 +1,150 @@
+/* Reports page: the report layout (reports.js renderReportPreview), in the app's own colours.
+ * A report reads top down: header band, key figures, summary, the main chart, supporting charts
+ * two to a row (one under 700 px of room), the tables and a footer.
+ * Colour: .rt-good, .rt-warn, .rt-bad (status only), .rt-info (neutral), .rt-none (grey, no data)
+ * and .rs-0 to .rs-2 (ordinary series: blue, teal, purple) set --tone; the marks use it. */
+
+:root { --rep-teal: #2fb3a6; }
+:root[data-theme="light"] { --rep-teal: #0e8a7d; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --rep-teal: #0e8a7d; } }
+
+.rt-good { --tone: var(--green-bright); --tone-bg: var(--ok-bg); --tone-border: var(--ok-border); --tone-ink: var(--green-hover); }
+.rt-warn { --tone: var(--yellow-bright); --tone-bg: var(--warn-bg); --tone-border: var(--warn-border); --tone-ink: var(--yellow-bright); }
+.rt-bad { --tone: var(--red); --tone-bg: var(--err-bg); --tone-border: var(--err-border); --tone-ink: var(--red-bright); }
+.rt-info { --tone: var(--blue); --tone-bg: var(--info-bg); --tone-border: var(--info-border); --tone-ink: var(--blue); }
+.rt-none { --tone: var(--compare); --tone-bg: var(--neutral-bg); --tone-border: var(--border); --tone-ink: var(--text-dim); }
+.rs-0 { --tone: var(--blue); }
+.rs-1 { --tone: var(--rep-teal); }
+.rs-2 { --tone: var(--purple); }
+
+/* The preview is sized by its own width, not the window's (the side panel takes room). */
+#rep-preview { container-type: inline-size; }
+
+.rep-doc { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 13px;
+  display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+
+/* 1. Header band */
+.rep-head { background: var(--inset); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.rep-head-title { margin: 0; font-size: 20px; font-weight: 650; color: var(--text-bright); line-height: 1.25; }
+.rep-head-purpose { margin: 4px 0 0; color: var(--text-dim); font-size: 13px; }
+.rep-facts { margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--border);
+  display: flex; flex-wrap: wrap; gap: 8px 28px; }
+.rep-fact { min-width: 0; max-width: 100%; }
+.rep-fact dt { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); }
+.rep-fact dd { margin: 1px 0 0; font-size: 13px; font-weight: 600; color: var(--text-bright); overflow-wrap: anywhere; }
+
+/* 2. Key figures */
+.rep-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.rep-kpi { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px 10px 14px; border: 1px solid var(--border);
+  border-left: 4px solid var(--tone); border-radius: 8px; background: var(--panel); min-width: 0; }
+.rep-kpi-label { font-size: 12px; color: var(--text-dim); }
+.rep-kpi-value { font-size: 24px; font-weight: 650; color: var(--text-bright); line-height: 1.2; font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere; }
+.rep-kpi-sub { font-size: 11.5px; color: var(--text-dim); overflow-wrap: anywhere; }
+.rep-kpi-note { font-size: 11.5px; color: var(--text-dim); }
+.rep-kpi-note.up-good { color: var(--green-hover); }
+.rep-kpi-note.up-bad { color: var(--red-bright); }
+
+/* 3. Summary and sections */
+.rep-section-title { margin: 0 0 6px; font-size: 14px; font-weight: 650; color: var(--text-bright); }
+.rep-section-title .dim { font-weight: 400; font-size: 12px; margin-left: 6px; }
+.rep-section-note { margin: -2px 0 8px; font-size: 12px; }
+.rep-summary p { margin: 0; font-size: 13.5px; line-height: 1.55; max-width: 80ch; }
+
+/* 4 and 5. Charts */
+.rep-doc .rep-chart { background: transparent; border: 0; border-radius: 0; padding: 0; margin: 0; min-width: 0; }
+.rep-chart figcaption { display: flex; flex-direction: column; gap: 1px; margin-bottom: 8px; }
+.rep-doc .rep-chart-title { font-size: 13.5px; font-weight: 650; color: var(--text-bright); margin: 0; display: block; }
+.rep-chart-note { font-size: 12px; color: var(--text-dim); }
+.rep-chartgrid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px 16px; }
+@container (min-width: 700px) { .rep-chartgrid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.rep-nodata { font-size: 12px; padding: 18px 0; }
+
+.rep-svg { display: block; width: 100%; height: auto; overflow: visible; }
+.rep-gridline { stroke: var(--border); stroke-width: 1; opacity: 0.7; }
+.rep-axisline { stroke: var(--border-highlight); stroke-width: 1; }
+.rep-tick { fill: var(--text-dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+.rep-svg .rep-line { fill: none; stroke: var(--tone); stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; vector-effect: none; }
+.rep-area { fill: var(--tone); fill-opacity: 0.22; stroke: none; }
+.rep-band { fill: var(--tone); fill-opacity: 0.12; }
+.rep-mark { stroke: var(--tone); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.rep-colbar { fill: var(--tone); }
+.rep-colbar:hover, .rep-seg:hover { opacity: 0.8; }
+.rep-seg { fill: var(--tone); stroke: var(--panel); stroke-width: 1.5; }
+
+.rep-legend-row { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 11.5px; color: var(--text-dim); }
+.rep-key { display: inline-flex; align-items: center; gap: 5px; }
+.rep-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: var(--tone); flex: none; }
+.rep-swatch.dashed { width: 14px; height: 0; border-radius: 0; background: none; border-top: 2px dashed var(--tone); }
+
+/* Horizontal bars (top N, capacity) */
+.rep-hbars { display: flex; flex-direction: column; gap: 5px; }
+.rep-hbar-row { display: grid; grid-template-columns: minmax(0, 38%) minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 12px; }
+.rep-hbar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.rep-hbar-track { position: relative; height: 10px; background: var(--inset); border-radius: 3px; }
+.rep-hbar { display: block; height: 100%; background: var(--tone); border-radius: 3px; }
+.rep-hmark { position: absolute; top: -3px; bottom: -3px; width: 0; border-left: 1.5px dashed var(--tone); }
+.rep-hbar-value { min-width: 62px; text-align: right; color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Donut */
+.rep-donut { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.rep-donut-svg { width: 140px; height: 140px; flex: none; }
+.rep-donut-total { fill: var(--text-bright); font-size: 24px; font-weight: 650; }
+.rep-donut-keys { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; }
+.rep-donut-keys li { display: flex; align-items: center; gap: 6px; }
+.rep-donut-keys strong { color: var(--text-bright); font-variant-numeric: tabular-nums; }
+
+/* Uptime strips: one small bar per day per device */
+.rep-strips { display: flex; flex-direction: column; gap: 4px; }
+.rep-strip-row { display: grid; grid-template-columns: minmax(0, 28%) minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 12px; }
+.rep-strip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.rep-strip { display: flex; gap: 1px; height: 14px; }
+.rep-cell { flex: 1 1 0; min-width: 1px; border-radius: 1px; background: var(--tone); }
+.rep-cell.rt-none { background: var(--inset); outline: 1px solid var(--border); outline-offset: -1px; }
+.rep-strip-value { min-width: 56px; text-align: right; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.rep-strip-axis { display: flex; justify-content: space-between; font-size: 11px; margin: 2px 64px 0 calc(28% + 8px); }
+
+/* Hour by weekday heatmap */
+.rep-heat { display: grid; grid-template-columns: 34px repeat(24, minmax(0, 1fr)); gap: 2px; font-size: 11px; }
+.rep-heat-day { color: var(--text-dim); align-self: center; }
+.rep-heat-cell { height: 16px; border-radius: 2px; background: color-mix(in srgb, var(--blue) var(--level), var(--inset)); }
+.rep-heat-cell.empty { background: var(--inset); outline: 1px solid var(--border); outline-offset: -1px; }
+.rep-heat-hour { color: var(--text-dim); text-align: left; white-space: nowrap; }
+.rep-heat-scale { display: flex; align-items: center; gap: 6px; font-size: 11px; margin-top: 6px; }
+.rep-heat-ramp { width: 70px; height: 8px; border-radius: 2px; background: linear-gradient(to right, color-mix(in srgb, var(--blue) 8%, var(--inset)), var(--blue)); }
+
+/* Status grid: one tile per device */
+.rep-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px; }
+.rep-tile { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border-radius: 6px; background: var(--tone-bg);
+  border: 1px solid var(--tone-border); border-left: 3px solid var(--tone); min-width: 0; }
+.rep-tile-name { font-size: 12px; font-weight: 600; color: var(--text-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rep-tile-sub { font-size: 11px; color: var(--tone-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 6. Tables */
+.rep-doc .rep-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+.rep-doc .rep-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.rep-doc .rep-table th { text-align: left; font-weight: 600; font-size: 11.5px; color: var(--text-dim); background: var(--inset);
+  padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.rep-doc .rep-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; font-family: var(--font); }
+.rep-doc .rep-pill { font-family: var(--font); }
+.rep-doc .rep-table tbody tr:last-child td { border-bottom: 0; }
+.rep-doc .rep-table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--inset) 55%, transparent); }
+.rep-doc .rep-table td.num, .rep-doc .rep-table th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rep-table td.pill-cell { white-space: nowrap; }
+.rep-pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; line-height: 1.5;
+  color: var(--tone-ink); background: var(--tone-bg); border: 1px solid var(--tone-border); }
+.rep-spark { width: 60px; height: 16px; display: block; overflow: visible; }
+.rep-spark .rep-line { stroke-width: 1.3; }
+
+/* 7. Footer */
+.rep-foot { font-size: 11.5px; color: var(--text-dim); border-top: 1px solid var(--border); padding-top: 8px; }
+
+@media (max-width: 700px) {
+  .rep-doc { padding: 10px; gap: 14px; }
+  .rep-head-title { font-size: 17px; }
+  .rep-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rep-kpi-value { font-size: 20px; }
+  .rep-hbar-row { grid-template-columns: minmax(0, 34%) minmax(0, 1fr) auto; }
+  .rep-hbar-value { min-width: 0; }
+}
+.rep-doc .rep-table td.text-cell { min-width: 8em; }

@@ -154,6 +154,7 @@ STATIC_FILES = {
     "/lan.js": ("lan.js", "application/javascript; charset=utf-8"),
     "/inventory.js": ("inventory.js", "application/javascript; charset=utf-8"),
     "/reports.js": ("reports.js", "application/javascript; charset=utf-8"),
+    "/reports.css": ("reports.css", "text/css; charset=utf-8"),
     "/botcmds.js": ("botcmds.js", "application/javascript; charset=utf-8"),
     "/guide.js": ("guide.js", "application/javascript; charset=utf-8"),
     "/guide.html": ("guide.html", "text/html; charset=utf-8"),
@@ -1099,7 +1100,9 @@ def make_report_run(r: Dict[str, Any], trigger: str, now: Optional[int] = None) 
 
 def report_args(user: Optional["rbac.User"], spec: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     devices, filter_text, filtered = report_devices(user, spec["filter"])
-    return devices, {"filter_text": filter_text, "filtered": filtered, "update_history": update_history}
+    # WAN links (device, interface index), looked up only by the reports that draw them.
+    return devices, {"filter_text": filter_text, "filtered": filtered, "update_history": update_history,
+                     "wan": lambda: {(w["device_id"], int(w["if_index"])) for w in wan_interfaces() if str(w.get("if_index")).isdigit()}}
 
 
 def send_report_telegram(name: str, report: Dict[str, Any], csv_data: Optional[bytes], pdf_data: Optional[bytes]) -> str:
@@ -7144,7 +7147,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "0.17.0"
+APP_VERSION = "0.18.0"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:

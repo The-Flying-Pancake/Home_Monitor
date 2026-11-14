@@ -33,7 +33,7 @@ installs with one file and backs itself up.
 | 📱 **Telegram** | Alerts with your own message texts, plus a read-only bot you can ask for status. |
 | 🤖 **Automation** | A visual workflow builder: SSH commands on your hosts, waits, conditions and schedules, or a trigger when something happens. Ready-made host actions for common Linux chores. |
 | 🗺️ **Map and dashboards** | A network map that understands upstream links and can show your Wi-Fi devices and live traffic flowing all the way up to the internet. Fold away the branches you do not need and let it tidy itself. Plus several dashboards built from tiles. |
-| 📄 **Reports** | Ready-made reports you can adjust (availability, problems, device health, storage, Wi-Fi, Pi-hole and more), downloaded as a PDF or a CSV file. Save one to run every day, week or month and have it sent to Telegram. |
+| 📄 **Reports** | Ready-made reports you can adjust (a monthly health summary, availability, latency, bandwidth, a single device, storage, Wi-Fi, Pi-hole and more), each with headline figures, a short summary in plain words and clear charts, downloaded as a PDF or a CSV file. Save one to run every day, week or month and have it sent to Telegram. |
 | 🔌 **Integrations** | Proxmox (guests, storage, start and stop), UniFi (clients, Wi-Fi, switch ports) and Pi-hole. |
 | 👥 **Users** | Roles and per-device access, two-factor authentication and an audit log. |
 | 💾 **Backups** | A daily backup with everything a rebuild needs, kept locally or synced to your NAS with Syncthing. Set a backup passphrase and each backup is sealed and can prove it was not changed. Restore in place from the installer. |

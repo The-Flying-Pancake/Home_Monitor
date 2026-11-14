@@ -561,6 +561,11 @@ def t_updates(b):
                      "!!d.querySelector('[data-update-action=dismiss]')]")
         assert res == [True, "It did not start", True], res
         shot(b, "update_failed", "#upd-test")
+        # Finished: the tick draws itself the first time only; a redraw of the same result shows it still.
+        ticks = run(b, f"const s = Object.assign({base}, {{current: '98.0.0', progress: {{state: 'ok', to: '98.0.0', started: 777, finished: 800, steps: {{}}}}}}); "
+                       "const d = document.getElementById('upd-test'); d.innerHTML = updatesSection(s); const first = d.querySelector('.update-tick').classList.contains('still'); "
+                       "d.innerHTML = updatesSection(s); [first, d.querySelector('.update-tick').classList.contains('still')]")
+        assert ticks == [False, True], ticks
         shot(b, "update_nav", "#settings-nav")
         run(b, "document.getElementById('upd-test').remove(); true")
         # Skipping that version takes the number away until a newer one is out.
@@ -785,8 +790,34 @@ def t_map_fold(b):
     b.wait_for("!!document.querySelector('[data-fold-side]')")
     run(b, "document.querySelector('[data-fold-side]').click(); true")
     assert b.eval("!!document.querySelector(`[data-node=\"${window.__c}\"]`)"), "not shown again"
-    run(b, "mapSelected = null; delete mapData.parent[window.__c]; drawMap(); true")
-    return "folded, Tidy left the saved layout alone, unfolded from the side panel"
+    run(b, "mapSelected = null; true")
+    # Expand all: shown only while something is folded; unfolds everything.
+    assert b.eval("document.getElementById('map-expand').classList.contains('hidden')")
+    run(b, "mapToggleFold(window.__p); true")
+    assert not b.eval("document.getElementById('map-expand').classList.contains('hidden')")
+    run(b, "document.getElementById('map-expand').click(); true")
+    b.wait_for("!!document.querySelector(`[data-node=\"${window.__c}\"]`) && mapGlide === null", timeout=5)
+    # Tidy: straight elbow lines from parent to child, no curves.
+    run(b, "if (!mapTidy) document.getElementById('map-tidy').click(); true")
+    b.wait_for("mapGlide === null", timeout=5)
+    curved = b.eval("[...document.querySelectorAll('#map-svg [data-link] path.map-link')].filter(p => / C/.test(p.getAttribute('d'))).length")
+    assert curved == 0, f"{curved} curved lines in Tidy"
+    # Wi-Fi in Tidy: the devices sit in their own grid and cover no box.
+    run(b, f"const n = mapData.nodes.find(x => x.key === window.__c); n.wifi = {{count: 9, weak: 1, weak_dbm: -75, clients: Array.from({{length: 9}}, (_, i) => ({{name: 'phone-' + i, ssid: 'Home', signal: i ? -60 : -85}}))}}; "
+           "if (!mapWifi) document.getElementById('map-wifi').click(); drawMap(); true")
+    b.wait_for("mapGlide === null && document.querySelectorAll('.map-wifi-dot').length === 9", timeout=5)
+    overlaps = b.eval("(() => { const boxes = [...document.querySelectorAll('#map-svg [data-node] .map-card')].map(r => r.getBoundingClientRect()); "
+                      "return [...document.querySelectorAll('.map-wifi-dot circle')].filter(c => { const d = c.getBoundingClientRect(); "
+                      "return boxes.some(r => d.left < r.right && d.right > r.left && d.top < r.bottom && d.bottom > r.top); }).length; })()")
+    assert overlaps == 0, f"{overlaps} Wi-Fi devices on top of boxes"
+    run(b, "document.getElementById('map-wifi').click(); delete mapData.nodes.find(x => x.key === window.__c).wifi; true")
+    # Nudge: pulled a little, it springs back to its place.
+    home = b.eval("JSON.stringify(mapDrawnPos[window.__c])")
+    run(b, "mapNudge = {key: window.__c, dx: 40, dy: 25, held: true}; drawMap(); mapSpringBack(); true")
+    b.wait_for("mapNudge === null", timeout=5)
+    assert b.eval("JSON.stringify(mapLastPos[window.__c])") == home
+    run(b, "document.getElementById('map-tidy').click(); delete mapData.parent[window.__c]; drawMap(); true")
+    return "folded, Expand all, elbow lines and a Wi-Fi grid in Tidy, nudge springs back, saved layout untouched"
 
 
 @check("Inventory: groups by where it connects that fold, sorting by name")
@@ -831,7 +862,24 @@ def t_reports(b):
     b.wait_for("!!document.querySelector('#rep-preview .rep-table tbody tr')")
     heads = b.eval("[...document.querySelectorAll('#rep-preview .rep-table th')].map(t => t.textContent)")
     assert "SNMP" in heads, heads
-    assert b.eval("!!document.querySelector('#rep-preview .rep-chart')"), "no chart"
+    # The report layout: header band with its facts, key figures with a status edge, summary, a chart, pills, footer.
+    assert b.eval("document.querySelector('#rep-preview .rep-head-title').textContent") == "Devices and SNMP settings"
+    facts = b.eval("[...document.querySelectorAll('#rep-preview .rep-fact dt')].map(d => d.textContent)")
+    assert "Covers" in facts and "Made" in facts, facts
+    assert b.eval("document.querySelectorAll('#rep-preview .rep-kpi').length") >= 3, "no key figures"
+    assert b.eval("!!document.querySelector('#rep-preview .rep-kpi.rt-good, #rep-preview .rep-kpi.rt-warn, #rep-preview .rep-kpi.rt-bad')")
+    assert b.eval("document.querySelector('#rep-preview .rep-summary p').textContent.length") > 20, "no summary"
+    assert b.eval("!!document.querySelector('#rep-preview .rep-chart-main svg, #rep-preview .rep-chart-main .rep-donut')"), "no main chart"
+    assert b.eval("!!document.querySelector('#rep-preview .rep-table .rep-pill')"), "no status pills"
+    assert "Times are local" in b.eval("document.querySelector('#rep-preview .rep-foot').textContent")
+    # A report over time: the monthly summary draws its daily availability as SVG with a target line.
+    run(b, "document.querySelector('[data-rep-template=\"monthly\"]').click(); true")
+    run(b, "document.getElementById('btn-rep-run').click(); true")
+    b.wait_for("document.querySelector('#rep-preview .rep-head-title') && document.querySelector('#rep-preview .rep-head-title').textContent === 'Monthly health summary'")
+    assert b.eval("document.querySelectorAll('#rep-preview .rep-kpi').length") == 4
+    run(b, "document.querySelector('[data-rep-template=\"devices\"]').click(); true")
+    run(b, "document.getElementById('btn-rep-run').click(); true")
+    b.wait_for("!!document.querySelector('#rep-preview .rep-table tbody tr') && document.querySelector('#rep-preview .rep-head-title').textContent === 'Devices and SNMP settings'")
     # Customizer: one column less, one device only.
     run(b, "const c = document.querySelector('[data-rep-col=\"group\"]'); c.checked = false; c.dispatchEvent(new Event('change', {bubbles: true})); true")
     run(b, "const s = document.getElementById('rep-covers'); s.value = 'device'; s.dispatchEvent(new Event('change', {bubbles: true})); true")

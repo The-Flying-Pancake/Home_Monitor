@@ -38,7 +38,7 @@ MODULES = ["server.py", "poller.py", "database.py", "vault.py", "ssh_runner.py",
            "inventory.py", "hostactions.py", "lanhttp.py", "pihole.py", "unifi.py", "digest.py", "telebot.py", "botcmds.py", "tpl.py", "sitecheck.py", "safefile.py",
            "demo.py", "report.py", "snmpv3.py", "pdfdoc.py", "reports.py"]
 WEB = ["index.html", "app.js", "map.js", "workflows.js", "wftemplates.js", "hostactions.js", "telegram.js", "workflows.css", "setup.js", "alerts.js", "theme.js", "shell.js", "users.js", "security.js","adddevice.js", "backups.js", "updates.js", "snmp.js",
-       "charts.js", "availability.js", "proxmox.js", "taxonomy.js", "tls.js", "changes.js", "lan.js", "inventory.js", "reports.js", "botcmds.js", "guide.js", "guide.html", "style.css"]
+       "charts.js", "availability.js", "proxmox.js", "taxonomy.js", "tls.js", "changes.js", "lan.js", "inventory.js", "reports.js", "reports.css", "botcmds.js", "guide.js", "guide.html", "style.css"]
 
 
 BUILT = time.strftime("%Y-%m-%d %H:%M")

@@ -1,7 +1,9 @@
 """Reports (reports.py and the /api/reports routes): templates, filters, CSV and PDF, saved and scheduled reports."""
 
 import json
+import re
 import time
+import zlib
 import unittest
 import urllib.request
 from datetime import datetime
@@ -60,7 +62,8 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(rows["rep-v3"]["snmp"], "v3")
         self.assertEqual(rows["rep-v3"]["snmp_security"], "User reporter, signed and encrypted, SHA and AES")
         self.assertNotIn("secret", json.dumps(r))
-        self.assertIn("Devices by SNMP version", [c["title"] for c in r["charts"]])
+        self.assertEqual(r["main"]["title"], "Devices by SNMP version")
+        self.assertIn("Devices per template", [c["title"] for c in r["charts"]])
 
     def test_filters_tag_device_and_chosen_columns(self):
         r = self.run_spec(template="devices", filter={"tag": "report-tag"}, columns=["ip", "name", "nonsense"])
@@ -79,7 +82,90 @@ class ReportTests(unittest.TestCase):
                 r = self.run_spec(template=tid, period=period)
                 self.assertEqual(len(r["columns"]), len(reports.TEMPLATES[tid]["default"]), tid)
                 self.assertTrue(all(len(row) == len(r["columns"]) for row in r["rows"]), tid)
+                # The report layout: header, key figures, a summary in words and a footer.
+                self.assertTrue(r["purpose"] and r["facts"] and r["footer"], tid)
+                self.assertTrue(3 <= len(r["kpis"]) <= 6, tid)
+                self.assertTrue(all(k["tone"] in ("good", "warn", "bad", "info", "none") for k in r["kpis"]), tid)
+                self.assertTrue(r["summary"][:1].isupper(), (tid, r["summary"]))
+                self.assertNotIn(", and ", r["summary"], tid)
+                self.assertIn("Times are local", r["footer"])
+                for c in ([r["main"]] if r["main"] else []) + r["charts"]:
+                    self.assertIn(c["kind"], ("line", "mirror", "bar", "columns", "donut", "strips", "heatmap", "grid"), tid)
+                    self.assertTrue(c["title"], tid)
         self.assertEqual(request("POST", "/api/reports/run", {"spec": {"template": "nope"}})[0], 400)
+
+    def test_every_template_makes_a_pdf_and_csv(self):
+        for tid in reports.TEMPLATE_ORDER:
+            spec = reports.parse_spec({"template": tid, "period": "7d"}, True)
+            report = server.run_report(spec, None)
+            pdf = reports.to_pdf(report)
+            self.assertTrue(pdf.startswith(b"%PDF-1.4") and pdf.rstrip().endswith(b"%%EOF"), tid)
+            text = b"".join(zlib.decompress(m) for m in re.findall(rb"stream\n(.*?)\nendstream", pdf, re.S))
+            self.assertIn(b"Page 1 of", text, tid)
+            self.assertIn(b"Times are local", text, tid)
+            title = reports.TEMPLATES[tid]["title"].replace("(", "\\(").replace(")", "\\)")
+            self.assertIn(b"(" + title.encode("cp1252") + b") Tj", text, tid)
+            self.assertTrue(reports.to_csv(report).startswith("\ufeff".encode()), tid)
+
+    def test_layout_with_history_compares_periods_and_shows_pills(self):
+        """Seeded checks, pings, processor readings and a problem: comparisons, pills, charts and the PDF."""
+        now = int(time.time())
+        day = 86400
+        with database.get_connection() as conn:
+            for back in range(1, 14 * 24):
+                hour = now - now % 3600 - back * 3600
+                ups = 59 if back == 30 else 60 if back < 7 * 24 else 57
+                conn.execute("INSERT OR REPLACE INTO avail_hourly (device_id, hour, checks, ups, ms_sum, ms_count, ms_max) "
+                             "VALUES (?, ?, 60, ?, ?, 60, 9);", (self.v2, hour, ups, 60 * 4.0))
+            conn.execute("INSERT INTO avail_incidents (device_id, started, ended) VALUES (?, ?, ?);",
+                         (self.v2, now - 30 * 3600, now - 30 * 3600 + 600))
+            conn.commit()
+        for i in range(0, 7 * 24 * 12):
+            t = now - 7 * day + i * 300
+            database.record_metrics(self.v2, {"icmp_ping_ms": 2.0 + (i % 5), "cpu_usage_pct": 85.0 if i % 50 == 0 else 20.0,
+                                              "mem_used_pct": 40.0}, timestamp=t)
+        database.add_event(self.v2, "critical", "problem", "Problem: Device unreachable (no ICMP reply)", timestamp=now - 600)
+        self.addCleanup(self.forget_history)
+        r = self.run_spec(template="availability", period="7d", filter={"device": self.v2})
+        kpis = {k["label"]: k for k in r["kpis"]}
+        self.assertTrue(kpis["Overall uptime"]["note"].startswith("Up "), kpis["Overall uptime"])   # 95% the week before
+        self.assertIn("on the previous 7 days", kpis["Overall uptime"]["note"])
+        self.assertEqual(kpis["Overall uptime"]["trend"], "good")
+        self.assertEqual(r["main"]["kind"], "strips")
+        cols = [c["key"] for c in r["columns"]]
+        self.assertIn(r["rows"][0][cols.index("target")], ("Met", "At risk", "Breached"))
+        self.assertIn(r["tones"][r["rows"][0][cols.index("target")]], ("good", "warn", "bad"))
+        self.assertIn("rep-v2", r["summary"])
+        self.assertIn("Address", [f[0] for f in r["facts"]])                 # one device: its details in the header
+        lat = self.run_spec(template="latency", period="7d", filter={"device": self.v2})
+        cols = [c["key"] for c in lat["columns"]]
+        self.assertEqual(lat["rows"][0][cols.index("state")], "Good")
+        self.assertGreater(len(lat["rows"][0][cols.index("trend")]), 1)
+        self.assertEqual(lat["main"]["kind"], "line")
+        dev = self.run_spec(template="device", period="7d", filter={"device": self.v2})
+        self.assertEqual(dev["main"]["title"], "Processor and memory")
+        self.assertEqual([b["tone"] for b in dev["main"]["bands"]], ["warn", "bad"])
+        monthly = self.run_spec(template="monthly", period="7d")
+        self.assertEqual(monthly["main"]["kind"], "columns")
+        self.assertEqual(monthly["main"]["target"]["value"], reports.UPTIME_TARGET)
+        self.assertTrue(any(row[0].startswith("Device unreachable") for row in monthly["rows"]))
+        for spec in ({"template": "availability"}, {"template": "device", "filter": {"device": self.v2}}, {"template": "latency"}):
+            pdf, _ = download("/api/reports/download", {"spec": dict(spec, period="7d"), "format": "pdf"})
+            self.assertTrue(pdf.startswith(b"%PDF-1.4"))
+        csv_text = download("/api/reports/download", {"spec": {"template": "latency", "period": "7d"}, "format": "csv"})[0].decode("utf-8-sig")
+        self.assertNotIn("Trend", csv_text.splitlines()[0])                    # a trend line is not a CSV column
+
+    def forget_history(self):
+        with database.get_connection() as conn:
+            for table in ("avail_hourly", "avail_incidents", "metrics", "metrics_hourly", "events"):
+                conn.execute(f"DELETE FROM {table} WHERE device_id = ?;", (self.v2,))
+            conn.commit()
+
+    def test_status_now_lists_every_device(self):
+        r = self.run_spec(template="status")
+        self.assertEqual(r["main"]["kind"], "grid")
+        self.assertEqual(len(r["main"]["tiles"]), len(request("GET", "/api/reports")[1]["devices"]))
+        self.assertEqual([k["label"] for k in r["kpis"][:4]], ["Up", "With problems", "Down", "Not monitored"])
 
     def test_csv_and_pdf_downloads(self):
         with database.get_connection() as conn:
@@ -164,6 +250,31 @@ class ScopeTests(unittest.TestCase):
         self.assertTrue(server.may_see_report(scoped, mine))
         self.assertFalse(server.may_see_report(scoped, theirs))
         self.assertTrue(server.may_see_report(everyone, mine))
+
+    def test_change_on_the_previous_period(self):
+        self.assertEqual(reports._change(99.96, 99.93, "7d", "points", "up"), ("Up 0.03 points on the previous 7 days", "good"))
+        self.assertEqual(reports._change(12, 20, "30d", "ms", "down"), ("Down 8.0 ms on the previous 30 days", "good"))
+        self.assertEqual(reports._change(5, 2, "24h", "count", "down"), ("Up 3 on the previous 24 hours", "bad"))
+        self.assertEqual(reports._change(4, 4, "7d", "count", "down")[0], "Same as the previous 7 days")
+        self.assertEqual(reports._change(None, 4, "7d", "count", "down"), ("", None))
+
+    def test_words(self):
+        self.assertEqual(reports._and(["a", "b", "c"]), "a, b and c")
+        self.assertEqual(reports._count(3, "problem"), "Three problems")
+        self.assertEqual(reports._count(1, "device"), "One device")
+        self.assertEqual(reports._count(40, "event"), "In all 40 events")
+        self.assertEqual(reports._target_word(99.95, 0, 7 * 86400), "Met")
+        self.assertEqual(reports._target_word(99.92, 400, 7 * 86400), "At risk")
+        self.assertEqual(reports._target_word(99.5, 3000, 7 * 86400), "Breached")
+        self.assertEqual(reports._quantile([1, 2, 3, 4, 100], 0.95), 100)
+        self.assertEqual(reports._median([1, 3, 2, 4]), 2.5)
+
+    def test_new_templates_listed(self):
+        ids = [t["id"] for t in reports.template_list(False)]
+        for tid in ("monthly", "status", "availability", "latency", "bandwidth", "alerts", "device"):
+            self.assertIn(tid, ids)
+        self.assertTrue(next(t for t in reports.template_list(True) if t["id"] == "device")["one_device"])
+        self.assertEqual(reports.parse_spec({"template": "monthly"}, True)["period"], "30d")
 
     def test_csv_cells_and_formatting(self):
         self.assertEqual(reports._csv_value("text", "@SUM(A1)"), "'@SUM(A1)")
