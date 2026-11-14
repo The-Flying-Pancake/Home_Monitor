@@ -1,4 +1,4 @@
-/* Two-factor authentication (Settings, Account) and the forgotten-password flow on the login screen.
+/* Two-factor authentication (Account, under your name at the top right) and the forgotten-password flow on the login screen.
  *
  * 2FA: start shows a QR code (drawn by the server as SVG, no external service) and the secret
  * for typing in; a first code turns it on and shows 8 recovery codes once. Turning it off and
@@ -44,7 +44,7 @@ function showRecoveryCodes(codes) {
 }
 
 /**
- * The QR code and the first code, in Settings, Account (target "twofa-enrol") or on the screen that
+ * The QR code and the first code, in Account (target "twofa-enrol") or on the screen that
  * a required 2FA shows (target "enrol-body", with done called once it is on).
  */
 async function startTwoFactor(target = "twofa-enrol", done = null) {

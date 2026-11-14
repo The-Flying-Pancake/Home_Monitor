@@ -226,6 +226,9 @@ body {
 .bell-item:hover { background: var(--hover); }
 .bell-item.unread { background: var(--info-bg); }
 .bell-item.unread:hover { background: var(--hover); }
+.bell-item.fixed { opacity: 0.7; }
+.bell-fixed { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 8px; font-size: 10.5px; font-weight: 600;
+  color: var(--green-bright); border: 1px solid var(--green-bright); }
 .bell-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; background: var(--text-dim); }
 .bell-dot.sev-critical { background: var(--red-bright); }
 .bell-dot.sev-high { background: var(--orange); }
@@ -1245,6 +1248,7 @@ tr:hover .row-select, .row-select:checked { opacity: 1; }
 .lacks-settings-system [data-perm~="settings.system"], .lacks-audit-view [data-perm~="audit.view"],
 .lacks-audit-sensitive [data-perm~="audit.sensitive"],
 .lacks-users-manage [data-perm~="users.manage"] { display: none !important; }
+.lacks-reports-manage [data-perm~="reports.manage"] { display: none !important; }
 .scoped [data-unscoped] { display: none !important; }
 /* Said instead of the Review host key button to those who cannot approve a key. */
 body:not(.lacks-credentials-manage) .hk-ask { display: none; }
@@ -1743,6 +1747,26 @@ button.avail-chip:hover { filter: brightness(1.2); }
 .guide-body dl { display: grid; gap: 8px; }
 .guide-body dt { color: var(--text-bright); font-weight: 600; }
 .guide-body dd { margin: -4px 0 4px 0; padding-left: 12px; border-left: 2px solid var(--border); color: var(--text); }
+/* Guide search: the best answers above the topics, marked words and the pulse on the answer opened. */
+.guide-answers { display: flex; flex-direction: column; gap: 6px; max-width: 1000px; margin-bottom: 16px; padding: 14px 16px;
+  background: var(--panel); border: 1px solid var(--info-border); border-radius: 10px; }
+.guide-answers-head { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--blue); margin-bottom: 2px; }
+.guide-answer { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 8px; text-decoration: none;
+  border-left: 3px solid var(--tone, var(--blue)); background: var(--inset); }
+.guide-answer:hover { background: var(--hover); }
+.guide-answer-topic { font-size: 11px; font-weight: 600; color: var(--tone, var(--blue)); }
+.guide-answer-text { font-size: 12.5px; color: var(--text); line-height: 1.45; }
+mark.guide-hit { background: rgba(210, 153, 34, 0.28); color: inherit; border-radius: 3px; padding: 0 1px; }
+mark.guide-hit.near { background: rgba(210, 153, 34, 0.12); }
+.guide-pulse, tr.guide-pulse > td { animation: guide-pulse 1.1s ease-out 3; border-radius: 6px; }
+@keyframes guide-pulse {
+  0% { background-color: rgba(47, 129, 247, 0.32); box-shadow: 0 0 0 0 rgba(47, 129, 247, 0.55); }
+  70% { background-color: rgba(47, 129, 247, 0.12); box-shadow: 0 0 0 10px rgba(47, 129, 247, 0); }
+  100% { background-color: transparent; box-shadow: 0 0 0 0 rgba(47, 129, 247, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .guide-pulse, tr.guide-pulse > td { animation: none; background-color: rgba(47, 129, 247, 0.18); }
+}
 @media (max-width: 900px) {
   .guide-layout { grid-template-columns: minmax(0, 1fr); }
   .guide-toc { position: static; max-height: none; }
@@ -2260,3 +2284,100 @@ html:not([data-auth="in"]) .modal-backdrop:not(.dialog-backdrop), html:not([data
 .required-card .required-step { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin: 12px 0; text-align: left; }
 .required-card .required-step p { margin: 6px 0 10px; font-size: 13px; color: var(--text-dim); }
 
+
+/* Reports: templates and saved reports on the left, the customizer and the preview on the right. */
+.form-group .form-label { display: block; font-size: 11px; font-weight: 500; color: var(--text-dim); margin-bottom: 4px;
+  text-transform: uppercase; letter-spacing: 0.04em; }
+.form-group .form-label .dim { text-transform: none; letter-spacing: 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.rep-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .rep-layout { grid-template-columns: 1fr; } }
+.rep-side { display: flex; flex-direction: column; gap: 12px; }
+.rep-side-panel { padding: 12px; }
+.rep-side-head { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin-bottom: 8px; }
+.rep-templates { display: flex; flex-direction: column; gap: 4px; }
+.rep-template { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 8px 10px; border-radius: 8px; cursor: pointer;
+  background: transparent; border: 1px solid transparent; color: var(--text); font: inherit; }
+.rep-template:hover { background: var(--hover); }
+.rep-template.active { border-color: var(--blue); background: var(--hover); }
+.rep-template-title { font-weight: 600; font-size: 12.5px; color: var(--text-bright); }
+.rep-template-text { font-size: 11.5px; color: var(--text-dim); line-height: 1.35; }
+.rep-empty { font-size: 12px; }
+.rep-saved-item { padding: 8px 0; border-top: 1px solid var(--border); }
+.rep-saved-item:first-child { border-top: 0; padding-top: 0; }
+.rep-saved-item.active .rep-saved-head strong { color: var(--blue); }
+.rep-saved-head { display: flex; flex-direction: column; gap: 1px; font-size: 12.5px; }
+.rep-saved-head .dim { font-size: 11.5px; }
+.rep-saved-actions { display: flex; gap: 6px; margin: 6px 0; flex-wrap: wrap; }
+.rep-runs { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; }
+.rep-runs li { display: flex; gap: 8px; flex-wrap: wrap; }
+.rep-runs-none { font-size: 11.5px; }
+.rep-custom { padding: 16px; }
+.rep-custom-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.rep-heading { font-size: 16px; font-weight: 650; color: var(--text-bright); flex: 1; }
+.rep-columns { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 12px; }
+.rep-col { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 12.5px; padding: 3px 6px; border-radius: 6px; }
+.rep-col.on { background: var(--inset); }
+.rep-col label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.rep-col-move { display: inline-flex; gap: 2px; }
+.rep-col-move .btn { padding: 0 6px; }
+.rep-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.rep-preview { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; }
+.rep-preview-title { font-size: 15px; font-weight: 650; color: var(--text-bright); }
+.rep-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.rep-chart { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.rep-chart-title { font-size: 12px; font-weight: 600; color: var(--text-bright); margin-bottom: 8px; display: flex; gap: 10px; flex-wrap: wrap; }
+.rep-bar-row { display: grid; grid-template-columns: minmax(0, 40%) 1fr auto; gap: 8px; align-items: center; font-size: 11.5px; margin-bottom: 4px; }
+.rep-bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rep-bar-track { height: 8px; background: var(--inset); border-radius: 4px; overflow: hidden; }
+.rep-bar { display: block; height: 100%; background: var(--blue); border-radius: 4px; }
+.rep-bar-value { color: var(--text-dim); min-width: 44px; text-align: right; }
+.rep-line-chart { width: 100%; height: 160px; display: block; }
+.rep-grid { stroke: var(--border); stroke-dasharray: 3 3; }
+.rep-line { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.rep-line-0 { stroke: var(--blue); color: var(--blue); }
+.rep-line-1 { stroke: var(--orange); color: var(--orange); }
+.rep-line-2 { stroke: var(--purple); color: var(--purple); }
+.rep-line-3 { stroke: var(--green-bright); color: var(--green-bright); }
+.rep-legend { font-weight: 500; font-size: 11px; }
+.rep-legend::before { content: ""; display: inline-block; width: 10px; height: 3px; margin-right: 4px; vertical-align: middle; background: currentColor; }
+.rep-axis { display: flex; justify-content: space-between; font-size: 10.5px; margin-top: 4px; }
+.rep-table-wrap { overflow-x: auto; }
+.rep-table td.num, .rep-table th.num { text-align: right; white-space: nowrap; }
+.rep-days { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* Settings pages with tabs (System: Status, Updates, HTTPS). */
+.settings-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; flex-wrap: wrap; }
+.settings-tabs a { padding: 8px 14px; color: var(--text-dim); text-decoration: none; font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  display: inline-flex; align-items: center; gap: 6px; }
+.settings-tabs a:hover { color: var(--text-bright); }
+.settings-tabs a.active { color: var(--text-bright); border-bottom-color: var(--blue); font-weight: 600; }
+.settings-tabs .nav-badge { position: static; }
+
+/* Alert rules, Wi-Fi networks: weak signal per network. */
+.ar-wifi { margin-top: 8px; }
+.ar-wifi-table { width: auto; min-width: 420px; }
+.ar-wifi-table td { vertical-align: middle; }
+.ar-wifi-table input[type="number"] { width: 80px; margin-left: 6px; }
+.ar-wifi-actions { margin-top: 10px; }
+
+/* Map: traffic on links (the Traffic button). */
+.map-rate-tag rect { fill: var(--info-bg, var(--panel)); stroke: var(--blue); }
+.map-rate-tag text { fill: var(--text-bright); font-size: 10px; font-family: var(--mono); text-anchor: middle; }
+.map-rate-tag.busy rect { stroke: var(--orange); }
+.map-rate-tag.busy text { fill: var(--orange); }
+
+/* Map side panel: an access point's Wi-Fi devices with their signal. */
+.map-wifi { list-style: none; padding: 0; margin: 4px 0 8px; display: flex; flex-direction: column; gap: 3px; max-height: 320px; overflow-y: auto; }
+.map-wifi li { display: grid; grid-template-columns: minmax(0, 1fr) 70px 54px; gap: 6px; align-items: center; font-size: 11.5px; }
+.map-wifi-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.map-wifi-bar { height: 6px; background: var(--inset); border-radius: 3px; overflow: hidden; }
+.map-wifi-bar span { display: block; height: 100%; background: var(--green-bright); }
+.map-wifi li.weak .map-wifi-bar span { background: var(--orange); }
+.map-wifi li.weak .map-wifi-dbm { color: var(--orange); }
+.map-wifi-dbm { text-align: right; color: var(--text-dim); font-family: var(--mono); }
+.ph-types { padding: 12px; }
+
+/* Inventory: count tiles that filter the list. */
+.inv-tiles .inv-tile { text-align: left; font: inherit; color: inherit; cursor: pointer; display: flex; flex-direction: column; }
+.inv-tiles .inv-tile.active { border-color: var(--blue); box-shadow: inset 0 -2px 0 var(--blue); }

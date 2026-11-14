@@ -117,7 +117,7 @@ function stepBody(id) {
           : `<div class="form-help">The rest of the monitor opens once this is done. You can log out at any time (top right) and carry on later.</div>`}`;
     case "account":
       if (!s.preview) return `<p>Your administrator account is set up: you are logged in as <strong>${escapeHtml(currentUser ? currentUser.username : "")}</strong>.</p>
-        <p class="dim">Recommended once setup is done: turn on two-factor authentication in Settings, Account.</p>`;
+        <p class="dim">Recommended once setup is done: turn on two-factor authentication under your name at the top right, Account and password.</p>`;
       return `<p>On a fresh install this step creates the administrator account. In preview the password rules are checked and nothing is created.</p>
         <div class="form-row">${field("account.username", "Username", s.account.username, 'autocomplete="off"')}</div>
         <div class="form-row">${secretField("account.password", "Password (12 or more characters)", s.account.password)}

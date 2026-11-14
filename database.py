@@ -37,8 +37,9 @@ DB_FILE = os.environ.get(
 # is brought forward on start. A file with a higher number was written by a newer build: this code
 # does not know its tables and would misread them, so it refuses to start on it rather than guess.
 # Raise SCHEMA_VERSION with every schema change; tests/test_compat.py holds the fingerprint of each.
-SCHEMA_VERSION = 8                 # 4: inventory.ssid and inventory.quiet; 5: action_runs; 6: workflows.saved_by;
-                                   # 7: audit_log.actor and audit_log.source; 8: devices.snmp_v3
+SCHEMA_VERSION = 9                 # 4: inventory.ssid and inventory.quiet; 5: action_runs; 6: workflows.saved_by;
+                                   # 7: audit_log.actor and audit_log.source; 8: devices.snmp_v3;
+                                   # 9: reports and report_runs
 # The oldest version this build can migrate from (raise only if a migration is ever dropped).
 MIN_SCHEMA_VERSION = 0
 
@@ -567,6 +568,35 @@ def init_db() -> None:
 
         # Notifications held during quiet hours, sent as one summary when they end.
         cursor.execute("CREATE TABLE IF NOT EXISTS notify_held (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, text TEXT NOT NULL);")
+
+        # Saved reports (schema 9): the spec (reports.py), an optional schedule and who saved it; the
+        # newest runs of each are kept with their files, so a scheduled report can be fetched later.
+        cursor.executescript("""
+            CREATE TABLE IF NOT EXISTS reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                spec TEXT NOT NULL,
+                schedule TEXT NOT NULL DEFAULT '',
+                formats TEXT NOT NULL DEFAULT 'pdf',
+                telegram INTEGER NOT NULL DEFAULT 0,
+                owner TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_run_at INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS report_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_id INTEGER NOT NULL,
+                made_at INTEGER NOT NULL,
+                trigger TEXT NOT NULL DEFAULT '',
+                total INTEGER NOT NULL DEFAULT 0,
+                csv BLOB,
+                pdf BLOB,
+                error TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (report_id) REFERENCES reports (id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_report_runs ON report_runs (report_id, made_at);
+        """)
 
         # Web UI login. Password hashes only (scrypt, see auth.py).
         cursor.execute(
@@ -2118,8 +2148,8 @@ def device_profiles() -> List[Dict[str, Any]]:
 
 
 # Events the notification centre shows: problems and their resolution, reachability, workflow
-# results, actions that could not be done. Routine info (config changes, software) stays in the log.
-NOTIFY_EVENT_TYPES = ("problem", "action", "workflow", "task", "reboot")
+# results, actions that could not be done, updates of the monitor. Routine info (config changes, software) stays in the log.
+NOTIFY_EVENT_TYPES = ("problem", "action", "workflow", "task", "reboot", "update")
 
 
 def list_events_filtered(q: str = "", device_id: Optional[int] = None, severity: str = "", event_type: str = "",
@@ -2446,3 +2476,79 @@ def set_internal_setting(key: str, value: str) -> None:
         conn.execute("INSERT INTO settings (key, value, description, updated_at) VALUES (?, ?, '', ?) "
                      "ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;", (key, value, now))
         conn.commit()
+
+
+# --- Reports (reports.py) ---
+
+REPORT_RUNS_KEPT = 10
+
+
+def list_reports() -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM reports ORDER BY name COLLATE NOCASE, id;")]
+
+
+def get_report(report_id: int) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM reports WHERE id = ?;", (report_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def save_report(report_id: Optional[int], name: str, spec: str, schedule: str, formats: str, telegram: bool,
+                owner: str) -> int:
+    """Adds a report (report_id None) or changes one; the owner stays who first saved it."""
+    now = int(time.time())
+    with get_connection() as conn:
+        if report_id is None:
+            cur = conn.execute("INSERT INTO reports (name, spec, schedule, formats, telegram, owner, created_at, updated_at) "
+                               "VALUES (?, ?, ?, ?, ?, ?, ?, ?);", (name, spec, schedule, formats, int(telegram), owner, now, now))
+            conn.commit()
+            return int(cur.lastrowid)
+        conn.execute("UPDATE reports SET name = ?, spec = ?, schedule = ?, formats = ?, telegram = ?, updated_at = ? WHERE id = ?;",
+                     (name, spec, schedule, formats, int(telegram), now, report_id))
+        conn.commit()
+        return report_id
+
+
+def delete_report(report_id: int) -> bool:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM report_runs WHERE report_id = ?;", (report_id,))
+        gone = conn.execute("DELETE FROM reports WHERE id = ?;", (report_id,)).rowcount > 0
+        conn.commit()
+        return gone
+
+
+def mark_report_run(report_id: int, at: int) -> None:
+    with get_connection() as conn:
+        conn.execute("UPDATE reports SET last_run_at = ? WHERE id = ?;", (at, report_id))
+        conn.commit()
+
+
+def add_report_run(report_id: int, made_at: int, trigger: str, total: int, csv_data: Optional[bytes],
+                   pdf_data: Optional[bytes], error: str = "") -> int:
+    """Keeps a run and its files; only the newest REPORT_RUNS_KEPT of each report stay."""
+    with get_connection() as conn:
+        cur = conn.execute("INSERT INTO report_runs (report_id, made_at, trigger, total, csv, pdf, error) VALUES (?, ?, ?, ?, ?, ?, ?);",
+                           (report_id, made_at, trigger, total, csv_data, pdf_data, error))
+        conn.execute("DELETE FROM report_runs WHERE report_id = ? AND id NOT IN "
+                     "(SELECT id FROM report_runs WHERE report_id = ? ORDER BY made_at DESC, id DESC LIMIT ?);",
+                     (report_id, report_id, REPORT_RUNS_KEPT))
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def list_report_runs(report_id: int) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT id, report_id, made_at, trigger, total, error, csv IS NOT NULL AS has_csv, pdf IS NOT NULL AS has_pdf, "
+            "LENGTH(csv) AS csv_size, LENGTH(pdf) AS pdf_size FROM report_runs WHERE report_id = ? ORDER BY made_at DESC, id DESC;",
+            (report_id,))]
+
+
+def get_report_run_file(run_id: int, kind: str) -> Optional[Tuple[int, int, bytes]]:
+    """(report_id, made_at, file) of a stored run; kind is csv or pdf."""
+    if kind not in ("csv", "pdf"):
+        return None
+    with get_connection() as conn:
+        row = conn.execute(f"SELECT report_id, made_at, {kind} AS data FROM report_runs WHERE id = ?;", (run_id,)).fetchone()
+        return (row["report_id"], row["made_at"], bytes(row["data"])) if row and row["data"] is not None else None

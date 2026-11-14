@@ -29,7 +29,8 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+import uuid
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import database
 import tpl
@@ -51,7 +52,7 @@ EVENTS = {
     "workflow": ("Workflow finished", True, "Workflow {workflow}: {status}{failed_step}"),
     "workflow_start": ("Workflow started", False, "Workflow {workflow} started ({trigger})"),
     "new_device": ("New device on the network", True, "New on the network: {what}"),
-    "certificate": ("HTTPS certificate expiring", True, "The monitor's HTTPS certificate expires on {date} ({days} days). Upload a new one in Settings, HTTPS."),
+    "certificate": ("HTTPS certificate expiring", True, "The monitor's HTTPS certificate expires on {date} ({days} days). Upload a new one in Settings, System, HTTPS."),
     # Changes to users, credentials and host keys, lockouts, HTTPS, updates and restores (SECURITY_TEXTS).
     "security": ("Security alerts", True, "Security: {what}\n{if who}By {who}{end}{if source} from {source}{end}"),
     # Not an event of its own: several messages that came at once, sent as one (Notifier.drain, notify_group).
@@ -142,7 +143,7 @@ SECURITY_TEXTS = {
     "update_failed": "{kind} to {to} failed: {error}",
     "restored": "The monitor's data was restored from a backup: {file}",
     "retention": "The audit log is now kept for {days} days (it was {old})",
-    "backup_passphrase": "The backup passphrase was {how} in Settings, Backups",
+    "backup_passphrase": "The backup passphrase was {how} in Settings, Data and backups",
 }
 # What the event log says for a sent security alert: its text names people and addresses, and
 # device-less events are seen by every user.
@@ -190,9 +191,11 @@ class TelegramError(Exception):
     pass
 
 
-def _post(token: str, method: str, payload: Dict[str, Any], timeout: float = 15.0) -> Dict[str, Any]:
-    req = urllib.request.Request(f"{API}/bot{token}/{method}", data=json.dumps(payload).encode("utf-8"),
-                                 headers={"Content-Type": "application/json"}, method="POST")
+def _post(token: str, method: str, payload: Dict[str, Any], timeout: float = 15.0,
+          raw: Optional[Tuple[bytes, str]] = None) -> Dict[str, Any]:
+    """A Bot API call: JSON, or raw (body, content type) for a file upload."""
+    body, ctype = raw if raw else (json.dumps(payload).encode("utf-8"), "application/json")
+    req = urllib.request.Request(f"{API}/bot{token}/{method}", data=body, headers={"Content-Type": ctype}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=ssl.create_default_context()) as r:
             data = json.loads(r.read().decode("utf-8"))
@@ -210,6 +213,22 @@ def _post(token: str, method: str, payload: Dict[str, Any], timeout: float = 15.
     if not data.get("ok"):
         raise TelegramError(data.get("description", "Telegram returned an error"))
     return data.get("result", {})
+
+
+def send_document(token: str, chat_id: str, filename: str, data: bytes, mime: str, caption: str = "") -> None:
+    """Sends a file (a report) to the chat, as multipart/form-data. Telegram takes up to 50 MB."""
+    boundary = "hm" + uuid.uuid4().hex
+    safe_name = re.sub(r'[^A-Za-z0-9._-]', "_", filename)[:100] or "report"
+    crlf = "\r\n"
+    parts = []
+    for name, value in (("chat_id", chat_id), ("caption", caption[:1000])):
+        if value:
+            parts.append(f'--{boundary}{crlf}Content-Disposition: form-data; name="{name}"{crlf}{crlf}{value}{crlf}'.encode("utf-8"))
+    head = (f'--{boundary}{crlf}Content-Disposition: form-data; name="document"; filename="{safe_name}"{crlf}'
+            f"Content-Type: {mime}{crlf}{crlf}")
+    parts.append(head.encode("utf-8") + data + crlf.encode("ascii"))
+    parts.append(f"--{boundary}--{crlf}".encode("ascii"))
+    _post(token, "sendDocument", {}, timeout=60.0, raw=(b"".join(parts), f"multipart/form-data; boundary={boundary}"))
 
 
 def send(token: str, chat_id: str, text: str, silent: bool = False) -> None:

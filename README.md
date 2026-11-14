@@ -32,11 +32,12 @@ installs with one file and backs itself up.
 | 🚨 **Alerts** | Rules with thresholds, durations and severities. Problems group sensibly (a switch going down does not page you for everything behind it). Quiet hours, maintenance windows and acknowledgements. |
 | 📱 **Telegram** | Alerts with your own message texts, plus a read-only bot you can ask for status. |
 | 🤖 **Automation** | A visual workflow builder: SSH commands on your hosts, waits, conditions and schedules, or a trigger when something happens. Ready-made host actions for common Linux chores. |
-| 🗺️ **Map and dashboards** | A network map that understands upstream links, and several dashboards built from tiles. |
+| 🗺️ **Map and dashboards** | A network map that understands upstream links and shows Wi-Fi devices and link traffic, plus several dashboards built from tiles. |
+| 📄 **Reports** | Ready-made reports you can adjust (availability, problems, device health, storage, Wi-Fi, Pi-hole and more), downloaded as a PDF or a CSV file. Save one to run every day, week or month and have it sent to Telegram. |
 | 🔌 **Integrations** | Proxmox (guests, storage, start and stop), UniFi (clients, Wi-Fi, switch ports) and Pi-hole. |
 | 👥 **Users** | Roles and per-device access, two-factor authentication and an audit log. |
 | 💾 **Backups** | A daily backup with everything a rebuild needs, kept locally or synced to your NAS with Syncthing. Set a backup passphrase and each backup is sealed and can prove it was not changed. Restore in place from the installer. |
-| 🔄 **Updates** | Settings, Updates installs new signed releases, keeps a backup and lets you undo the update for two days. |
+| 🔄 **Updates** | Settings, System, Updates installs new signed releases, keeps a backup and lets you undo the update for two days. |
 
 ## 🚀 Getting started
 
@@ -142,7 +143,7 @@ checks the signature by itself before every update.
 ## 🔄 Updating
 
 - **From the app:** the monitor looks for a new version once a day and shows a red number on
-  Settings when one is ready. Settings, Updates shows what is new in it, and *Update now* does the
+  Settings when one is ready. Settings, System, Updates shows what is new in it, and *Update now* does the
   rest while you watch. An update is installed only if its signature matches the release key built
   into your copy. It backs up first and puts the old version back by itself if the new one does not
   start. For two days you can still go back, and the update history keeps the log of every update.

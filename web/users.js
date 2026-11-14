@@ -1,4 +1,4 @@
-/* Settings, Users: add, edit, block, log out, reset the password of and delete users.
+/* Settings, Users and sign-in: add, edit, block, log out, reset the password of and delete users.
  *
  * Roles bundle permissions; Custom ticks them one by one. Device access limits a
  * user to chosen templates and devices. The server enforces all of it; this page

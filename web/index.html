@@ -46,6 +46,9 @@
       <a href="#/events" id="nav-events" class="nav-link" title="Events">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg>
         <span class="sidebar-text">Events</span></a>
+      <a href="#/reports" id="nav-reports" class="nav-link" title="Reports">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16"/><rect x="5" y="11" width="3" height="6" rx="0.5"/><rect x="10.5" y="7" width="3" height="10" rx="0.5"/><rect x="16" y="4" width="3" height="13" rx="0.5"/></svg>
+        <span class="sidebar-text">Reports</span></a>
       <a href="#/automation" id="nav-automation" class="nav-link" title="Automation">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>
         <span class="sidebar-text">Automation</span></a>
@@ -122,7 +125,7 @@
   </header>
   <div class="app-content" id="app-content">
 
-  <!-- Required 2FA (Settings, Login security): shown over everything until it is set up. -->
+  <!-- Required 2FA (Settings, Users and sign-in, Login security): shown over everything until it is set up. -->
   <div id="enrol-screen" class="auth-screen hidden">
     <div class="auth-card enrol-card">
       <div class="brand">Network Monitor & Automation</div>
@@ -152,7 +155,7 @@
     <form id="auth-form" class="auth-card" autocomplete="on">
       <div class="brand">Network Monitor & Automation</div>
       <div class="auth-title" id="auth-title">Log in</div>
-      <div class="auth-warning hidden" id="auth-https-lost">HTTPS could not start on this monitor, so logging in from another computer is switched off. This keeps your password from crossing the network unprotected. Monitoring and alerts keep running. To get back in, open the monitor's container, run <code>/root/update.sh</code> and choose option 6. You can then set up HTTPS again in Settings, HTTPS.</div>
+      <div class="auth-warning hidden" id="auth-https-lost">HTTPS could not start on this monitor, so logging in from another computer is switched off. This keeps your password from crossing the network unprotected. Monitoring and alerts keep running. To get back in, open the monitor's container, run <code>/root/update.sh</code> and choose option 6. You can then set up HTTPS again in Settings, System, HTTPS.</div>
       <div class="form-help hidden" id="auth-setup-help">No administrator account exists yet. Choose a username and a password of at least <span id="auth-min"></span> characters. Keep the password in your password manager. If it is ever lost, <code>/root/reset-admin.sh</code> on the container sets a new one.</div>
       <div class="auth-fields" id="auth-fields">
         <div class="form-group">
@@ -783,7 +786,7 @@
           <label for="confirm-code">Authenticator code</label>
           <input type="text" id="confirm-code" inputmode="numeric" maxlength="10" autocomplete="one-time-code" placeholder="6 digits, or a recovery code">
         </div>
-        <div class="form-help text-warn hidden" id="confirm-suggest">Tip: turn on two-factor authentication in Settings, Account. Then these steps also ask for a code from your phone.</div>
+        <div class="form-help text-warn hidden" id="confirm-suggest">Tip: turn on two-factor authentication under your name at the top right, Account and password. Then these steps also ask for a code from your phone.</div>
         <div class="auth-error hidden" id="confirm-error"></div>
       </div>
       <div class="modal-footer">
@@ -1013,6 +1016,7 @@
     </div>
     <div class="settings-layout">
       <div class="settings-main">
+        <nav class="settings-tabs hidden" id="settings-tabs" aria-label="System"></nav>
         <div id="settings-sections"></div>
         <section class="settings-card hidden" id="settings-groups" data-card="groups">
           <div class="settings-card-head"><h3>Groups and tags</h3><p>How devices are sorted (groups) and labelled (tags). Groups decide where a device is listed; tags filter lists and dashboard tiles and can carry their own alert rules.</p></div>
@@ -1200,7 +1204,7 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
           </form>
         </section>
         <section class="settings-card hidden" id="settings-account" data-card="account">
-          <div class="settings-card-head"><h3>Account</h3><p>Your sign-in details. Each person who uses the monitor should have their own user (Settings, Users).</p></div>
+          <div class="settings-card-head"><h3>Account</h3><p>Your sign-in details. Each person who uses the monitor should have their own user (Settings, Users and sign-in).</p></div>
           <div class="account-who" id="account-who"></div>
           <div class="account-2fa" id="account-2fa"></div>
           <form id="password-form" class="account-form">
@@ -1318,8 +1322,70 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
         <div class="panel-header-bar">Most blocked today</div>
         <table><thead><tr><th>Domain</th><th data-type="num">Blocked</th></tr></thead><tbody id="ph-blocked-body"></tbody></table>
       </div>
+      <div class="panel">
+        <div class="panel-header-bar">Most asked today</div>
+        <table><thead><tr><th>Domain</th><th data-type="num">Queries</th></tr></thead><tbody id="ph-allowed-body"></tbody></table>
+      </div>
+      <div class="panel">
+        <div class="panel-header-bar">Busiest clients today</div>
+        <table><thead><tr><th>Client</th><th>Address</th><th data-type="num">Queries</th></tr></thead><tbody id="ph-clients-body"></tbody></table>
+      </div>
+      <div class="panel hidden" id="ph-types-panel">
+        <div class="panel-header-bar">Kinds of query today</div>
+        <div id="ph-types" class="ph-types"></div>
+      </div>
     </div>
     <div class="chart-grid" id="ph-charts"></div>
+  </main>
+
+  <main id="view-reports" class="view-panel hidden">
+    <div class="section-header">
+      <span class="section-title page-title">Reports</span>
+    </div>
+    <div class="rep-layout">
+      <aside class="rep-side">
+        <div class="panel rep-side-panel">
+          <div class="rep-side-head">Templates</div>
+          <div id="rep-templates" class="rep-templates"></div>
+        </div>
+        <div class="panel rep-side-panel">
+          <div class="rep-side-head">Saved reports</div>
+          <div id="rep-saved"></div>
+        </div>
+      </aside>
+      <section class="rep-main">
+        <div class="panel rep-custom">
+          <div class="rep-custom-head"><span id="rep-heading" class="rep-heading"></span>
+            <button type="button" class="btn btn-small hidden" id="btn-rep-new">Start a new one</button></div>
+          <div class="form-row">
+            <div class="form-group"><label for="rep-title">Title</label><input type="text" id="rep-title" maxlength="120"></div>
+            <div class="form-group" id="rep-period-group"><label for="rep-period">Period</label><select id="rep-period"></select></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label for="rep-covers">Covers</label>
+              <select id="rep-covers"><option value="">All devices</option><option value="group">One group</option>
+                <option value="tag">Devices with a tag</option><option value="device">One device</option></select></div>
+            <div class="form-group"><label for="rep-which" class="sr-only">Which</label><select id="rep-which" class="hidden"></select></div>
+          </div>
+          <div class="form-group"><span class="form-label">Columns <span class="dim">(ticked ones, in this order)</span></span>
+            <ul id="rep-columns" class="rep-columns"></ul></div>
+          <div class="form-row three">
+            <div class="form-group"><label for="rep-sort">Sort by</label><select id="rep-sort"></select></div>
+            <div class="form-group"><label for="rep-desc">Order</label>
+              <select id="rep-desc"><option value="0">Lowest first, A to Z</option><option value="1">Highest first, Z to A</option></select></div>
+            <div class="form-group"><label for="rep-limit">Only the first</label><input type="number" id="rep-limit" min="1" max="5000" placeholder="All rows"></div>
+          </div>
+          <div class="rep-actions">
+            <button type="button" class="btn btn-primary" id="btn-rep-run">Show the report</button>
+            <button type="button" class="btn" id="btn-rep-pdf">Download PDF</button>
+            <button type="button" class="btn" id="btn-rep-csv">Download CSV</button>
+            <span class="topbar-spacer"></span>
+            <button type="button" class="btn hidden" id="btn-rep-save">Save...</button>
+          </div>
+        </div>
+        <div id="rep-preview" class="rep-preview"></div>
+      </section>
+    </div>
   </main>
 
   <main id="view-inventory" class="view-panel hidden">
@@ -1332,6 +1398,7 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
       </div>
     </div>
     <div class="panel-note-bar hidden" id="inv-learning"></div>
+    <div class="metrics-summary-row inv-tiles" id="inv-tiles"></div>
     <form class="filter-bar" id="inv-filters" autocomplete="off">
       <input type="search" id="inv-q" class="filter-input" placeholder="Search names, addresses, makers, notes...">
       <select id="inv-show" title="Show">
@@ -1357,7 +1424,7 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
       <nav class="guide-toc" aria-label="Guide contents">
         <div class="guide-search">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></svg>
-          <input type="text" id="guide-search" placeholder="Search the guide" autocomplete="off" spellcheck="false" aria-label="Search the guide">
+          <input type="text" id="guide-search" placeholder="Search or ask a question" autocomplete="off" spellcheck="false" aria-label="Search the guide">
         </div>
         <div class="guide-count dim" id="guide-count"></div>
         <a href="#" id="guide-changes" class="btn guide-changes">What's changed</a>
@@ -1365,6 +1432,7 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
       </nav>
       <div class="guide-main">
         <div class="panel-note-bar hidden" id="guide-none">Nothing in the guide matches that.</div>
+        <div class="guide-answers hidden" id="guide-answers"></div>
         <div class="guide-body" id="guide-body"><div class="dim">Loading...</div></div>
       </div>
     </div>
@@ -1394,6 +1462,7 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
         </form>
         <button id="map-link" class="btn map-edit-only hidden" title="Click two nodes to connect them">Link</button>
         <button id="map-layout" class="btn map-edit-only hidden">Arrange as tree</button>
+        <button id="map-traffic" class="btn" type="button" aria-pressed="false" title="Show the traffic on links whose port the monitor reads over SNMP">Traffic</button>
         <button id="map-edit" data-perm="map.edit" data-unscoped class="btn">Edit</button>
       </div>
     </div>
@@ -1782,6 +1851,8 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
         </details>
       </div>
       <div class="modal-footer">
+        <button id="btn-test-edit-snmp" class="btn snmp-only" type="button" title="Tries the SNMP settings above on the device without saving them">Test SNMP</button>
+        <span class="topbar-spacer"></span>
         <button id="btn-cancel-edit-modal" class="btn">Cancel</button>
         <button id="btn-save-edit-device" class="btn btn-primary">Save changes</button>
       </div>
@@ -1859,6 +1930,7 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
   <script src="/changes.js"></script>
   <script src="/lan.js"></script>
   <script src="/inventory.js"></script>
+  <script src="/reports.js"></script>
   <script src="/guide.js"></script>
 </body>
 </html>

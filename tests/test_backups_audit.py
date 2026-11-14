@@ -438,6 +438,12 @@ class RootResultWatchTests(unittest.TestCase):
                                                           "error": "Download failed"})])
         rows = [(a["message"], a["actor"]) for a in database.list_audit_filtered(q="0.12.1")[0]]
         self.assertIn(("Update from 0.12.0 to 0.12.1 failed", "root"), rows)
+        # The same as an event: on the Events page and in the bell of an administrator.
+        events, _ = database.list_events_filtered(q="0.12.1", event_type="update")
+        self.assertEqual([(e["severity"], e["message"]) for e in events],
+                         [("warning", "Update from 0.12.0 to 0.12.1 failed: Download failed")])
+        bell = database.list_notifications(None, "admin")
+        self.assertIn("Update from 0.12.0 to 0.12.1 failed: Download failed", [n["message"] for n in bell])
 
     def test_first_run_sets_the_marker_silently(self):
         self.write_history([{"id": 7, "time": int(time.time()), "kind": "update", "from": "a", "to": "b", "ok": True}])

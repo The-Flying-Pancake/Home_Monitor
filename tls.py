@@ -512,8 +512,8 @@ def daily_check(notify, now: Optional[float] = None) -> Optional[str]:
         if now - last < (86400 if days <= 7 else 7 * 86400) - 3600:
             return None
     database.set_internal_setting(WARNED_KEY, f"{date}|{today}")
-    text = (f"The HTTPS certificate expires on {date} ({max(days, 0)} days). Upload a new one in Settings, HTTPS."
-            if days >= 0 else f"The HTTPS certificate expired on {date}. Upload a new one in Settings, HTTPS.")
+    text = (f"The HTTPS certificate expires on {date} ({max(days, 0)} days). Upload a new one in Settings, System, HTTPS."
+            if days >= 0 else f"The HTTPS certificate expired on {date}. Upload a new one in Settings, System, HTTPS.")
     database.add_event(None, "warning" if days > 7 else "high", "system", text)
     notify(max(days, 0), date)
     return "warned"

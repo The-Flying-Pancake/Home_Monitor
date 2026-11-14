@@ -74,7 +74,9 @@ class Pihole6(Quiet):
         if self.headers.get("X-FTL-SID") != "S1":
             return self.reply(401, {"error": "unauthorized"})
         if self.path == "/api/stats/summary":
-            return self.reply(200, {"queries": {"total": 1000, "blocked": 150, "percent_blocked": 15.0},
+            return self.reply(200, {"queries": {"total": 1000, "blocked": 150, "percent_blocked": 15.0, "cached": 400,
+                                                "forwarded": 450, "unique_domains": 321, "frequency": 1.5,
+                                                "types": {"A": 600, "AAAA": 300, "HTTPS": 100, "MX": 0}},
                                     "clients": {"active": 9}, "gravity": {"domains_being_blocked": 120000,
                                                                           "last_update": time.time() - 20 * 86400}})
         if self.path == "/api/dns/blocking":
@@ -84,6 +86,8 @@ class Pihole6(Quiet):
                                                    "statistics": {"response": 0.012}}]})
         if self.path.startswith("/api/stats/top_domains"):
             return self.reply(200, {"domains": [{"domain": "ads.example", "count": 40}]})
+        if self.path.startswith("/api/stats/top_clients"):
+            return self.reply(200, {"clients": [{"name": "laptop", "ip": "192.0.2.20", "count": 250}]})
         self.reply(404, {})
 
 
@@ -102,7 +106,7 @@ class Pihole5(Quiet):
         if "getForwardDestinations" in self.path:
             return self.reply(200, {"forward_destinations": {"dns.google|8.8.8.8": 60.0}})
         if "topItems" in self.path:
-            return self.reply(200, {"top_ads": {"tracker.example": 12}})
+            return self.reply(200, {"top_ads": {"tracker.example": 12}, "top_queries": {"example.org": 80}})
         self.reply(404, {})
 
 
@@ -545,6 +549,9 @@ class PiholeTests(unittest.TestCase):
             self.assertEqual((data["version"], m["pihole.queries"], m["pihole.blocked_pct"], m["pihole.blocking"]), (6, 1000.0, 15.0, 0.0))
             self.assertAlmostEqual(m["pihole.gravity_days"], 20, delta=0.2)
             self.assertEqual(data["upstreams"][0]["response_ms"], 12.0)
+            self.assertEqual((m["pihole.cached"], m["pihole.unique_domains"], m["pihole.qps"]), (400.0, 321.0, 1.5))
+            self.assertEqual(data["clients"], [{"name": "laptop", "ip": "192.0.2.20", "count": 250}])
+            self.assertEqual([t["type"] for t in data["types"]], ["A", "AAAA", "HTTPS"])      # none of a kind: left out
             pihole.collect({"url": base, "secret": "app-pass", "fingerprint": ""})
             self.assertEqual(Pihole6.logins, 1)                                                # the session is reused
             pihole.SESSION.clear()
@@ -560,6 +567,8 @@ class PiholeTests(unittest.TestCase):
             data = pihole.collect({"url": base, "secret": "tok5", "fingerprint": ""})
             self.assertEqual((data["version"], data["metrics"]["pihole.queries"], data["metrics"]["pihole.blocking"]), (5, 500.0, 1.0))
             self.assertEqual(data["blocked"], [{"domain": "tracker.example", "count": 12}])
+            self.assertEqual(data["allowed"], [{"domain": "example.org", "count": 80}])
+            self.assertEqual(data["clients"], [])                  # topClients not answered: the rest still works
             pihole.SESSION.clear()
             pihole.SESSION.version = 5
             with self.assertRaises(pihole.PiholeError):

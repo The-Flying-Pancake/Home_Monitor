@@ -492,7 +492,7 @@ def t_settings_sidebar(b):
     visible = "(id => { const e = document.getElementById(id); return !!e && e.offsetParent !== null; })"
     assert b.eval(f"{visible}('settings-nav')"), "settings menu not shown in the sidebar"
     assert not b.eval(f"{visible}('nav-dashboard')"), "main menu still shown in Settings"
-    assert b.eval("!!document.querySelector('#sidebar #settings-nav a[data-section=polling].active')")
+    assert b.eval("!!document.querySelector('#sidebar #settings-nav a[data-section=checking].active')")
     assert b.eval("document.getElementById('settings-back').getAttribute('href')") == "#/events"
     b.eval("document.getElementById('settings-back').click(); true")
     b.wait_for("window.location.hash === '#/events'")
@@ -534,7 +534,7 @@ def t_updates(b):
         run(b, "refreshUpdateBadge(); true")
         b.wait_for("!document.getElementById('nav-settings-badge').classList.contains('hidden')")
         goto(b, "#/settings/updates")
-        b.wait_for("!!document.querySelector('#settings-nav a[data-section=updates] .nav-badge')")
+        b.wait_for("!!document.querySelector('#settings-nav a[data-section=system] .nav-badge')")
         # The card as an installed monitor shows it (this test server is a development copy).
         base = ("{installed: true, current: '0.0.1', repository: 'https://example.com/r', rollback: {}, skipped: '', "
                 "waiting: 1, pending: {check: false, work: false}, check: {ok: true, newer: true, latest: '98.0.0', "
@@ -657,6 +657,125 @@ def t_snmp_v3_fields(b):
         pass
     b.eval("document.getElementById('modal-edit-device').classList.add('hidden'); true")
     return f"fields fill the {box:.0f} px box, privacy fields follow the box"
+
+
+@check("Edit device: Test SNMP checks the typed settings without saving them")
+def t_snmp_test_before_saving(b):
+    goto(b, f"#/device/{DEV_GRAPH}")
+    b.eval(f"openEditModal({DEV_GRAPH}); true")
+    b.wait_for("!document.getElementById('modal-edit-device').classList.contains('hidden') && !document.getElementById('btn-test-edit-snmp').classList.contains('hidden')")
+    run(b, "document.getElementById('btn-test-edit-snmp').click(); true")
+    b.wait_for("[...document.querySelectorAll('.snmp-check .modal-header')].some(h => h.textContent.includes('not saved yet'))")
+    b.wait_for("!!document.querySelector('.snmp-check .sc-steps, .snmp-check .form-error')", timeout=30)
+    assert not b.eval("!!document.querySelector('.snmp-check [data-sc-edit]')"), "Edit device offered inside Edit device"
+    run(b, "document.querySelector('.snmp-check [data-sc-close]').click(); true")
+    assert not b.eval("document.getElementById('modal-edit-device').classList.contains('hidden')"), "the edit window closed"
+    b.eval("document.getElementById('modal-edit-device').classList.add('hidden'); true")
+    return "checked from the edit window, edit window kept"
+
+
+@check("After an update the open page reloads itself, but not while something is being edited")
+def t_reload_after_update(b):
+    goto(b, "#/devices")
+    b.wait_for("typeof loadedVersion !== 'undefined' && !!loadedVersion")
+    run(b, "window.__stay = 1; const w = document.createElement('div'); w.className = 'modal-backdrop'; w.id = 'fake-dialog'; document.body.appendChild(w); "
+           "noteServerVersion('99.0.0'); true")
+    b.wait_for("[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('updated to 99.0.0'))")
+    time.sleep(3.5)
+    assert b.eval("window.__stay === 1"), "reloaded while a window was open"
+    run(b, "document.getElementById('fake-dialog').remove(); true")
+    b.wait_for("window.__stay === undefined", timeout=15)
+    b.wait_for("typeof loadedVersion !== 'undefined' && !!loadedVersion && !!document.getElementById('tbl-devices')")
+    return "waited for the window, then reloaded"
+
+
+@check("Alert rules, Wi-Fi networks: weak signal per network, its own line only when chosen")
+def t_alert_wifi(b):
+    import database
+    import inventory
+    now = int(time.time())
+    with database.get_connection() as c:
+        c.execute("INSERT OR REPLACE INTO inventory (mac, ip, seen_name, vendor, where_seen, via, first_seen, last_seen, known, ssid) "
+                  "VALUES ('aa:aa:aa:00:02:01', '', 'guest-phone', 'Acme', 'ap (Wi-Fi, -80 dBm)', 'wifi', ?, ?, 0, 'Guest-WiFi');", (now, now))
+        c.commit()
+    try:
+        goto(b, "#/settings/alerts/wifi")
+        b.wait_for("!!document.querySelector('[data-arw-net=\"Guest-WiFi\"]')")
+        assert b.eval("document.getElementById('ar-scope').value") == "wifi"
+        row = "document.querySelector('[data-arw-net=\"Guest-WiFi\"]')"
+        assert b.eval(f"{row}.querySelector('[data-arw-line]').classList.contains('hidden')")
+        run(b, f"const s = {row}.querySelector('[data-arw-mode]'); s.value = 'line'; s.dispatchEvent(new Event('change')); "
+               f"{row}.querySelector('[data-arw-line]').value = '-86'; true")
+        assert not b.eval(f"{row}.querySelector('[data-arw-line]').classList.contains('hidden')")
+        run(b, "document.getElementById('arw-save').click(); true")
+        b.wait_for("(document.getElementById('toast-stack').textContent || '').includes('Wi-Fi rules saved')")
+        rules = api("/api/inventory")["wifi_net_alerts"]
+        assert rules == {"Guest-WiFi": -86} or rules == {"Guest-WiFi": "-86"}, rules
+        return "set below its own line from Alert rules"
+    finally:
+        database.delete_settings([inventory.WIFI_NET_ALERT_KEY])
+        with database.get_connection() as c:
+            c.execute("DELETE FROM inventory WHERE mac = 'aa:aa:aa:00:02:01';")
+            c.commit()
+
+
+@check("Map: an access point shows its Wi-Fi devices; Traffic shows the rate on a measured link")
+def t_map_wifi_traffic(b):
+    import database
+    now = int(time.time())
+    database.replace_device_table(DEV_GRAPH, "wifi_clients", {
+        "aa:bb:cc:00:00:01": {"mac": "aa:bb:cc:00:00:01", "name": "kitchen-tablet", "ssid": "Home", "band": "5 GHz", "signal": -82},
+        "aa:bb:cc:00:00:02": {"mac": "aa:bb:cc:00:00:02", "name": "office-laptop", "ssid": "Home", "band": "5 GHz", "signal": -55}}, now)
+    try:
+        goto(b, "#/map")
+        run(b, "mapData = null; loadMap(); true")          # the page may still hold the map from before
+        b.wait_for(f"!!mapData && !!document.querySelector('[data-node=\"d:{DEV_GRAPH}\"] .map-kind') && document.querySelector('[data-node=\"d:{DEV_GRAPH}\"] .map-kind').textContent.includes('Wi-Fi')")
+        kind = b.eval(f"document.querySelector('[data-node=\"d:{DEV_GRAPH}\"] .map-kind').textContent")
+        assert "2 on Wi-Fi, 1 weak" in kind, kind
+        run(b, f"mapSelected = 'd:{DEV_GRAPH}'; drawMap(); true")
+        b.wait_for("!!document.querySelector('#map-info .map-wifi li.weak')")
+        assert "kitchen-tablet" in b.eval("document.querySelector('#map-info .map-wifi li.weak').textContent")
+        run(b, "mapSelected = null; drawMap(); true")
+        pressed = b.eval("document.getElementById('map-traffic').getAttribute('aria-pressed')")
+        run(b, "document.getElementById('map-traffic').click(); true")
+        assert b.eval("document.getElementById('map-traffic').getAttribute('aria-pressed')") != pressed
+        run(b, "document.getElementById('map-traffic').click(); true")
+        return "Wi-Fi count and weak device on the access point; Traffic switches"
+    finally:
+        database.replace_device_table(DEV_GRAPH, "wifi_clients", {}, now)
+
+
+@check("Reports: a template, the customizer, the preview, saving with a schedule and its kept files")
+def t_reports(b):
+    goto(b, "#/reports")
+    b.wait_for("document.querySelectorAll('#rep-templates [data-rep-template]').length >= 9")
+    run(b, "document.querySelector('[data-rep-template=\"devices\"]').click(); true")
+    run(b, "document.getElementById('btn-rep-run').click(); true")
+    b.wait_for("!!document.querySelector('#rep-preview .rep-table tbody tr')")
+    heads = b.eval("[...document.querySelectorAll('#rep-preview .rep-table th')].map(t => t.textContent)")
+    assert "SNMP" in heads, heads
+    assert b.eval("!!document.querySelector('#rep-preview .rep-chart')"), "no chart"
+    # Customizer: one column less, one device only.
+    run(b, "const c = document.querySelector('[data-rep-col=\"group\"]'); c.checked = false; c.dispatchEvent(new Event('change', {bubbles: true})); true")
+    run(b, "const s = document.getElementById('rep-covers'); s.value = 'device'; s.dispatchEvent(new Event('change', {bubbles: true})); true")
+    assert not b.eval("document.getElementById('rep-which').classList.contains('hidden')")
+    run(b, "document.getElementById('btn-rep-run').click(); true")
+    b.wait_for("document.querySelectorAll('#rep-preview .rep-table tbody tr').length === 1")
+    heads = b.eval("[...document.querySelectorAll('#rep-preview .rep-table th')].map(t => t.textContent)")
+    assert "Group" not in heads, heads
+    # Save it to run every day, then run it now: its files are listed.
+    run(b, "document.getElementById('btn-rep-save').click(); true")
+    b.wait_for("!!document.getElementById('rep-save-name')")
+    run(b, "document.getElementById('rep-save-name').value = 'Browser check report'; const w = document.getElementById('rep-save-when'); "
+           "w.value = 'daily'; w.dispatchEvent(new Event('change')); document.getElementById('rep-save-formats').value = 'both'; "
+           "document.querySelector('.rep-save button[type=submit]').click(); true")
+    b.wait_for("[...document.querySelectorAll('#rep-saved .rep-saved-head strong')].some(s => s.textContent === 'Browser check report')")
+    run(b, "[...document.querySelectorAll('#rep-saved .rep-saved-item')].find(i => i.textContent.includes('Browser check report'))"
+           ".querySelector('[data-rep-run]').click(); true")
+    b.wait_for("[...document.querySelectorAll('#rep-saved .rep-saved-item')].some(i => i.textContent.includes('Browser check report') && i.querySelector('a[href$=\".pdf\"]'))")
+    status = b.eval("(async () => (await fetch(document.querySelector('#rep-saved a[href$=\".pdf\"]').href)).status)()")
+    assert status == 200, status
+    return f"preview, customizer and a saved daily report with its PDF ({len(heads)} columns)"
 
 
 @check("Required after an update: the screen waits for What's changed, shows the step, lets the app go once done")
@@ -1024,20 +1143,24 @@ def t_inventory_quiet(b):
         b.eval("window.__noAutoDialog = true; true")       # these windows are filled in by the check itself
         b.wait_for("document.getElementById('inventory-body').textContent.includes('tenant-tv')")
         assert "Wi-Fi network" in b.eval("document.querySelector('#tbl-inventory thead').textContent")
+        # Tiles count each kind and filter the list with a click.
+        tiles = b.eval("Object.fromEntries([...document.querySelectorAll('[data-inv-tile]')].map(t => [t.dataset.invTile, t.querySelector('.summary-val').textContent]))")
+        assert tiles.get("new") not in (None, "0") and tiles.get("wifi") not in (None, "0"), tiles
+        run(b, "document.querySelector('[data-inv-tile=\"wifi\"]').click(); true")
+        assert b.eval("document.getElementById('inv-show').value") == "wifi"
+        assert b.eval("document.querySelector('[data-inv-tile=\"wifi\"]').classList.contains('active')")
+        run(b, "document.querySelector('[data-inv-tile=\"\"]').click(); true")
         assert "Home" in b.eval("document.querySelector('[data-inv-edit=\"aa:aa:aa:00:01:02\"]').closest('tr').textContent")
-        # Wi-Fi networks: Tenant quiet with its weak signal never reported, save; its device leaves the
-        # list (and is not known). The own line input shows only for "its own line".
+        # Wi-Fi networks: Tenant quiet, save; its device leaves the list (and is not known). The weak
+        # signal rule per network is no longer here: the window points to Alert rules.
         run(b, "document.getElementById('btn-inv-quiet-nets').click(); true")
         b.wait_for("!!document.querySelector('[data-net-row=\"Tenant\"]')")
         row = "document.querySelector('[data-net-row=\"Tenant\"]')"
-        assert b.eval(f"{row}.querySelector('[data-net-line]').classList.contains('hidden')")
-        run(b, f"const w = {row}.querySelector('[data-net-weak]'); w.value = 'line'; w.dispatchEvent(new Event('change', {{bubbles: true}})); true")
-        assert not b.eval(f"{row}.querySelector('[data-net-line]').classList.contains('hidden')")
-        run(b, f"const w = {row}.querySelector('[data-net-weak]'); w.value = 'off'; w.dispatchEvent(new Event('change', {{bubbles: true}})); "
-               f"{row}.querySelector('[data-net-quiet]').checked = true; {row}.closest('form').requestSubmit(); true")
+        assert not b.eval(f"!!{row}.querySelector('select')"), "weak signal still in the Inventory window"
+        assert b.eval("!!document.querySelector('.inv-editor a[href=\"#/settings/alerts/wifi\"]')")
+        run(b, f"{row}.querySelector('[data-net-quiet]').checked = true; {row}.closest('form').requestSubmit(); true")
         b.wait_for("!document.getElementById('inventory-body').textContent.includes('tenant-tv')")
-        rules = api("/api/inventory")["wifi_net_alerts"]
-        assert rules == {"Tenant": "off"}, rules
+        assert api("/api/inventory")["wifi_net_alerts"] == {}
         assert "1 quiet not shown" in b.eval("document.getElementById('inv-count').textContent")
         assert "No quiet networks" not in b.eval("document.getElementById('toast-stack').textContent"), "saved twice"
         run(b, "const s = document.getElementById('inv-show'); s.value = 'quiet'; s.dispatchEvent(new Event('change')); true")
@@ -1251,6 +1374,31 @@ def t_guide(b):
     b.wait_for("document.querySelector('#guide-toc a.active') && document.querySelector('#guide-toc a.active').dataset.guideLink === 'alerts'")
     assert b.eval("document.getElementById('topbar-title').textContent") == "Guide"
     return f"{n} sections, search narrows to {len(shown)}"
+
+
+@check("Guide: a plain question finds the answer, marks the words and pulses the paragraph opened")
+def t_guide_search(b):
+    goto(b, "#/guide")
+    b.wait_for("document.querySelectorAll('#guide-toc a').length >= 10")
+    ask = "const s = document.getElementById('guide-search'); s.value = %s; s.dispatchEvent(new Event('input')); true"
+    run(b, ask % "'How do I stop notifications from a specific SSID?'")
+    answers = b.eval("[...document.querySelectorAll('#guide-answers .guide-answer')].map(a => a.textContent.replace(/\\s+/g, ' ').trim())")
+    assert answers and any("Wi-Fi networks" in a for a in answers[:3]), answers
+    assert b.eval("document.querySelectorAll('#guide-body mark.guide-hit').length") > 0, "no words marked"
+    run(b, "document.querySelector('#guide-answers [data-answer=\"0\"]').click(); true")
+    b.wait_for("document.querySelector('#guide-body .guide-pulse') !== null")
+    # The other form of a word and a related word count too: "notifications" finds "notification".
+    run(b, ask % "'reboot'")
+    assert b.eval("document.querySelector('#guide-body section:not(.hidden) mark.guide-hit.near') !== null"), "related word not marked"
+    # Opening a topic from the contents while searching lands on its best paragraph.
+    run(b, ask % "'PVEAuditor'")
+    goto(b, "#/guide/proxmox")
+    b.wait_for("document.querySelector('#proxmox .guide-pulse') !== null")
+    assert "PVEAuditor" in b.eval("document.querySelector('#proxmox .guide-pulse').textContent")
+    run(b, ask % "''")
+    assert b.eval("document.querySelectorAll('#guide-body mark.guide-hit').length") == 0, "marks left after clearing"
+    assert b.eval("document.getElementById('guide-answers').classList.contains('hidden')")
+    return answers[0][:90]
 
 
 @check("Devices: tick boxes reveal Delete selected, which deletes both")
@@ -1514,12 +1662,12 @@ def t_event_log(b):
 def t_settings_guard(b):
     goto(b, "#/settings/polling")
     b.wait_for("!!document.getElementById('setting-default_poll_interval') && !document.querySelector('[data-card=polling]').classList.contains('hidden')")
-    visible = b.eval("[...document.querySelectorAll('#view-settings [data-card]')].filter(c => !c.classList.contains('hidden')).length")
-    assert visible == 1, visible
+    visible = b.eval("[...document.querySelectorAll('#view-settings [data-card]')].filter(c => !c.classList.contains('hidden')).map(c => c.dataset.card)")
+    assert visible == ["polling", "snmp", "live"], visible          # one page: Checking devices
     run(b, "const i = document.getElementById('setting-default_poll_interval'); i.value = '77'; i.dispatchEvent(new Event('input', {bubbles: true})); true")
-    # Another section keeps the edit; leaving Settings asks (answered Stay).
-    b.eval("window.location.hash = '#/settings/snmp'; true")
-    b.wait_for("!document.querySelector('[data-card=snmp]').classList.contains('hidden')")
+    # Another page keeps the edit; leaving Settings asks (answered Stay).
+    b.eval("window.location.hash = '#/settings/data'; true")
+    b.wait_for("!document.querySelector('[data-card=retention]').classList.contains('hidden') && document.querySelector('[data-card=polling]').classList.contains('hidden')")
     assert b.eval("document.getElementById('setting-default_poll_interval').value") == "77"
     pending = b.eval("JSON.stringify(unsavedSummary('#/devices'))")
     assert pending != "[]", f"no unsaved changes detected: {pending}"
@@ -1531,7 +1679,14 @@ def t_settings_guard(b):
     assert b.eval("document.getElementById('setting-default_poll_interval').value") == "77"
     b.eval("window.__noAutoDialog = false; document.getElementById('btn-discard-settings').click(); true")
     b.wait_for("document.getElementById('btn-save-settings').classList.contains('hidden')")
-    return "edit kept across sections; leaving asked first; discarded"
+    # System shows one tab at a time; an old link to a card opens its tab.
+    b.eval("window.location.hash = '#/settings/https'; true")
+    b.wait_for("!document.querySelector('[data-card=https]').classList.contains('hidden') && document.querySelector('[data-card=system]').classList.contains('hidden')")
+    assert b.eval("document.querySelector('#settings-tabs a.active').textContent.trim()") == "HTTPS"
+    assert b.eval("!!document.querySelector('#settings-nav a[data-section=system].active')")
+    groups = b.eval("[...document.querySelectorAll('#settings-nav .settings-nav-group')].map(g => g.textContent)")
+    assert groups == ["Monitoring", "Alerts", "Integrations", "System"], groups
+    return "edit kept across pages; leaving asked first; discarded; System tabs follow old links"
 
 
 @check("Two-factor authentication: turn on with a QR code, recovery codes shown, turn off")
@@ -1867,7 +2022,7 @@ def t_phone(b):
         fits = ("(() => { const w = innerWidth; return {w, scroll: document.documentElement.scrollWidth,"
                 " shell: Math.round(document.getElementById('app-shell').getBoundingClientRect().width)}; })()")
         routes = ["#/dashboard", "#/devices", f"#/device/{DEV_GRAPH}", "#/events", "#/availability", "#/map", "#/automation",
-                  "#/inventory", "#/guide", "#/audit", "#/settings/alerts", "#/settings/notify", "#/settings/groups", "#/settings/account"]
+                  "#/inventory", "#/reports", "#/guide", "#/audit", "#/settings/alerts", "#/settings/notify", "#/settings/groups", "#/settings/account"]
         for route in routes:
             b.eval(f"location.hash = {json.dumps(route)}; true")
             time.sleep(0.8)
@@ -2040,7 +2195,7 @@ def main() -> int:
 
         print(f"Browser checks against {BASE} (isolated database {_env.TMP})")
         for test in shard_checks([t_login, t_dashboard, t_resize, t_move, t_columns, t_graph_tile, t_content_follows, t_map, t_sort, t_groups,
-                     t_ack, t_live, t_snmp_check, t_snmp_v3_fields, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_backup_passphrase_bar, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
+                     t_ack, t_live, t_snmp_check, t_snmp_v3_fields, t_snmp_test_before_saving, t_reload_after_update, t_reports, t_alert_wifi, t_map_wifi_traffic, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_backup_passphrase_bar, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_guide_search, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
             test(browser)
     finally:
         if browser:

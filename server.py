@@ -153,6 +153,7 @@ STATIC_FILES = {
     "/changes.js": ("changes.js", "application/javascript; charset=utf-8"),
     "/lan.js": ("lan.js", "application/javascript; charset=utf-8"),
     "/inventory.js": ("inventory.js", "application/javascript; charset=utf-8"),
+    "/reports.js": ("reports.js", "application/javascript; charset=utf-8"),
     "/botcmds.js": ("botcmds.js", "application/javascript; charset=utf-8"),
     "/guide.js": ("guide.js", "application/javascript; charset=utf-8"),
     "/guide.html": ("guide.html", "text/html; charset=utf-8"),
@@ -682,7 +683,7 @@ def migrate_credentials_use() -> int:
     if given:
         _notify_admins(f"Home Monitor now has a Use stored credentials permission. {given} user(s) who could already run or "
                        "edit workflows, run Fix SNMP or test a credential were given it, so nothing changes for them. "
-                       "The audit log names each one. You can change this in Settings, Users.")
+                       "The audit log names each one. You can change this in Settings, Users and sign-in.")
     database.set_internal_setting(CREDENTIALS_USE_MARKER, "1")
     return given
 
@@ -732,7 +733,7 @@ def security_notice(existing: Dict[str, str], has_accounts: bool, raised: bool) 
                          "credential or an approved host key. You can turn this off in Settings, Notifications.")
         if raised:
             parts.append("The audit log is now kept for at least 90 days.")
-        parts.append("You can also require two-factor authentication in Settings, Login security.")
+        parts.append("You can also require two-factor authentication in Settings, Users and sign-in.")
         if parts:
             _notify_admins(" ".join(parts))
     database.set_internal_setting(SECURITY_NOTICE_MARKER, "1")
@@ -793,7 +794,7 @@ def required_steps(user: "rbac.User") -> Dict[str, list]:
 
 TWO_FACTOR_RULES = ("off", "admins", "all")
 ENROL_TEXT = "Set up two-factor authentication to continue"
-TIER3_NEEDS_2FA_TEXT = "This action needs two-factor authentication. Turn it on in Settings, Account."
+TIER3_NEEDS_2FA_TEXT = "This action needs two-factor authentication. Turn it on under your name at the top right, Account and password."
 # What a person who must set up 2FA can still reach: the setup itself, the password step it asks
 # for and logging out (the status is public and answered before this check).
 ENROL_ROUTES = {("GET", "/api/auth/2fa"), ("POST", "/api/auth/2fa/start"), ("POST", "/api/auth/2fa/enable"),
@@ -968,6 +969,199 @@ def finish_snmp_v3(snmp: Optional[Dict[str, Any]], before: Optional[Dict[str, An
     return {"version": "v3", "v3": {"user": cred.user, "level": cred.level, "auth_protocol": cred.auth_protocol,
                                     "auth_password": cred.auth_password, "priv_protocol": cred.priv_protocol,
                                     "priv_password": cred.priv_password}}
+
+
+# --- Reports (reports.py): what a user may report on, saved reports and their schedule ---
+
+REPORT_SCHEDULE_KINDS = ("manual", "daily", "weekly", "monthly")
+REPORT_FORMATS = ("pdf", "csv", "both")
+REPORT_MIME = {"csv": "text/csv; charset=utf-8", "pdf": "application/pdf"}
+LEVEL_WORDS = {"authPriv": "signed and encrypted", "authNoPriv": "signed only"}
+
+
+def report_devices(user: Optional["rbac.User"], flt: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str, bool]:
+    """The devices a report covers: the user's devices, narrowed by group, tag or one device.
+    Returns them described in plain words (reports.DeviceInfo), a line naming the filter and
+    whether a filter was applied. Nothing secret: a v3 device shows its user and security level."""
+    profiles = {p["profile_id"]: p for p in poller.load_hardware_profiles()}
+    groups = {g["id"]: g["name"] for g in taxonomy.groups()}
+    known = set(groups)
+    out, parts = [], []
+    for d in database.list_devices():
+        if user is not None and not user.sees(d):
+            continue
+        group = device_group(d, profiles, known)
+        tags = taxonomy.device_tags(d)
+        if flt.get("device") and d["id"] != flt["device"]:
+            continue
+        if flt.get("group") and group != flt["group"]:
+            continue
+        if flt.get("tag") and flt["tag"] not in tags:
+            continue
+        uses_snmp = not d.get("service_port") and profile_uses_snmp(d.get("profile_id"), profiles)
+        v3 = d.get("snmp_v3") if isinstance(d.get("snmp_v3"), dict) else {}
+        version = (d.get("snmp_version") or "v2c") if uses_snmp else ""
+        security = ""
+        if version == "v3" and v3:
+            protos = v3.get("auth_protocol") or "SHA"
+            if v3.get("level") == "authPriv":
+                protos += f" and {v3.get('priv_protocol') or 'AES'}"
+            security = f"User {v3.get('user') or '?'}, {LEVEL_WORDS.get(v3.get('level'), 'signed')}, {protos}"
+        answer = {"ok": "Answers", "no_response": "No answer"}.get(d.get("snmp_status") or "", "") if uses_snmp else ""
+        out.append({"id": d["id"], "name": d["hostname"], "ip": d["ip_address"], "group": groups.get(group, group),
+                    "tags": tags, "kind": (profiles.get(d.get("profile_id")) or {}).get("name", d.get("profile_id") or ""),
+                    "snmp": version, "snmp_security": security, "snmp_answer": answer,
+                    "status": str(d.get("status") or "").capitalize(), "last_seen": d.get("last_seen"), "ping_ms": d.get("last_ping_ms")})
+    if flt.get("device"):
+        parts.append(f"Device {out[0]['name']}" if out else "One device")
+    if flt.get("group"):
+        parts.append(f"Group {groups.get(flt['group'], flt['group'])}")
+    if flt.get("tag"):
+        parts.append(f"Tag {flt['tag']}")
+    filtered = bool(flt.get("device") or flt.get("group") or flt.get("tag"))
+    return out, ", ".join(parts) or ("All your devices" if user is not None and user.scope is not None else "All devices"), filtered
+
+
+def run_report(spec: Dict[str, Any], user: Optional["rbac.User"]) -> Dict[str, Any]:
+    """Runs a checked spec as this user (None: the whole network, for a report saved by someone who sees everything)."""
+    import reports
+    return reports.run(spec, *report_args(user, spec))
+
+
+def parse_report_schedule(raw: Any) -> Dict[str, Any]:
+    """Manual, daily, weekly or monthly at a time (schedule.parse checks the parts)."""
+    if raw in (None, "", {}):
+        return {"kind": "manual"}
+    if not isinstance(raw, dict) or raw.get("kind") not in REPORT_SCHEDULE_KINDS:
+        raise RequestError(400, "A report runs by hand, daily, weekly or monthly")
+    try:
+        return schedule.parse(raw)
+    except ValueError as exc:
+        raise RequestError(400, str(exc))
+
+
+def report_view(r: Dict[str, Any]) -> Dict[str, Any]:
+    sched = json.loads(r["schedule"]) if r.get("schedule") else {"kind": "manual"}
+    return {"id": r["id"], "name": r["name"], "spec": json.loads(r["spec"]), "schedule": sched,
+            "schedule_text": schedule.describe(sched) if sched.get("kind") != "manual" else "By hand",
+            "formats": r["formats"], "telegram": bool(r["telegram"]), "owner": r["owner"], "last_run_at": r["last_run_at"],
+            "runs": database.list_report_runs(r["id"])}
+
+
+def report_owner(r: Dict[str, Any]) -> Optional["rbac.User"]:
+    """The saved report's owner as a user (their device access applies when it runs); None when the
+    account is gone or blocked, so it does not run."""
+    account = database.get_user(r["owner"])
+    if not account or account.get("disabled"):
+        return None
+    user = rbac.User(account)
+    if user.scope is not None:
+        user.bind_devices(database.device_profiles())
+    return user
+
+
+def may_see_report(user: "rbac.User", r: Dict[str, Any]) -> bool:
+    """Your own saved reports; everyone's when you see every device (a report never shows more than its owner sees)."""
+    return r["owner"] == user.username or user.scope is None
+
+
+def make_report_run(r: Dict[str, Any], trigger: str, now: Optional[int] = None) -> Dict[str, Any]:
+    """Runs a saved report as its owner, keeps the files and, when asked, sends them to Telegram.
+    Returns {"run_id", "total", "error"}; never raises (a scheduled run must not stop the loop)."""
+    import reports
+    now = int(now if now is not None else time.time())
+    database.mark_report_run(r["id"], now)
+    saver = report_owner(r)
+    if saver is None:
+        error = f"Its owner {r['owner']} no longer exists or is blocked"
+        run_id = database.add_report_run(r["id"], now, trigger, 0, None, None, error)
+        database.add_event(None, "warning", "action", f"Report {r['name']} did not run: {error}")
+        return {"run_id": run_id, "total": 0, "error": error}
+    try:
+        spec = reports.parse_spec(json.loads(r["spec"]), saver.scope is None)
+        spec["title"] = spec["title"] or r["name"]
+        report = reports.run(spec, *report_args(saver, spec), now=now)
+        csv_data = reports.to_csv(report) if r["formats"] in ("csv", "both") else None
+        pdf_data = reports.to_pdf(report) if r["formats"] in ("pdf", "both") else None
+    except Exception as exc:  # a broken report is recorded, the scheduler carries on
+        log.exception("Report %s failed", r["id"])
+        error = str(exc) if isinstance(exc, reports.ReportError) else f"Could not make the report ({type(exc).__name__})"
+        run_id = database.add_report_run(r["id"], now, trigger, 0, None, None, error)
+        database.add_event(None, "warning", "action", f"Report {r['name']} failed: {error}")
+        return {"run_id": run_id, "total": 0, "error": error}
+    run_id = database.add_report_run(r["id"], now, trigger, report["total"], csv_data, pdf_data)
+    if r["telegram"]:
+        sent = send_report_telegram(r["name"], report, csv_data, pdf_data)
+        if sent:
+            database.add_event(None, "warning", "action", f"Report {r['name']} was made but not sent to Telegram: {sent}")
+    return {"run_id": run_id, "total": report["total"], "error": ""}
+
+
+def report_args(user: Optional["rbac.User"], spec: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    devices, filter_text, filtered = report_devices(user, spec["filter"])
+    return devices, {"filter_text": filter_text, "filtered": filtered, "update_history": update_history}
+
+
+def send_report_telegram(name: str, report: Dict[str, Any], csv_data: Optional[bytes], pdf_data: Optional[bytes]) -> str:
+    """Sends the report's files to the Telegram chat. Returns an error text, or "" when sent."""
+    import reports
+    if not telegram_ready():
+        return "Telegram is not set up or switched off"
+    s = database.get_all_settings()
+    caption = f"Report: {name}. {report['total']} row{'' if report['total'] == 1 else 's'}."
+    try:
+        if pdf_data:
+            notify.send_document(s["telegram_token"], s["telegram_chat_id"], reports.file_name(report, "pdf"), pdf_data,
+                                 "application/pdf", caption)
+        if csv_data:
+            notify.send_document(s["telegram_token"], s["telegram_chat_id"], reports.file_name(report, "csv"), csv_data,
+                                 "text/csv", "" if pdf_data else caption)
+    except notify.TelegramError as exc:
+        return str(exc)
+    return ""
+
+
+def due_reports(now: float) -> List[Dict[str, Any]]:
+    """Saved reports whose schedule matches this minute and that have not run in it yet."""
+    minute = int(now // 60) * 60
+    when = datetime.fromtimestamp(minute)
+    due = []
+    for r in database.list_reports():
+        if not r.get("schedule") or r["last_run_at"] >= minute:
+            continue
+        try:
+            sched = json.loads(r["schedule"])
+            if sched.get("kind") not in ("daily", "weekly", "monthly"):
+                continue
+            _, cron, _ = schedule.to_trigger(sched)
+        except (ValueError, KeyError, TypeError):
+            continue
+        if cron and ssh_runner.cron_matches(cron, when):
+            due.append(r)
+    return due
+
+
+def snmp_trial(device: Dict[str, Any], trial: Any) -> Dict[str, Any]:
+    """The device with the SNMP settings typed in Edit device, to check them before they are saved.
+    Blank passwords and community mean the stored ones, as when saving. Nothing is written."""
+    if not isinstance(trial, dict):
+        raise RequestError(400, "try holds the settings to check")
+    out = dict(device)
+    ip = str(trial.get("ip_address") or device["ip_address"]).strip()
+    if ip != device["ip_address"]:
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            raise RequestError(400, "Enter an IP address to check")
+    out["ip_address"] = ip
+    out["snmp_port"] = _get_int(trial, "snmp_port", int(device.get("snmp_port") or 161), 1, 65535)
+    community = _get_str(trial, "snmp_community", "", max_len=128)
+    if community:
+        out["snmp_community"] = community
+    snmp = finish_snmp_v3(parse_snmp_v3(trial), device)
+    if snmp:
+        out["snmp_version"], out["snmp_v3"] = snmp["version"], snmp["v3"]
+    return out
 
 
 def public_snmp_v3(v3: Dict[str, Any]) -> Dict[str, Any]:
@@ -1623,6 +1817,9 @@ def watch_root_results(now: Optional[float] = None) -> int:
             text = f"{kind} from {h['from']} to {h['to']} failed"
             security_alert("update_failed", who="root", source="", kind=kind, to=h["to"], error=h["error"][:300] or "unknown")
         database.add_audit("system", text, h["error"][:500], actor="root")
+        # Also an event, so the bell and the Events page show that the monitor changed.
+        database.add_event(None, "info" if h["ok"] else "warning", "update",
+                           text + (f": {h['error'][:300]}" if not h["ok"] and h["error"] else ""), timestamp=int(h["time"]))
         sent += 1
     if newest > int(marker):
         database.set_internal_setting(ALERT_SEEN_UPDATE, str(newest))
@@ -2132,6 +2329,29 @@ INFO_ATTENTION_SECONDS = 30 * 60
 ATTENTION_EVENT_TYPES = ("reboot", "problem", "telegram", "action", "workflow")
 
 
+def _problem_stem(message: str) -> str:
+    """A problem's text up to its first number, so "CPU usage 95%" and "CPU usage 97%" are the same problem."""
+    return re.split(r"\d", message, maxsplit=1)[0].strip()
+
+
+def mark_fixed(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Marks the bell's warnings whose cause has gone since: a problem no longer open on that device,
+    or an SNMP agent that answers again. They stay in the list as history but no longer ask for
+    attention (not counted as unread)."""
+    active: Dict[int, set] = {}
+    for p in database.list_active_problems():
+        active.setdefault(p["device_id"], set()).add(_problem_stem(p["message"]))
+    snmp_ok = {d["id"] for d in database.list_devices() if d.get("snmp_status") == "ok"}
+    for e in items:
+        if e.get("severity") not in ("warning", "high", "critical") or not e.get("device_id"):
+            continue
+        if e.get("event_type") == "problem" and e["message"].startswith("Problem: "):
+            e["fixed"] = _problem_stem(e["message"][len("Problem: "):]) not in active.get(e["device_id"], set())
+        elif e.get("event_type") == "snmp":
+            e["fixed"] = e["device_id"] in snmp_ok
+    return items
+
+
 def device_group(device: Dict[str, Any], profiles: Optional[Dict[str, Dict[str, Any]]] = None,
                  known: Optional[set] = None) -> str:
     """The administrator's choice (a built-in or custom group), else the group of the template's category."""
@@ -2321,10 +2541,16 @@ def map_view() -> Dict[str, Any]:
     arp = {r["row_key"]: r["mac"] for r in database.get_table_all_devices("arp")}
     imacs: Dict[int, set] = {}
     labels: Dict[int, Dict[int, str]] = {}
+    rates: Dict[Tuple[int, str], Dict[str, Any]] = {}
     for r in database.get_table_all_devices("interfaces"):
         if r.get("mac"):
             imacs.setdefault(r["device_id"], set()).add(r["mac"])
-        labels.setdefault(r["device_id"], {})[r["if_index"]] = r.get("label") or str(r["if_index"])
+        label = r.get("label") or str(r["if_index"])
+        labels.setdefault(r["device_id"], {})[r["if_index"]] = label
+        if isinstance(r.get("in_bps"), (int, float)) or isinstance(r.get("out_bps"), (int, float)):
+            rate = {"in": r.get("in_bps"), "out": r.get("out_bps"), "speed": r.get("speed_mbps")}
+            rates[(r["device_id"], label)] = rate
+            rates[(r["device_id"], str(r["if_index"]))] = rate
     inferred = topology.infer(devices, fdb, arp, imacs, monitor_address())
 
     def port_label(node: str, port: Optional[int]) -> Optional[str]:
@@ -2337,9 +2563,19 @@ def map_view() -> Dict[str, Any]:
         if p["severity"] != "info" and not p.get("acknowledged_at"):
             problems[p["device_id"]] = problems.get(p["device_id"], 0) + 1
     nodes = inferred["nodes"]
+    # Wi-Fi on access points (from UniFi): each device with its signal, weakest first.
+    weak_line = alert_policy().resolve("wifi_weak", upto="global")[0]["threshold"] or -75
+    wifi: Dict[int, List[Dict[str, Any]]] = {}
+    for r in database.get_table_all_devices("wifi_clients"):
+        wifi.setdefault(r["device_id"], []).append({"name": r.get("name") or r.get("row_key"), "ssid": r.get("ssid") or "",
+                                                    "band": r.get("band") or "", "signal": r.get("signal")})
     for n in nodes:
         n["problems"] = problems.get(n["device_id"], 0) if n["device_id"] else 0
         n["clients"] = sum(inferred["clients"].get(n["key"], {}).values())
+        if n["device_id"] in wifi:
+            rows = sorted(wifi[n["device_id"]], key=lambda c: c["signal"] if isinstance(c["signal"], (int, float)) else 0)
+            n["wifi"] = {"count": len(rows), "weak": sum(1 for c in rows if isinstance(c["signal"], (int, float)) and c["signal"] < weak_line),
+                         "weak_dbm": weak_line, "clients": rows[:60]}
     for o in database.list_map_objects():
         nodes.append({"key": f"o:{o['id']}", "object_id": o["id"], "device_id": None, "label": o["label"],
                       "kind": o["kind"], "status": None, "ip": None, "problems": 0, "clients": 0})
@@ -2429,6 +2665,13 @@ def map_view() -> Dict[str, Any]:
     if owned:
         links_list = list(links.values())
         parent = topology.tree(sorted(keys), links_list, root) if root else {}
+    # Traffic on a link: its port on a device read over SNMP, as the last poll measured it. Seen from
+    # that port, "out" goes towards the other end of the link and "in" comes from it.
+    for link in links_list:
+        for end, port in ((link["a"], link.get("a_port")), (link["b"], link.get("b_port"))):
+            if port and end.startswith("d:") and (int(end[2:]), str(port)) in rates:
+                link["rate"] = dict(rates[(int(end[2:]), str(port))], at=end)
+                break
     return {"nodes": nodes, "links": links_list, "root": root, "parent": parent,
             "positions": database.get_map_positions(), "object_kinds": list(database.MAP_OBJECT_KINDS)}
 
@@ -3247,6 +3490,9 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self._security_headers()
+        # Signed-in pages compare this with the version they loaded and reload after an update.
+        if getattr(self, "user", None) is not None:
+            self.send_header("X-Monitor-Version", APP_VERSION)
         for cookie in getattr(self, "_cookies_out", []):
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
@@ -3421,6 +3667,47 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
         database.set_audit_context(self.user.username, self.client_address[0])
         if self.user.scope is not None:
             self.user.bind_devices(database.device_profiles())
+
+    def _send_download(self, data: bytes, mime: str, filename: str) -> None:
+        """A file the browser saves (a report). The name is made by the monitor, never taken from the request."""
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", filename)[:120] or "download"
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Disposition", f'attachment; filename="{safe}"')
+        self.send_header("Content-Length", str(len(data)))
+        self._security_headers()
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _save_report(self, report_id: Optional[int], payload: Dict[str, Any]) -> int:
+        """Adds or changes a saved report: a name, the spec, a schedule, the file formats and Telegram."""
+        import reports
+        before = None
+        if report_id is not None:
+            before = database.get_report(report_id)
+            if not before or not may_see_report(self.user, before):
+                raise RequestError(404, "Report not found")
+        name = " ".join(_get_str(payload, "name", "", max_len=80).split())
+        if not name:
+            raise RequestError(400, "Give the report a name")
+        try:
+            spec = reports.parse_spec(payload.get("spec"), self.user.scope is None)
+        except reports.ReportError as exc:
+            raise RequestError(400, str(exc))
+        sched = parse_report_schedule(payload.get("schedule"))
+        formats = payload.get("formats") or "pdf"
+        if formats not in REPORT_FORMATS:
+            raise RequestError(400, "The files are pdf, csv or both")
+        telegram = bool(payload.get("telegram"))
+        if telegram and self.user.scope is not None:
+            raise RequestError(403, "Sending reports to Telegram needs access to every device")
+        saved = database.save_report(report_id, name, json.dumps(spec), json.dumps(sched) if sched["kind"] != "manual" else "",
+                                     formats, telegram, before["owner"] if before else self.user.username)
+        what = "changed" if before else "saved"
+        database.add_audit("report", f"Report {name} {what}",
+                           f"{reports.TEMPLATES[spec['template']]['title']}; {schedule.describe(sched) if sched['kind'] != 'manual' else 'by hand'}"
+                           + ("; sent to Telegram" if telegram else ""))
+        return saved
 
     def _require_device(self, device_id: int) -> Dict[str, Any]:
         """The device, or 404 when it does not exist or is outside the user's device access."""
@@ -3793,7 +4080,7 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
         if path == "/api/auth/2fa/disable":
             if two_factor_covers(self.account):
                 raise RequestError(409, "This monitor requires two-factor authentication for your account, so it cannot be "
-                                        "turned off here. An administrator can change that in Settings, Login security.")
+                                        "turned off here. An administrator can change that in Settings, Users and sign-in.")
             database.set_totp(name, None, False)
             n = auth.SESSIONS.revoke_user(name, except_token=self.token)
             database.add_audit("auth", f"Two-factor authentication turned off for {name}",
@@ -4226,6 +4513,30 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
             # What's changed: every release note, and the ones this user has not read yet.
             self._send_json(200, changelog.view(self.user.username))
             return
+        if path == "/api/reports":
+            import reports
+            devices, _, _ = report_devices(self.user, {})
+            self._send_json(200, {
+                "templates": reports.template_list(self.user.scope is None),
+                "saved": [report_view(r) for r in database.list_reports() if may_see_report(self.user, r)],
+                "groups": [{"id": g["id"], "name": g["name"]} for g in taxonomy.groups()],
+                "tags": [t["name"] for t in taxonomy.tags()],
+                "devices": [{"id": d["id"], "name": d["name"], "ip": d["ip"]} for d in devices],
+                "periods": list(reports.PERIODS), "can_save": self.user.can("reports.manage"),
+                # Telegram goes to the administrator's chat: offered to those who see every device.
+                "telegram": telegram_ready() and self.user.scope is None})
+            return
+        match_file = re.fullmatch(r"/api/reports/runs/(\d+)\.(csv|pdf)", path)
+        if match_file:
+            got = database.get_report_run_file(int(match_file.group(1)), match_file.group(2))
+            saved = database.get_report(got[0]) if got else None
+            if not got or not saved or not may_see_report(self.user, saved):
+                raise RequestError(404, "Report file not found")
+            import reports
+            name = reports.file_name({"title": saved["name"], "made_at": got[1]}, match_file.group(2))
+            self._send_download(got[2], REPORT_MIME[match_file.group(2)], name)
+            return
+
         if path == "/api/tls/certificate":
             # The public certificate only (never the key), to trust it on a computer or phone.
             pem = tls.certificate_pem().encode("ascii", "replace")
@@ -4280,11 +4591,11 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
 
         if path == "/api/notifications":
             account = database.get_user(self.user.username)
-            items = database.list_notifications(None if self.user.scope is None else self.user.allowed_ids,
-                                                self.user.username)
+            items = mark_fixed(database.list_notifications(None if self.user.scope is None else self.user.allowed_ids,
+                                                           self.user.username))
             read_at = account.get("notify_read_at") or 0
             self._send_json(200, {"items": items, "read_at": read_at,
-                                  "unread": sum(1 for e in items if e["timestamp"] > read_at)})
+                                  "unread": sum(1 for e in items if e["timestamp"] > read_at and not e.get("fixed"))})
             return
 
         match_dev = re.fullmatch(r"/api/devices/(\d+)(?:/(ports|neighbours|wireless|storage|health|processes|software|events|history|dns))?", path)
@@ -5021,11 +5332,44 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
             self._send_json(201, {"success": True, "id": def_id})
             return
 
+        if path in ("/api/reports/run", "/api/reports/download"):
+            import reports
+            try:
+                spec = reports.parse_spec(payload.get("spec"), self.user.scope is None)
+            except reports.ReportError as exc:
+                raise RequestError(400, str(exc))
+            report = run_report(spec, self.user)
+            if path == "/api/reports/run":
+                shown = dict(report, rows=report["rows"][:reports.PREVIEW_ROWS])
+                self._send_json(200, shown)
+                return
+            kind = payload.get("format")
+            if kind not in ("csv", "pdf"):
+                raise RequestError(400, "The format is csv or pdf")
+            data = reports.to_csv(report) if kind == "csv" else reports.to_pdf(report)
+            self._send_download(data, REPORT_MIME[kind], reports.file_name(report, kind))
+            return
+
+        if path == "/api/reports":
+            report_id = self._save_report(None, payload)
+            self._send_json(201, {"success": True, "id": report_id})
+            return
+        match_report_run = re.fullmatch(r"/api/reports/(\d+)/run", path)
+        if match_report_run:
+            saved = database.get_report(int(match_report_run.group(1)))
+            if not saved or not may_see_report(self.user, saved):
+                raise RequestError(404, "Report not found")
+            result = make_report_run(saved, f"by {self.user.username}")
+            self._send_json(200, dict(result, report=report_view(database.get_report(saved["id"]))))
+            return
+
         match_check = re.fullmatch(r"/api/devices/(\d+)/snmp-check", path)
         if match_check:
             device = self._require_device(int(match_check.group(1)))
             if device.get("service_port") or not profile_uses_snmp(device.get("profile_id")):
                 raise RequestError(400, "This device is not read over SNMP")
+            if payload.get("try") is not None:
+                device = snmp_trial(device, payload["try"])
             self._send_json(200, snmp_check(device))
             return
 
@@ -5352,8 +5696,8 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
                 # administrator already have 2FA, so someone can always still get in.
                 self._require_tier(3, path)
                 if not database.get_totp(self.user.username)["enabled"]:
-                    raise RequestError(409, "Turn on two-factor authentication for your own account first (Settings, "
-                                            "Account), so you cannot be locked out.")
+                    raise RequestError(409, "Turn on two-factor authentication for your own account first (your name at "
+                                            "the top right, Account and password), so you cannot be locked out.")
                 if not any(u.get("role") == "admin" and not u.get("disabled") and u.get("totp_enabled")
                            for u in database.list_users()):
                     raise RequestError(409, "At least one administrator must have two-factor authentication on first.")
@@ -5460,6 +5804,11 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
 
     def _put(self, parsed) -> None:
         path = parsed.path.rstrip("/")
+        match_report = re.fullmatch(r"/api/reports/(\d+)", path)
+        if match_report:
+            self._save_report(int(match_report.group(1)), self._read_json())
+            self._send_json(200, {"success": True})
+            return
         if path == "/api/inventory/quiet-ssids":
             try:
                 saved = inventory.set_quiet_ssids(self._read_json().get("ssids"))
@@ -5760,6 +6109,15 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
 
     def _delete(self, parsed) -> None:
         path = parsed.path.rstrip("/")
+        match_report = re.fullmatch(r"/api/reports/(\d+)", path)
+        if match_report:
+            saved = database.get_report(int(match_report.group(1)))
+            if not saved or not may_see_report(self.user, saved):
+                raise RequestError(404, "Report not found")
+            database.delete_report(saved["id"])
+            database.add_audit("report", f"Report {saved['name']} deleted", "")
+            self._send_json(200, {"success": True})
+            return
         match_dash = re.fullmatch(r"/api/dashboards/([a-z0-9][a-z0-9-]{0,39})", path)
         if match_dash:
             if len(database.list_dashboards()) <= 1:
@@ -6472,6 +6830,11 @@ class PollScheduler:
         except workflows.WorkflowError:
             log.info("Workflow %s still running at its next scheduled time; skipped", wf["name"])
 
+    def _due_reports(self, now: float) -> None:
+        """Saved reports on a schedule: made one after another on this pool thread."""
+        for r in due_reports(now):
+            make_report_run(r, "schedule", int(now // 60) * 60)
+
     def _due_workflows(self, now: float) -> None:
         minute = int(now // 60) * 60
         when = datetime.fromtimestamp(minute)
@@ -6693,6 +7056,7 @@ class PollScheduler:
         if int(now // 60) != int(self.last_tick_minute):
             self.last_tick_minute = now // 60
             self._submit("schedule", 0, self._due_workflows, now)
+            self._submit("reports", 0, self._due_reports, now)
             self._submit("digest", 0, digest.run, settings, lambda text: NOTIFIER.message(text, kind="digest"))
 
         if now - self.last_lan >= self.LAN_INTERVAL:
@@ -6772,7 +7136,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "0.14.0"
+APP_VERSION = "0.15.0"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:

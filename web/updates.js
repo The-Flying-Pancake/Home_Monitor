@@ -1,4 +1,4 @@
-/* Settings, Updates: check the project's releases, update in place, undo an update, and the history.
+/* Settings, System, Updates: check the project's releases, update in place, undo an update, and the history.
  *
  * Root on the box does the work (updatectl.py, through a path unit): it downloads the newest
  * release, checks its signature against the key built into this version, keeps a backup and the
@@ -310,12 +310,12 @@ function setUpdateWaiting(n) {
     badge.classList.toggle("hidden", !updateWaiting);
     document.getElementById("nav-settings")?.setAttribute("aria-label", updateWaiting ? "Settings, an update is ready" : "Settings");
   }
-  const link = document.querySelector('#settings-nav a[data-section="updates"]');
-  if (link) {
-    let b = link.querySelector(".nav-badge");
+  // System in the Settings menu and its Updates tab.
+  document.querySelectorAll('#settings-nav a[data-section="system"], #settings-tabs a[data-settings-tab="updates"]').forEach(link => {
+    const b = link.querySelector(".nav-badge");
     if (updateWaiting && !b) link.insertAdjacentHTML("beforeend", `<span class="nav-badge" aria-label="An update is ready">1</span>`);
     if (!updateWaiting && b) b.remove();
-  }
+  });
 }
 
 async function refreshUpdateBadge() {

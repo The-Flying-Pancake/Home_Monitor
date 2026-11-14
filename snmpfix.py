@@ -211,7 +211,7 @@ def sha(text: str) -> str:
 def community_problem(community: str) -> Optional[str]:
     """snmpd.conf is whitespace separated: a community with spaces, # or quotes would break the file."""
     if not community:
-        return "No SNMP community is set (Settings, SNMP defaults, or the device's Edit dialog)"
+        return "No SNMP community is set (SNMP defaults in Settings, Checking devices or the device's Edit dialog)"
     if re.search(r"[\s#\"'\\]", community) or len(community) > 64:
         return "The SNMP community contains spaces, quotes, # or backslashes, which snmpd.conf cannot hold"
     return None

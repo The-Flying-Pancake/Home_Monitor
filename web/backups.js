@@ -1,4 +1,4 @@
-/* Settings, Backups: where backups go, Syncthing on or off, back up now, last results.
+/* Settings, Data and backups: where backups go, Syncthing on or off, back up now, last results.
  *
  * Without Syncthing, backups stay in the container (DATA/backups, newest 7). With Syncthing,
  * they are written into the synced folder (default /mnt/Syncthing/Monitor), one folder per app

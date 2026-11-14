@@ -44,6 +44,9 @@ PERMISSIONS = [
     ("audit.view", "View the audit log", "Read the audit log."),
     ("audit.sensitive", "Sensitive audit details", "See audit details such as SSH key fingerprints and credential names."),
     ("users.manage", "Manage users", "Add, change, block, log out and delete users."),
+    ("reports.manage", "Save and schedule reports",
+     "Save reports, run them on a schedule and delete them. A saved report runs with the device access of whoever saved it. "
+     "Anyone can run and download a report of what they can see."),
 ]
 PERMISSION_KEYS = [p[0] for p in PERMISSIONS]
 
@@ -53,7 +56,7 @@ ROLES = {
                              "dashboard. Host actions and workflow commands run as a stored credential's user, often "
                              "root, on every device the Operator can reach.",
                  {"devices.poll", "problems.ack", "automation.run", "credentials.use", "map.edit", "dashboard.edit",
-                  "audit.view"}),
+                  "audit.view", "reports.manage"}),
     "viewer": ("Viewer", "Read only.", set()),
     "custom": ("Custom", "Exactly the permissions ticked below.", None),
 }
@@ -118,6 +121,12 @@ ROUTE_PERMISSIONS = [
     ("PUT", r"/api/users/[\w.-]+", "users.manage"),
     ("DELETE", r"/api/users/[\w.-]+", "users.manage"),
     ("POST", r"/api/notifications/read", None),
+    ("POST", r"/api/reports/run", None),
+    ("POST", r"/api/reports/download", None),
+    ("POST", r"/api/reports", "reports.manage"),
+    ("POST", r"/api/reports/\d+/run", "reports.manage"),
+    ("PUT", r"/api/reports/\d+", "reports.manage"),
+    ("DELETE", r"/api/reports/\d+", "reports.manage"),
     ("POST", r"/api/changes/seen", None),
     ("PUT", r"/api/proxmox/config", "settings.system"),
     ("PUT", r"/api/tls", "settings.system"),

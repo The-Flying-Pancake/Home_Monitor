@@ -102,9 +102,9 @@ function askHttps() {
     <div class="modal-body">
       <div class="dialog-message">This version can serve the monitor over HTTPS, so passwords and settings cannot be read off the network. It still answers on the same address: http:// links are sent on to https://.</div>
       <ul class="tls-ask-list">
-        <li><strong>Use HTTPS</strong>: the monitor makes its own certificate and renews it. Your browser warns once; continue, or trust the certificate (Settings, HTTPS).</li>
-        <li><strong>Use my own certificate</strong>: opens Settings, HTTPS to upload it.</li>
-        <li><strong>Keep HTTP</strong>: no change. You can switch any time in Settings, HTTPS.</li>
+        <li><strong>Use HTTPS</strong>: the monitor makes its own certificate and renews it. Your browser warns once; continue, or trust the certificate (Settings, System, HTTPS).</li>
+        <li><strong>Use my own certificate</strong>: opens Settings, System, HTTPS to upload it.</li>
+        <li><strong>Keep HTTP</strong>: no change. You can switch any time in Settings, System, HTTPS.</li>
       </ul>
       <div class="form-help" id="tls-ask-msg"></div>
     </div>

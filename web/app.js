@@ -274,6 +274,26 @@ function initAuth() {
   });
 }
 
+// After an update the open page still runs the old code until it is reloaded. The server names its
+// version in every signed-in reply; when it changes, the page reloads itself as soon as nothing is
+// being edited (no window open, which covers the workflow editor, no unsaved settings and no
+// dashboard being arranged).
+let loadedVersion = null;
+let reloadPlanned = false;
+
+function noteServerVersion(version) {
+  if (!version) return;
+  if (!loadedVersion) { loadedVersion = version; return; }
+  if (version === loadedVersion || reloadPlanned) return;
+  reloadPlanned = true;
+  showToast(`Home Monitor was updated to ${version}. The page reloads to show the new version.`, "info", 8000);
+  const busy = () => document.querySelector(".modal-backdrop:not(.hidden)")
+    || (document.getElementById("settings-dirty") || {}).textContent
+    || (typeof dashEditing !== "undefined" && dashEditing);
+  const tryReload = () => { if (busy()) setTimeout(tryReload, 3000); else window.location.reload(); };
+  setTimeout(tryReload, 2500);
+}
+
 async function api(path, options = {}, retried = false) {
   const opts = { method: options.method || "GET", headers: {} };
   if (options.body !== undefined || opts.method === "POST" || opts.method === "PUT") {
@@ -286,6 +306,7 @@ async function api(path, options = {}, retried = false) {
   } catch (err) {
     throw new Error("Cannot reach the local server");
   }
+  noteServerVersion(res.headers.get("X-Monitor-Version"));
   let data = {};
   try {
     data = await res.json();
@@ -688,11 +709,11 @@ function handleRouting() {
   if (!hash.startsWith("#/settings")) settingsLoaded = false;
   if (hash.startsWith("#/settings")) {
     // #/settings/<section>; #/settings/alerts[/template/<id> | /tag/<name> | /device/<id> | /overview] opens the alert rules there.
-    const m = hash.match(/^#\/settings\/alerts(?:\/(template|tag|device)\/([^/]+)|\/(overview))?$/);
+    const m = hash.match(/^#\/settings\/alerts(?:\/(template|tag|device)\/([^/]+)|\/(overview|wifi))?$/);
     const sec = (hash.match(/^#\/settings\/(\w+)/) || [])[1];
     if (sec) settingsSection = sec;
     view("view-settings"); nav("nav-settings");
-    if (m && m[3]) { settingsRoute = { scope: "overview", target: "", focus: true }; }
+    if (m && m[3]) { settingsRoute = { scope: m[3], target: "", focus: true }; }
     else if (m && m[1]) { settingsRoute = { scope: m[1], target: decodeURIComponent(m[2]), focus: true }; }
     // Moving between sections keeps unsaved edits (every section is rendered, only one is shown).
     if (settingsLoaded) {
@@ -718,6 +739,8 @@ function handleRouting() {
     view("view-wifi"); nav("nav-wifi"); loadWifi();
   } else if (hash === "#/pihole") {
     view("view-pihole"); nav("nav-pihole"); loadPiholePage();
+  } else if (hash === "#/reports") {
+    view("view-reports"); nav("nav-reports"); loadReports(true);
   } else if (hash === "#/inventory") {
     view("view-inventory"); nav("nav-inventory"); loadInventory();
   } else if (hash === "#/map") {
@@ -2997,6 +3020,15 @@ function initModals() {
   document.getElementById("btn-close-edit-modal").addEventListener("click", closeEdit);
   document.getElementById("btn-cancel-edit-modal").addEventListener("click", closeEdit);
 
+  // Test SNMP: the settings typed so far, checked on the device without saving them.
+  document.getElementById("btn-test-edit-snmp").addEventListener("click", () => {
+    const id = parseInt(document.getElementById("edit-device-id").value, 10);
+    const trial = { ip_address: document.getElementById("edit-ip").value.trim(),
+      snmp_community: document.getElementById("edit-community").value.trim(), ...snmpFields("edit"),
+      snmp_port: parseInt(document.getElementById("edit-port").value, 10) || 161 };
+    openSnmpCheck({ id, hostname: document.getElementById("edit-hostname").value.trim() || trial.ip_address, ip_address: trial.ip_address }, trial);
+  });
+
   document.getElementById("btn-save-edit-device").addEventListener("click", async () => {
     const id = parseInt(document.getElementById("edit-device-id").value, 10);
     // A web check takes its host from the page address, so the address field may be empty.
@@ -3231,6 +3263,37 @@ function settingsSectionsShown() {
   return SETTINGS_SECTIONS.filter(([id, , , , perm]) => (id !== "users" || can(perm)) && (id !== "demo" || demoOn));
 }
 
+/* The Settings menu: each page holds one or more of the cards above, grouped under a heading. A page
+ * with tabs shows one card at a time (System: Status, Updates, HTTPS); the others stack their cards.
+ * Old links name a card (#/settings/https) and open the page that holds it. Account sits in the menu
+ * under your name at the top right. */
+const SETTINGS_PAGES = [
+  { id: "checking", title: "Checking devices", group: "Monitoring", cards: ["polling", "snmp", "live"] },
+  { id: "groups", title: "Groups and tags", group: "Monitoring", cards: ["groups"] },
+  { id: "alerts", title: "Alert rules", group: "Alerts", cards: ["alerts"] },
+  { id: "notify", title: "Notifications", group: "Alerts", cards: ["notify"] },
+  { id: "maintenance", title: "Maintenance windows", group: "Alerts", cards: ["maintenance"] },
+  { id: "proxmox", title: "Proxmox", group: "Integrations", cards: ["proxmox"] },
+  { id: "unifi", title: "UniFi", group: "Integrations", cards: ["unifi"] },
+  { id: "pihole", title: "Pi-hole", group: "Integrations", cards: ["pihole"] },
+  { id: "people", title: "Users and sign-in", group: "System", cards: ["users", "login"] },
+  { id: "data", title: "Data and backups", group: "System", cards: ["backups", "retention"] },
+  { id: "system", title: "System", group: "System", cards: ["system", "updates", "https"], tabs: { system: "Status", updates: "Updates", https: "HTTPS" } },
+  { id: "demo", title: "Demo data", group: "System", cards: ["demo"] },
+  { id: "account", title: "Account", group: "", cards: ["account"], hidden: true },
+];
+let settingsTab = {};              // page id -> the card its tabs show
+
+function settingsPagesShown() {
+  const shownCards = new Set(settingsSectionsShown().map(x => x[0]));
+  return SETTINGS_PAGES.map(p => ({ ...p, cards: p.cards.filter(c => shownCards.has(c)) })).filter(p => p.cards.length);
+}
+
+function settingsPageOf(id) {
+  const pages = settingsPagesShown();
+  return pages.find(p => p.id === id) || pages.find(p => p.cards.includes(id)) || pages.find(p => p.id === "alerts") || pages[0];
+}
+
 function demoPanel(d) {
   if (!d || !d.on) return "";
   const admin = currentUser && currentUser.role === "admin";
@@ -3261,34 +3324,42 @@ async function removeDemoData(btn) {
 }
 
 function showSettingsSection(id) {
-  const shown = settingsSectionsShown().map(x => x[0]);
-  settingsSection = shown.includes(id) ? id : shown.includes("alerts") ? "alerts" : shown[0];
-  document.querySelectorAll("#view-settings [data-card]").forEach(c => c.classList.toggle("hidden", c.dataset.card !== settingsSection));
+  const page = settingsPageOf(id);
+  if (!page) return;
+  if (page.tabs && page.cards.includes(id)) settingsTab[page.id] = id;
+  const tab = page.tabs ? (page.cards.includes(settingsTab[page.id]) ? settingsTab[page.id] : page.cards[0]) : null;
+  const visible = page.tabs ? [tab] : page.cards;
+  settingsSection = page.id;
+  document.querySelectorAll("#view-settings [data-card]").forEach(c => c.classList.toggle("hidden", !visible.includes(c.dataset.card)));
+  const bar = document.getElementById("settings-tabs");
+  bar.classList.toggle("hidden", !page.tabs);
+  bar.innerHTML = page.tabs ? page.cards.map(c => `<a href="#/settings/${escapeHtml(c)}" data-settings-tab="${escapeHtml(c)}" class="${c === tab ? "active" : ""}"
+      ${c === tab ? 'aria-current="page"' : ""}>${escapeHtml(page.tabs[c])}${c === "updates" && typeof updateWaiting !== "undefined" && updateWaiting
+      ? '<span class="nav-badge" aria-label="An update is ready">1</span>' : ""}</a>`).join("") : "";
   document.querySelectorAll("#settings-nav a").forEach(a => {
-    a.classList.toggle("active", a.dataset.section === settingsSection);
-    if (a.dataset.section === settingsSection) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+    a.classList.toggle("active", a.dataset.section === page.id);
+    if (a.dataset.section === page.id) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   });
-  const entry = SETTINGS_SECTIONS.find(x => x[0] === settingsSection);
-  setPageTitle(`Settings: ${entry ? entry[1] : ""}`);
-  if (settingsSection === "users") loadUsers();
-  if (settingsSection === "account") renderAccountCard();
-  if (settingsSection === "proxmox") loadPveSettings();
-  if (settingsSection === "https") loadTlsSettings();
-  if (settingsSection === "maintenance") loadMaintenance();
-  if (settingsSection === "pihole") loadLanSettings("pihole");
-  if (settingsSection === "unifi") loadLanSettings("unifi");
-  if (settingsSection === "groups") loadTaxonomy().then(renderTaxonomySettings);
+  setPageTitle(`Settings: ${page.title}${tab && tab !== page.cards[0] ? `, ${page.tabs[tab]}` : ""}`);
+  if (visible.includes("users")) loadUsers();
+  if (visible.includes("account")) renderAccountCard();
+  if (visible.includes("proxmox")) loadPveSettings();
+  if (visible.includes("https")) loadTlsSettings();
+  if (visible.includes("maintenance")) loadMaintenance();
+  if (visible.includes("pihole")) loadLanSettings("pihole");
+  if (visible.includes("unifi")) loadLanSettings("unifi");
+  if (visible.includes("groups")) loadTaxonomy().then(renderTaxonomySettings);
 }
 
 function renderSettings(values, system) {
   demoOn = !!(system.demo && system.demo.on);
   let group = "";
-  document.getElementById("settings-nav").innerHTML = settingsSectionsShown().map(([id, title, , g]) => {
-    const head = g !== group ? `<div class="settings-nav-group">${escapeHtml(g)}</div>` : "";
-    group = g;
-    const badge = id === "updates" && typeof updateWaiting !== "undefined" && updateWaiting
+  document.getElementById("settings-nav").innerHTML = settingsPagesShown().filter(p => !p.hidden).map(p => {
+    const head = p.group !== group ? `<div class="settings-nav-group">${escapeHtml(p.group)}</div>` : "";
+    group = p.group;
+    const badge = p.cards.includes("updates") && typeof updateWaiting !== "undefined" && updateWaiting
       ? `<span class="nav-badge" aria-label="An update is ready">1</span>` : "";
-    return `${head}<a data-section="${escapeHtml(id)}" href="#/settings/${escapeHtml(id)}">${escapeHtml(title)}${badge}</a>`;
+    return `${head}<a data-section="${escapeHtml(p.id)}" href="#/settings/${escapeHtml(p.id)}">${escapeHtml(p.title)}${badge}</a>`;
   }).join("");
 
   const cards = SETTINGS_SECTIONS.filter(([id]) => !STATIC_SETTINGS_CARDS.has(id) && (id !== "demo" || demoOn)).map(([id, title, blurb, , perm]) => {
@@ -4944,28 +5015,28 @@ document.addEventListener("change", ev => {
 
 /* SNMP check: the server tries the device step by step (ping, an answer, the user and password or the
  * community, then values) and says in plain words what to change. Shown in its own window. */
-async function openSnmpCheck(device) {
+async function openSnmpCheck(device, trial = null) {
   const back = document.createElement("div");
   back.className = "modal-backdrop dialog-backdrop";
   back.innerHTML = `<div class="modal dialog snmp-check" role="dialog" aria-modal="true">
-    <div class="modal-header"><span>SNMP check: ${escapeHtml(device.hostname)}</span></div>
-    <div class="modal-body"><div class="dim" data-sc-body>Checking ${escapeHtml(device.ip_address)}... this takes a few seconds.</div></div>
+    <div class="modal-header"><span>${trial ? "Test SNMP (not saved yet)" : "SNMP check"}: ${escapeHtml(device.hostname)}</span></div>
+    <div class="modal-body"><div class="dim" data-sc-body>Checking ${escapeHtml((trial && trial.ip_address) || device.ip_address)}... this takes a few seconds.</div></div>
     <div class="modal-footer"><span class="topbar-spacer"></span>
-      <button type="button" class="btn" data-sc-edit>Edit device</button><button type="button" class="btn btn-primary" data-sc-close>Close</button></div></div>`;
+      ${trial ? "" : '<button type="button" class="btn" data-sc-edit>Edit device</button>'}<button type="button" class="btn btn-primary" data-sc-close>Close</button></div></div>`;
   document.body.appendChild(back);
   const close = () => { document.removeEventListener("keydown", onKey, true); back.remove(); };
   const onKey = ev => { if (ev.key === "Escape") { ev.preventDefault(); close(); } };
   document.addEventListener("keydown", onKey, true);
   back.querySelector("[data-sc-close]").addEventListener("click", close);
-  back.querySelector("[data-sc-edit]").addEventListener("click", () => { close(); openEditModal(device.id); });
+  if (!trial) back.querySelector("[data-sc-edit]").addEventListener("click", () => { close(); openEditModal(device.id); });
   back.querySelector("[data-sc-close]").focus();
   const body = back.querySelector("[data-sc-body]");
   try {
-    const r = await api(`/api/devices/${device.id}/snmp-check`, { method: "POST", body: {} });
+    const r = await api(`/api/devices/${device.id}/snmp-check`, { method: "POST", body: trial ? { try: trial } : {} });
     const mark = ok => ok === true ? '<span class="sc-mark ok">&check;</span>' : ok === false ? '<span class="sc-mark fail">&times;</span>' : '<span class="sc-mark note">i</span>';
     body.className = "";
     body.innerHTML = `<ul class="sc-steps">${r.steps.map(s => `<li>${mark(s.ok)}<div><strong>${escapeHtml(s.step)}</strong><div class="dim">${escapeHtml(s.detail)}</div></div></li>`).join("")}</ul>
-      ${r.ok ? '<div class="sc-result ok">Everything works. Values arrive with the next poll.</div>'
+      ${r.ok ? `<div class="sc-result ok">${trial ? "These settings work. Save changes to use them." : "Everything works. Values arrive with the next poll."}</div>`
         : `<div class="sc-result warn"><strong>What to change:</strong> ${escapeHtml(r.advice || "See the steps above.")}</div>`}`;
   } catch (err) {
     body.innerHTML = `<div class="form-error">${escapeHtml(err.message)}</div>`;

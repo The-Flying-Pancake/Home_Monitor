@@ -2,6 +2,7 @@
 
 import time
 import unittest
+from unittest import mock
 
 from tests import _env  # noqa: F401
 from tests.helpers import TEST_USER, add_device, login, request, session_cookie, start_api_server
@@ -522,6 +523,25 @@ class NotificationAndEventTests(unittest.TestCase):
     def setUpClass(cls):
         start_api_server()
         cls.dev = add_device("events-a", "192.0.2.203")
+
+    def test_warning_whose_cause_has_gone_is_marked_fixed(self):
+        database.set_snmp_status(self.dev, "no_response")
+        database.add_event(self.dev, "warning", "snmp", "SNMP agent stopped responding (host still answers ping)")
+        database.add_event(self.dev, "warning", "problem", "Problem: CPU usage 95% (threshold 90%)")
+        database.add_event(self.dev, "warning", "problem", "Problem: Disk / 97% full")
+        active = [{"device_id": self.dev, "message": "Disk / 98% full"}]   # still open, its number moved on
+        with mock.patch.object(database, "list_active_problems", return_value=active):
+            body = request("GET", "/api/notifications")[1]
+            mine = {e["message"]: e.get("fixed") for e in body["items"] if e["device_id"] == self.dev}
+            self.assertEqual(mine["SNMP agent stopped responding (host still answers ping)"], False)
+            self.assertTrue(mine["Problem: CPU usage 95% (threshold 90%)"])
+            self.assertFalse(mine["Problem: Disk / 97% full"])
+            database.set_snmp_status(self.dev, "ok")
+            after = request("GET", "/api/notifications")[1]
+        fixed = {e["message"] for e in after["items"] if e.get("fixed")}
+        self.assertIn("SNMP agent stopped responding (host still answers ping)", fixed)
+        # Fixed ones no longer count as unread.
+        self.assertEqual(after["unread"], sum(1 for e in after["items"] if e["timestamp"] > after["read_at"] and not e.get("fixed")))
 
     def test_action_error_becomes_event_and_notification(self):
         before = request("GET", "/api/notifications")[1]

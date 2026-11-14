@@ -280,6 +280,23 @@ class SnmpCheckTests(unittest.TestCase):
         self.assertEqual([s["step"] for s in r["steps"]][1:], ["SNMPv3 answer", "User and password", "Values"])
         self.assertIn("2 network interfaces", r["steps"][-1]["detail"])
 
+    def test_settings_tried_before_saving(self):
+        a = Agent(PRIV)
+        self.addCleanup(a.close)
+        dev = self.device(a.port, auth_protocol="SHA-256")         # saved wrong: the agent uses SHA
+        wrong = self.check(dev)
+        self.assertFalse(wrong["ok"])
+        # The form's settings, blank passwords meaning the stored ones: they work, and nothing is saved.
+        trial = {"snmp_version": "v3", "snmp_port": a.port,
+                 "snmp_v3": {"user": "monitor", "level": "authPriv", "auth_protocol": "SHA", "auth_password": "",
+                             "priv_protocol": "AES", "priv_password": ""}}
+        status, res, _ = request("POST", f"/api/devices/{dev}/snmp-check", {"try": trial})
+        self.assertEqual(status, 200, res)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(database.get_device(dev)["snmp_v3"]["auth_protocol"], "SHA-256")
+        self.assertNotIn("auth-pass-123", repr(res))
+        self.assertEqual(request("POST", f"/api/devices/{dev}/snmp-check", {"try": {"ip_address": "not an address"}})[0], 400)
+
     def test_device_set_to_md5_is_named(self):
         a = Agent(dataclasses.replace(PRIV, auth_protocol="MD5", level="authNoPriv", priv_password=""))
         self.addCleanup(a.close)

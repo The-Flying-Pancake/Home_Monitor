@@ -19,7 +19,7 @@ a new release, and the release notes say what was fixed once it is safe to do so
 
 ## Supported versions
 
-Only the latest release gets security fixes. Settings, Updates (or `bash home_monitor.sh --upgrade`)
+Only the latest release gets security fixes. Settings, System, Updates (or `bash home_monitor.sh --upgrade`)
 brings an install up to date.
 
 ## Verifying a release

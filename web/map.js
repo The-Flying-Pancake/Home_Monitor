@@ -93,6 +93,16 @@ function initMap() {
       setViewBox();
     });
   }
+  mapTraffic = storeGet(MAP_TRAFFIC_STORE) === "1";
+  const traffic = document.getElementById("map-traffic");
+  const syncTraffic = () => { traffic.classList.toggle("btn-primary", mapTraffic); traffic.setAttribute("aria-pressed", String(mapTraffic)); };
+  syncTraffic();
+  traffic.addEventListener("click", () => {
+    mapTraffic = !mapTraffic;
+    storeSet(MAP_TRAFFIC_STORE, mapTraffic ? "1" : "0");
+    syncTraffic();
+    drawMap();
+  });
   document.getElementById("map-link").addEventListener("click", () => {
     mapLinkFrom = mapLinkFrom === null ? "" : null;
     updateMapHint();
@@ -621,6 +631,29 @@ function mapTrunks(pos, shownKeys) {
   return out;
 }
 
+// Traffic on links (the Traffic button, remembered in this browser).
+const MAP_TRAFFIC_STORE = "monitor.map.traffic";
+let mapTraffic = false;            // read from storage in initMap (storeGet is in shell.js, loaded later)
+
+function mapRate(bps) {
+  if (typeof bps !== "number") return "-";
+  return bps >= 1e9 ? `${(bps / 1e9).toFixed(1)}G` : bps >= 1e6 ? `${(bps / 1e6).toFixed(bps >= 1e7 ? 0 : 1)}M` : bps >= 1e3 ? `${Math.round(bps / 1e3)}k` : `${Math.round(bps)}`;
+}
+
+/* A link's traffic as "down / up" from the parent's side of the tree: down flows towards the child. */
+function mapRateTag(l, up, mid) {
+  const r = l.rate;
+  if (!r) return "";
+  const fromUp = r.at === up;
+  const down = fromUp ? r.out : r.in, upward = fromUp ? r.in : r.out;
+  const busy = r.speed ? Math.max(down || 0, upward || 0) / (r.speed * 1e6) : 0;
+  const text = `\u2193${mapRate(down)} \u2191${mapRate(upward)}`;
+  const w = text.length * 6.3 + 12;
+  return `<g class="map-rate-tag${busy >= 0.7 ? " busy" : ""}" transform="translate(${Math.round(mid[0] - w / 2)},${Math.round(mid[1] - 8)})">` +
+    `<title>${escapeHtml(`Down ${mapRate(down)}bit/s, up ${mapRate(upward)}bit/s${r.speed ? ` on a ${r.speed} Mbit/s port (${Math.round(busy * 100)}% busy)` : ""}`)}</title>` +
+    `<rect width="${Math.round(w)}" height="16" rx="8"></rect><text x="${Math.round(w / 2)}" y="11.5">${escapeHtml(text)}</text></g>`;
+}
+
 function mapPortTag(text, at) {
   const w = Math.max(22, text.length * 6.3 + 10);
   return `<g class="map-port-tag" transform="translate(${Math.round(at[0] - w / 2)},${Math.round(at[1] - 8)})">` +
@@ -676,6 +709,12 @@ function drawMap() {
       if (upPort) tags.push(mapPortTag(upPort, off(route.sa, c[0])));
       if (downPort) tags.push(mapPortTag(downPort, off(route.sb, c[3])));
     }
+    if (mapTraffic && l.rate && !mapEditing) {
+      // The middle of the line: of the curve's two control points, or of the trunk branch.
+      const mid = route.trunk ? [(route.trunk[0] + c[3][0]) / 2, route.trunk[1]]
+        : [(c[0][0] + 3 * c[1][0] + 3 * c[2][0] + c[3][0]) / 8, (c[0][1] + 3 * c[1][1] + 3 * c[2][1] + c[3][1]) / 8];
+      tags.push(mapRateTag(l, up, mid));
+    }
   });
 
   for (const n of mapData.nodes) {
@@ -686,7 +725,8 @@ function drawMap() {
       mapSelected && n.key !== mapSelected && !affected.has(n.key) ? "dim" : "", n.key === mapLinkFrom ? "linking" : ""].filter(Boolean).join(" ");
     const label = n.label.length > 22 ? n.label.slice(0, 21) + "…" : n.label;
     const sub = n.port ? `${n.ip}:${n.port}` : n.ip || "";
-    const kind = [MAP_KIND_LABEL[n.kind] || n.kind, n.clients ? `+${n.clients} other host${n.clients === 1 ? "" : "s"}` : ""].filter(Boolean).join("  ·  ");
+    const wifi = n.wifi ? `${n.wifi.count} on Wi-Fi${n.wifi.weak ? `, ${n.wifi.weak} weak` : ""}` : "";
+    const kind = [MAP_KIND_LABEL[n.kind] || n.kind, wifi || (n.clients ? `+${n.clients} other host${n.clients === 1 ? "" : "s"}` : "")].filter(Boolean).join("  ·  ");
     html += `<g class="${cls}" data-node="${escapeHtml(n.key)}" transform="translate(${escapeHtml(x)},${escapeHtml(y)})">` +
       `<rect class="map-card" width="${MAP_NODE_W}" height="${MAP_NODE_H}" rx="8"></rect>` +
       `<rect class="map-stripe" x="0" y="0" width="5" height="${MAP_NODE_H}" rx="2"></rect>` +
@@ -714,6 +754,20 @@ function mapMonitorInfo() {
     <div class="dim">It is not drawn on the map. Restarting anything between it and the gateway cuts it off, and the map warns about that when you click such a device.</div></div>`;
 }
 
+/** An access point's Wi-Fi devices, weakest first, with a bar for the signal. */
+function mapWifiInfo(n) {
+  if (!n.wifi) return "";
+  const pct = s => Math.max(4, Math.min(100, ((s + 95) / 55) * 100));
+  return `<div class="map-info-head">On Wi-Fi: ${escapeHtml(n.wifi.count)} device${n.wifi.count === 1 ? "" : "s"}${n.wifi.weak ? `, ${escapeHtml(n.wifi.weak)} below ${escapeHtml(n.wifi.weak_dbm)} dBm` : ""}</div>
+    <ul class="map-wifi">${n.wifi.clients.map(c => {
+      const weak = typeof c.signal === "number" && c.signal < n.wifi.weak_dbm;
+      return `<li class="${weak ? "weak" : ""}"><span class="map-wifi-name" title="${escapeHtml([c.ssid, c.band].filter(Boolean).join(", "))}">${escapeHtml(c.name)}</span>
+        <span class="map-wifi-bar"><span style="width:${typeof c.signal === "number" ? pct(c.signal).toFixed(0) : 0}%"></span></span>
+        <span class="map-wifi-dbm">${typeof c.signal === "number" ? `${escapeHtml(Math.round(c.signal))} dBm` : "-"}</span></li>`;
+    }).join("")}</ul>
+    ${n.wifi.count > n.wifi.clients.length ? `<div class="dim">and ${escapeHtml(n.wifi.count - n.wifi.clients.length)} more on the <a href="#/wifi">Wi-Fi page</a></div>` : ""}`;
+}
+
 function renderMapInfo(affected) {
   const box = document.getElementById("map-info");
   if (!mapSelected) {
@@ -735,6 +789,7 @@ function renderMapInfo(affected) {
     ${cutsMonitor ? `<div class="text-err">Restarting this cuts off this monitor: it cannot watch the restart and will see everything downstream as down until it comes back.</div>` : ""}
     <div class="map-info-head">Affected by a restart: ${list.length} device${list.length === 1 ? "" : "s"}${hosts ? `, about ${escapeHtml(hosts)} other host${hosts === 1 ? "" : "s"}` : ""}</div>
     <ul class="map-affected">${list.map(x => `<li>${escapeHtml(x.label)} <span class="dim">${escapeHtml(MAP_KIND_LABEL[x.kind] || x.kind)}</span></li>`).join("") || "<li class=\"dim\">Nothing downstream</li>"}</ul>
+    ${mapWifiInfo(n)}
     ${unmanaged}`;
   const del = box.querySelector("[data-delete-object]");
   if (del) {

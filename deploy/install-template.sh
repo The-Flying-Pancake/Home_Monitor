@@ -2010,7 +2010,7 @@ systemctl start homelab-monitor
 hm_box "$GRN" "✔  Password reset for $name"
 printf '  Log in at %s%s%s with the new password.%s\n' "$CYN$B" "$(hm_url)" "$R" "$R"
 [[ " ${extra[*]} " == *" --reset-2fa "* ]] && printf '  2FA is off for %s: set it up again in Settings, Account.\n' "$name"
-(( rule_off )) && printf '  2FA is no longer required. Turn it on again in Settings, Login security.\n'
+(( rule_off )) && printf '  2FA is no longer required. Turn it on again in Settings, Users and sign-in.\n'
 printf '  %sEvery open session was logged out. The change is in the audit log.%s\n\n' "$D" "$R"
 EOF
 

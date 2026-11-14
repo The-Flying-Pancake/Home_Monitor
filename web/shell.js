@@ -85,7 +85,7 @@ function toggleTheme() {
 // --- Menu and page title ---
 
 const PAGE_TITLES = {
-  "nav-dashboard": "Dashboard", "nav-devices": "Devices", "nav-map": "Network map", "nav-inventory": "Inventory", "nav-wifi": "Wi-Fi", "nav-pihole": "Pi-hole", "nav-events": "Event log", "nav-automation": "Automation",
+  "nav-dashboard": "Dashboard", "nav-devices": "Devices", "nav-map": "Network map", "nav-inventory": "Inventory", "nav-reports": "Reports", "nav-wifi": "Wi-Fi", "nav-pihole": "Pi-hole", "nav-events": "Event log", "nav-automation": "Automation",
   "nav-settings": "Settings", "nav-audit": "Audit log",
   "nav-availability": "Availability", "nav-proxmox": "Proxmox", "nav-guide": "Guide",
 };
@@ -124,7 +124,7 @@ function setSidebarCollapsed(collapsed) {
 
 const ALL_PERMISSIONS = ["devices.poll", "problems.ack", "devices.manage", "map.edit", "dashboard.edit", "automation.run",
   "automation.edit", "credentials.use", "credentials.manage", "settings.alerts", "settings.notifications", "settings.system",
-  "audit.view", "audit.sensitive", "users.manage"];
+  "audit.view", "audit.sensitive", "users.manage", "reports.manage"];
 
 function can(perm) {
   if (!currentUser) return true;
@@ -152,7 +152,7 @@ function applyCurrentUser(user) {
 const BELL_LINK = e => e.device_id ? `#/device/${escapeHtml(e.device_id)}${e.event_type === "problem" ? "" : "/events"}` : "#/events";
 
 function bellSeverity(e) {
-  if (e.event_type === "problem" && /^Resolved:/.test(e.message)) return "ok";
+  if (e.fixed || (e.event_type === "problem" && /^Resolved:/.test(e.message))) return "ok";
   return e.severity;
 }
 
@@ -170,9 +170,11 @@ function renderBell() {
   }
   list.innerHTML = bellData.items.map(e => {
     const where = e.hostname ? escapeHtml(e.hostname) : e.actor ? `You (${escapeHtml(e.actor)})` : "System";
-    return `<a class="bell-item ${e.timestamp > bellData.read_at ? "unread" : ""}" href="${BELL_LINK(e)}">
+    // A warning whose cause has gone since stays as history, marked Fixed and no longer unread.
+    const unread = e.timestamp > bellData.read_at && !e.fixed;
+    return `<a class="bell-item ${unread ? "unread" : ""} ${e.fixed ? "fixed" : ""}" href="${BELL_LINK(e)}">
       <span class="bell-dot sev-${escapeHtml(bellSeverity(e))}"></span>
-      <span class="bell-text"><strong>${where}</strong> ${escapeHtml(e.message)}
+      <span class="bell-text"><strong>${where}</strong> ${escapeHtml(e.message)}${e.fixed ? ` <span class="bell-fixed">Fixed</span>` : ""}
         <div class="bell-meta">${escapeHtml(formatAgo(e.timestamp))}, ${escapeHtml(e.event_type === "action" ? "could not be done" : e.event_type)}</div></span>
     </a>`;
   }).join("");

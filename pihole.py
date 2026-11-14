@@ -20,7 +20,8 @@ found by address by default), so they get graphs, history and alert rules like a
   pihole.blocking       1 on, 0 off            pihole.gravity_days  age of the blocklists (days)
   pihole.domains        domains on the lists   dns.ms               DNS answer time (ms)
   dns.ok                1 answered, 0 failed
-Tables on that device: pihole_upstreams (where queries go, how fast), pihole_blocked (top blocked).
+Tables on that device: pihole_upstreams (where queries go, how fast), pihole_blocked (top blocked),
+pihole_allowed (most asked), pihole_clients (busiest clients) and pihole_types (query types, Pi-hole 6).
 
 Pause (the Pi-hole page): blocking off for a few minutes, then back on by itself (v6 /api/dns/blocking
 with a timer, v5 ?disable=<seconds>), or on again now. A pause with a timer is reported as
@@ -182,7 +183,9 @@ def _collect_v6(cfg: Dict[str, str], now: float) -> Dict[str, Any]:
     blocking = state.get("blocking")
     metrics = {"pihole.queries": q.get("total"), "pihole.blocked": q.get("blocked"),
                "pihole.blocked_pct": q.get("percent_blocked"), "pihole.clients": (s.get("clients") or {}).get("active"),
-               "pihole.domains": g.get("domains_being_blocked"), "pihole.blocking": 1.0 if blocking == "enabled" else 0.0}
+               "pihole.domains": g.get("domains_being_blocked"), "pihole.blocking": 1.0 if blocking == "enabled" else 0.0,
+               "pihole.cached": q.get("cached"), "pihole.forwarded": q.get("forwarded"),
+               "pihole.unique_domains": q.get("unique_domains"), "pihole.qps": q.get("frequency")}
     if blocking != "enabled" and isinstance(state.get("timer"), (int, float)) and state["timer"] > 0:
         metrics["pihole.paused"] = 1.0
         metrics["pihole.pause_left"] = float(state["timer"])
@@ -195,8 +198,22 @@ def _collect_v6(cfg: Dict[str, str], now: float) -> Dict[str, Any]:
                     "response_ms": round(float(resp) * 1000, 1) if isinstance(resp, (int, float)) else None})
     top = [{"domain": d.get("domain"), "count": d.get("count")}
            for d in (_v6_get(cfg, "/api/stats/top_domains?blocked=true&count=10") or {}).get("domains") or []]
+    allowed = [{"domain": d.get("domain"), "count": d.get("count")}
+               for d in _optional(_v6_get, cfg, "/api/stats/top_domains?blocked=false&count=10").get("domains") or []]
+    clients = [{"name": c.get("name") or "", "ip": c.get("ip") or "", "count": c.get("count")}
+               for c in _optional(_v6_get, cfg, "/api/stats/top_clients?count=10").get("clients") or []]
+    types = [{"type": k, "count": v} for k, v in ((q.get("types") or {}).items()) if isinstance(v, (int, float)) and v > 0]
+    types.sort(key=lambda t: -t["count"])
     return {"version": 6, "metrics": {k: float(v) for k, v in metrics.items() if isinstance(v, (int, float))},
-            "upstreams": ups, "blocked": top}
+            "upstreams": ups, "blocked": top, "allowed": allowed, "clients": clients, "types": types[:10]}
+
+
+def _optional(get: Any, cfg: Dict[str, str], path: str) -> Any:
+    """An extra list (most asked, busiest clients): one Pi-hole cannot give does not stop the rest."""
+    try:
+        return get(cfg, path) or {}
+    except PiholeError:
+        return {}
 
 
 def _num(v: Any) -> Optional[float]:
@@ -207,16 +224,24 @@ def _collect_v5(cfg: Dict[str, str], now: float) -> Dict[str, Any]:
     s = _v5_get(cfg, "summaryRaw")
     metrics = {"pihole.queries": s.get("dns_queries_today"), "pihole.blocked": s.get("ads_blocked_today"),
                "pihole.blocked_pct": s.get("ads_percentage_today"), "pihole.clients": s.get("unique_clients"),
-               "pihole.domains": s.get("domains_being_blocked"), "pihole.blocking": 1.0 if s.get("status") == "enabled" else 0.0}
+               "pihole.domains": s.get("domains_being_blocked"), "pihole.blocking": 1.0 if s.get("status") == "enabled" else 0.0,
+               "pihole.cached": s.get("queries_cached"), "pihole.forwarded": s.get("queries_forwarded"),
+               "pihole.unique_domains": s.get("unique_domains")}
     last = (s.get("gravity_last_updated") or {}).get("absolute")
     if last:
         metrics["pihole.gravity_days"] = round((now - float(last)) / 86400, 1)
     fwd = (_v5_get(cfg, "getForwardDestinations") or {}).get("forward_destinations") or {}
     ups = [{"name": k.split("|")[0], "ip": k.split("|")[-1], "port": None, "count": None, "share_pct": _num(v), "response_ms": None}
            for k, v in fwd.items()]
-    top = [{"domain": d, "count": c} for d, c in ((_v5_get(cfg, "topItems=10") or {}).get("top_ads") or {}).items()]
+    items = _v5_get(cfg, "topItems=10") or {}
+    top = [{"domain": d, "count": c} for d, c in (items.get("top_ads") or {}).items()]
+    allowed = [{"domain": d, "count": c} for d, c in (items.get("top_queries") or {}).items()] if isinstance(items.get("top_queries"), dict) else []
+    sources = _optional(_v5_get, cfg, "topClients=10").get("top_sources") or {}
+    if not isinstance(sources, dict):
+        sources = {}
+    clients = [{"name": k.split("|")[0] if "|" in k else "", "ip": k.split("|")[-1], "count": v} for k, v in sources.items()]
     return {"version": 5, "metrics": {k: float(v) for k, v in metrics.items() if isinstance(v, (int, float))},
-            "upstreams": ups, "blocked": top}
+            "upstreams": ups, "blocked": top, "allowed": allowed, "clients": clients, "types": []}
 
 
 # --- DNS check ---------------------------------------------------------------
@@ -283,6 +308,8 @@ def run(devices: List[Dict[str, Any]], now: Optional[float] = None) -> Optional[
         if device:
             database.replace_device_table(device["id"], "pihole_upstreams", {str(i): u for i, u in enumerate(data["upstreams"])}, int(now))
             database.replace_device_table(device["id"], "pihole_blocked", {str(i): b for i, b in enumerate(data["blocked"])}, int(now))
+            for table, key in (("pihole_allowed", "allowed"), ("pihole_clients", "clients"), ("pihole_types", "types")):
+                database.replace_device_table(device["id"], table, {str(i): r for i, r in enumerate(data.get(key) or [])}, int(now))
     except PiholeError as exc:
         error = str(exc)
     try:
@@ -345,7 +372,7 @@ def view(devices: List[Dict[str, Any]]) -> Dict[str, Any]:
     cfg = load_config()
     device = pihole_device(cfg, devices) if is_configured() else None
     out: Dict[str, Any] = {"configured": is_configured() and is_enabled(), "device": None, "metrics": {}, "upstreams": [],
-                           "blocked": [], "last": LAST.copy(), "version": SESSION.version}
+                           "blocked": [], "allowed": [], "clients": [], "types": [], "last": LAST.copy(), "version": SESSION.version}
     if not device:
         return out
     latest = {m["metric_key"]: m for m in database.get_latest_metrics(device["id"])}
@@ -353,6 +380,9 @@ def view(devices: List[Dict[str, Any]]) -> Dict[str, Any]:
     out["metrics"] = {k: {"value": m["value"], "at": m["timestamp"]} for k, m in latest.items() if k.startswith(("pihole.", "dns."))}
     out["upstreams"] = list(database.get_device_table(device["id"], "pihole_upstreams").values())
     out["blocked"] = list(database.get_device_table(device["id"], "pihole_blocked").values())
+    for table, key in (("pihole_allowed", "allowed"), ("pihole_clients", "clients"), ("pihole_types", "types")):
+        rows = list(database.get_device_table(device["id"], table).values())
+        out[key] = sorted(rows, key=lambda r: -(r.get("count") or 0))
     return out
 
 

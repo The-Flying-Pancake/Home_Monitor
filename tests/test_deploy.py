@@ -154,7 +154,7 @@ class InstallerTests(unittest.TestCase):
         self.assertLess(guard, ask)
         self.assertIn("extra+=(--no-2fa-rule)", script)
         self.assertLess(script.index("extra+=(--no-2fa-rule)"), script.index('reset-password --data "$DATA" --user "$name" "${extra[@]}"'))
-        self.assertIn("2FA is no longer required. Turn it on again in Settings, Login security.", script)
+        self.assertIn("2FA is no longer required. Turn it on again in Settings, Users and sign-in.", script)
 
     def test_installer_settings(self):
         block = self.text.split("# >>> SETTINGS")[1].split("# <<< SETTINGS")[0]

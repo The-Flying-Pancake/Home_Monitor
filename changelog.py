@@ -297,6 +297,22 @@ RELEASES: List[Dict[str, Any]] = [
         "The Dashboard and Back to top icons are drawn afresh for Home Monitor.",
         "Behind the scenes, the automatic tests now run in a third of the time.",
     ]},
+    {"id": 38, "date": "2026-11-14", "title": "Reports, a tidier Settings and a guide that understands questions", "items": [
+        "A new Reports page: ready-made reports you can adjust, shown as a table with charts and downloaded as a PDF or a CSV file.",
+        "A report covers all devices, one group, one tag or one device. You choose the columns, their order, the sorting and the period.",
+        "Save a report to run every day, week or month. The newest files are kept on the monitor and can also go to Telegram.",
+        "The Devices and SNMP settings report shows which devices use v2c and which use v3.",
+        "Edit device has Test SNMP: it tries the settings you typed before you save them.",
+        "Settings is grouped into Monitoring, Alerts, Integrations and System. Users and sign-in share one page, so do data and backups. System has tabs for Status, Updates and HTTPS.",
+        "The weak Wi-Fi rule per network moved to Alert rules, under Apply to: Wi-Fi networks. Quiet networks stay in Inventory.",
+        "After an update the open page reloads itself as soon as nothing is being edited. The update also shows on the Events page and in the bell.",
+        "A warning whose cause has gone is marked Fixed in the bell and no longer counts as unread.",
+        "The map shows the Wi-Fi devices of each access point with their signal. The Traffic button shows how busy measured links are.",
+        "The Pi-hole page adds the most asked domains, the busiest clients, the kinds of query and how much is answered from its cache.",
+        "Inventory has tiles that count each kind of device and filter the list with a click.",
+        "The guide search reads whole questions. It skips small words like how do I, also finds other forms of a word and finds related words (SSID also finds Wi-Fi networks).",
+        "Best answers above the guide lists the paragraphs that fit best. Click one and the guide scrolls to it and makes it pulse.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 

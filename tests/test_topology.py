@@ -96,6 +96,21 @@ class MapApiTests(unittest.TestCase):
         self.assertFalse(any(obj in (l["a"], l["b"]) for l in view["links"]))
         self.assertNotIn(obj, view["positions"])
 
+    def test_link_traffic_from_the_parents_port(self):
+        import time
+        sw = add_device("map-sw", "192.0.2.74")
+        host = add_device("map-host", "192.0.2.75")
+        with database.get_connection() as conn:
+            conn.execute("UPDATE devices SET upstream_device_id = ?, upstream_port = ? WHERE id = ?;", (sw, "Port 3", host))
+            conn.commit()
+        database.replace_device_table(sw, "interfaces", {"3": {"if_index": 3, "label": "Port 3", "in_bps": 2e6, "out_bps": 40e6,
+                                                               "speed_mbps": 100, "oper": "up"}}, int(time.time()))
+        view = request("GET", "/api/map")[1]
+        link = next(l for l in view["links"] if {l["a"], l["b"]} == {f"d:{sw}", f"d:{host}"})
+        self.assertEqual(link["rate"], {"in": 2e6, "out": 40e6, "speed": 100, "at": f"d:{sw}"})
+        others = [l for l in view["links"] if {l["a"], l["b"]} == {f"d:{self.a}", f"d:{self.b}"}]
+        self.assertTrue(all("rate" not in l for l in others))
+
     def test_device_delete_cleans_map(self):
         c = add_device("map-c", "192.0.2.73")
         key = f"d:{c}"

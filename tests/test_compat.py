@@ -32,6 +32,7 @@ SCHEMA_FINGERPRINTS = {
     6: "6ae966f4af4e9e6325436068e706aa24ad84fc8874a81ec9f25ea67e8fa81275",   # workflows.saved_by (rights checked at run)
     7: "53d0aa0ca4ec6cdbfb290b9e723eb942f7c785cfddc56e748e39cd3032bafec7",   # audit_log.actor and audit_log.source
     8: "8593391624b36e3ddacd15c5ffc24c96d81a94b33025d4e48e06884b6322bbec",   # devices.snmp_v3
+    9: "5419690a7425de69ade286f280ed7104503444eff1ccd836c1e55cb3a23796d0",   # reports and report_runs
 }
 
 

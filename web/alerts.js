@@ -31,6 +31,7 @@ function alertRulesPanel() {
         <option value="template">One template</option>
         <option value="tag">One tag</option>
         <option value="device">One device</option>
+        <option value="wifi">Wi-Fi networks: weak signal</option>
       </select>
       <select id="ar-target" class="hidden"></select>
       <span class="ar-spacer"></span>
@@ -40,6 +41,7 @@ function alertRulesPanel() {
     </div>
     <div class="form-help" id="ar-help"></div>
     <div id="ar-overview" class="hidden"></div>
+    <div id="ar-wifi" class="ar-wifi hidden"></div>
     <div class="ar-table-wrap" id="ar-table-wrap">
       <table class="ar-table">
         <thead><tr><th>Rule</th><th>On</th><th>Threshold</th><th>Wait</th><th>Severity</th>
@@ -52,6 +54,7 @@ function alertRulesPanel() {
 
 async function loadAlertRules(scope = arScope.scope, target = arScope.target) {
   if (scope === "overview") return loadAlertOverview();
+  if (scope === "wifi") return loadAlertWifi();
   // Recorded before the fetch, so a Settings re-render meanwhile asks for this scope too.
   arScope = { scope, target };
   try {
@@ -86,8 +89,9 @@ const AR_FIELD_LABEL = { enabled: "On", severity: "Severity", threshold: "Thresh
 const AR_SCOPE_LABEL = { global: "All devices", template: "Template", tag: "Tag", device: "Device" };
 let arOverview = null;
 
-function arShowMode(overview) {
-  document.getElementById("ar-overview").classList.toggle("hidden", !overview);
+function arShowMode(overview, wifi = false) {
+  document.getElementById("ar-overview").classList.toggle("hidden", !overview || wifi);
+  document.getElementById("ar-wifi").classList.toggle("hidden", !wifi);
   document.getElementById("ar-table-wrap").classList.toggle("hidden", overview);
   if (overview) {
     document.getElementById("ar-target").classList.add("hidden");
@@ -158,6 +162,59 @@ async function arOverviewReset(group, items) {
   } catch (err) {
     showToast(`Could not reset: ${err.message}`, "error");
   }
+}
+
+/* Weak Wi-Fi signal per network: whether a network's devices count in an access point's "Wi-Fi devices
+ * on weak signal" problem. A guest network's phones change their address, so a rule per device does
+ * not stick; a rule per network does. A device's own rule (its Edit window) still wins. */
+async function loadAlertWifi() {
+  arShowMode(true, true);
+  document.getElementById("ar-scope").value = "wifi";
+  document.getElementById("ar-help").textContent = "Per Wi-Fi network: report weak signal as usual, never, or only below a line of its own. "
+    + "A device's own rule (in its Edit window) still wins. Quiet networks, whose new devices are never announced, are set in Inventory, Wi-Fi networks.";
+  const box = document.getElementById("ar-wifi");
+  box.innerHTML = `<div class="dim">Loading...</div>`;
+  let inv;
+  try { inv = await api("/api/inventory"); } catch (err) { box.innerHTML = `<div class="form-error">${escapeHtml(err.message)}</div>`; return; }
+  const rules = inv.wifi_net_alerts || {};
+  const nets = (inv.ssids || []).map(s => s.ssid);
+  Object.keys(rules).forEach(n => { if (!nets.some(x => x.toLowerCase() === n.toLowerCase())) nets.push(n); });
+  const usual = Number(inv.weak_dbm || -75);
+  const canEdit = can("devices.manage");
+  const row = n => {
+    const k = Object.keys(rules).find(x => x.toLowerCase() === n.toLowerCase());
+    const rule = k === undefined ? "" : rules[k];
+    const mode = rule === "off" ? "off" : rule === "" ? "" : "line";
+    const count = Number((inv.ssids || []).find(x => x.ssid === n)?.count || 0);
+    return `<tr data-arw-net="${escapeHtml(n)}"><td><strong>${escapeHtml(n)}</strong> <span class="dim">${count} device${count === 1 ? "" : "s"}</span></td>
+      <td><select data-arw-mode aria-label="Weak signal on ${escapeHtml(n)}" ${canEdit ? "" : "disabled"}>
+        <option value=""${mode === "" ? " selected" : ""}>As usual (below ${escapeHtml(String(usual))} dBm)</option>
+        <option value="off"${mode === "off" ? " selected" : ""}>Never reported</option>
+        <option value="line"${mode === "line" ? " selected" : ""}>Below its own line</option></select>
+        <input type="number" data-arw-line min="-95" max="-40" value="${escapeHtml(String(mode === "line" ? rule : Math.max(-95, usual - 10)))}"
+          aria-label="Own line in dBm" class="${mode === "line" ? "" : "hidden"}" ${canEdit ? "" : "disabled"}> <span class="dim${mode === "line" ? "" : " hidden"}" data-arw-unit>dBm</span></td></tr>`;
+  };
+  box.innerHTML = nets.length ? `<table class="ar-wifi-table"><thead><tr><th>Network</th><th>Weak signal</th></tr></thead>
+      <tbody>${nets.map(row).join("")}</tbody></table>
+      ${canEdit ? `<div class="ar-wifi-actions"><button type="button" class="btn btn-primary" id="arw-save">Save Wi-Fi rules</button></div>` : ""}`
+    : `<p class="dim">No Wi-Fi networks seen yet. They come from UniFi (Settings, Integrations, UniFi).</p>`;
+  box.querySelectorAll("[data-arw-mode]").forEach(sel => sel.addEventListener("change", () => {
+    const tr = sel.closest("tr");
+    tr.querySelector("[data-arw-line]").classList.toggle("hidden", sel.value !== "line");
+    tr.querySelector("[data-arw-unit]").classList.toggle("hidden", sel.value !== "line");
+  }));
+  const save = document.getElementById("arw-save");
+  if (save) save.addEventListener("click", async () => {
+    const weak = {};
+    box.querySelectorAll("[data-arw-net]").forEach(tr => {
+      const mode = tr.querySelector("[data-arw-mode]").value;
+      if (mode) weak[tr.dataset.arwNet] = mode === "off" ? "off" : tr.querySelector("[data-arw-line]").value;
+    });
+    try {
+      await api("/api/inventory/wifi-networks", { method: "PUT", body: { weak } });
+      showToast("Wi-Fi rules saved", "success");
+    } catch (err) { showToast(err.message, "error"); }
+  });
 }
 
 function renderAlertRules() {
@@ -270,6 +327,7 @@ function initAlertRules() {
       }
       const scope = ev.target.value;
       if (scope === "overview") { loadAlertOverview(); return; }
+      if (scope === "wifi") { loadAlertWifi(); return; }
       if (!arData) { await loadAlertRules("global", ""); if (scope === "global") return; }
       if (scope === "tag" && !(arData.tags || []).length) {
         showToast("No tags yet: add them in Settings, Groups and tags, or on a device in Edit.", "info");
@@ -388,7 +446,7 @@ async function loadChangedAlerts() {
   ] : [];
   const html = section("Alert rules", "#/settings/alerts/overview", "Open alert rules", "Values changed from the defaults, for all devices, a template, a tag or one device.", rules)
     + section("Maintenance windows", "#/settings/maintenance", "Open maintenance", "While a window is on, its devices raise no problems and send no messages.", maint)
-    + section("Wi-Fi networks", "#/inventory", "Open inventory", "Set in Inventory, Wi-Fi networks.", nets)
+    + section("Wi-Fi networks", "#/settings/alerts/wifi", "Open the Wi-Fi rules", "Quiet networks are set in Inventory, Wi-Fi networks; weak signal per network in Alert rules, Wi-Fi networks.", nets)
     + section("Devices in the inventory", "#/inventory", "Open inventory", "Set in each device's Edit window in the Inventory.", devs);
   box.innerHTML = `<p class="form-help">Everything that makes alerts behave differently from the defaults, wherever it was set.</p>`
     + (html || `<div class="ok-state">Nothing changed: every alert works as it came.</div>`);

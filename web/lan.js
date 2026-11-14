@@ -481,12 +481,30 @@ async function loadPiholePage() {
     kpiCard("DNS answer time", m("dns.ok") === 0 ? "NO ANSWER" : m("dns.ms") != null ? `${m("dns.ms").toFixed(0)} ms` : "-",
       "test lookup every minute", m("dns.ok") === 0 ? "text-err" : ""),
     kpiCard("Blocklists", num(m("pihole.domains")), m("pihole.gravity_days") != null ? `updated ${m("pihole.gravity_days").toFixed(0)} days ago` : ""),
+    m("pihole.cached") != null && m("pihole.queries") ? kpiCard("Answered from cache", `${(m("pihole.cached") / m("pihole.queries") * 100).toFixed(0)}%`,
+      `${num(m("pihole.forwarded"))} sent upstream`) : "",
+    m("pihole.unique_domains") != null ? kpiCard("Different domains", num(m("pihole.unique_domains")),
+      m("pihole.qps") != null ? `${m("pihole.qps").toFixed(1)} queries a second` : "today") : "",
   ].join("");
   fillTable("ph-up-body", phData.upstreams.map(u => `<tr><td class="text-cell">${escapeHtml(u.name || "-")}</td><td>${escapeHtml(u.ip || "-")}</td>
       <td>${u.count != null ? Number(u.count).toLocaleString() : u.share_pct != null ? `${escapeHtml(u.share_pct)}%` : "-"}</td>
       <td>${u.response_ms != null ? `${escapeHtml(u.response_ms)} ms` : "-"}</td></tr>`).join(""), "No upstreams reported yet.", 4);
   fillTable("ph-blocked-body", phData.blocked.map(b => `<tr><td class="text-cell">${escapeHtml(b.domain)}</td><td>${Number(b.count).toLocaleString()}</td></tr>`).join(""),
     "Nothing blocked yet today.", 2);
+  fillTable("ph-allowed-body", (phData.allowed || []).map(b => `<tr><td class="text-cell">${escapeHtml(b.domain)}</td><td>${Number(b.count).toLocaleString()}</td></tr>`).join(""),
+    "Nothing asked yet today (or Pi-hole's privacy level hides domains).", 2);
+  fillTable("ph-clients-body", (phData.clients || []).map(c => `<tr><td class="text-cell">${escapeHtml(c.name || "-")}</td><td>${escapeHtml(c.ip || "-")}</td><td>${Number(c.count).toLocaleString()}</td></tr>`).join(""),
+    "No clients yet today (or Pi-hole's privacy level hides them).", 3);
+  // Query types (Pi-hole 6): shares of today's queries, as bars.
+  const types = phData.types || [];
+  const total = types.reduce((s, t) => s + (Number(t.count) || 0), 0);
+  document.getElementById("ph-types-panel").classList.toggle("hidden", !types.length);
+  document.getElementById("ph-types").innerHTML = types.map(t => {
+    const pct = total ? Number(t.count) / total * 100 : 0;
+    return `<div class="rep-bar-row"><span class="rep-bar-label">${escapeHtml(t.type)}</span>
+      <span class="rep-bar-track"><span class="rep-bar" style="width:${pct.toFixed(1)}%"></span></span>
+      <span class="rep-bar-value">${pct.toFixed(1)}%</span></div>`;
+  }).join("");
   const defs = [
     { id: "dns.ms", title: "DNS answer time", series: [["dns.ms", "Answer"]], fmt: "ms" },
     { id: "pihole.queries", title: "Queries today", series: [["pihole.queries", "Queries"], ["pihole.blocked", "Blocked"]], fmt: "int" },
