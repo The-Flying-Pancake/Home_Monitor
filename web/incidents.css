@@ -1,0 +1,32 @@
+/* Incidents page and the change log (incidents.js). Pills reuse the report tones (reports.css .rep-pill .rt-*). */
+
+.inc-panel { padding: 14px 16px; }
+.inc-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+.inc-toolbar > .btn-primary { margin-left: auto; }
+.inc-filter { display: inline-flex; gap: 4px; }
+.inc-new, .inc-edit, .inc-action-form, .inc-note-form { margin: 0 0 14px; }
+.inc-table { width: 100%; }
+.inc-table td { vertical-align: top; }
+.inc-day td { font-weight: 600; color: var(--text-bright); background: var(--inset); }
+.inc-head { margin-bottom: 14px; }
+.inc-head h2 { margin: 4px 0 6px; font-size: 18px; color: var(--text-bright); font-weight: 600; }
+.inc-ref { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.inc-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.inc-sub { margin: 18px 0 8px; font-size: 13px; color: var(--text-bright); font-weight: 600; }
+.inc-wide { flex: 2 1 260px; }
+.inc-edit textarea, .inc-note-form textarea { width: 100%; box-sizing: border-box; }
+.inc-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.inc-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0 0 10px; }
+.inc-facts dt { color: var(--text-dim); }
+.inc-facts dd { margin: 0; }
+.inc-problems { margin: 0; padding-left: 18px; }
+.inc-problems li { margin: 3px 0; }
+.inc-timeline { list-style: none; margin: 0 0 12px; padding: 0 0 0 14px; border-left: 2px solid var(--border); }
+.inc-timeline li { display: flex; flex-direction: column; gap: 2px; margin: 0 0 10px; position: relative; }
+.inc-timeline li::before { content: ""; position: absolute; left: -19px; top: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--blue); }
+.inc-timeline li.inc-status-note::before { background: var(--text-dim); }
+
+@media (max-width: 700px) {
+  .inc-panel { padding: 10px; }
+  .inc-table { display: block; overflow-x: auto; }
+}

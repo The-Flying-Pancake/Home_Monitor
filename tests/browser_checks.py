@@ -767,6 +767,36 @@ def t_map_wifi_traffic(b):
         database.replace_device_table(DEV_GRAPH, "wifi_clients", {}, now)
 
 
+@check("Map: an LLDP link names the port on both ends; the device's Ports tab says what is at the other end")
+def t_map_lldp(b):
+    import database
+    now = int(time.time())
+    peer = api("/api/devices", {"hostname": "ui-lldp-peer", "ip_address": "192.0.2.68", "profile_id": "generic_device"})["device_id"]
+    try:
+        database.replace_device_table(DEV_GRAPH, "interfaces", {"2": {"if_index": 2, "label": "Port 2", "name": "Port 2", "kind": "port",
+                                                                      "oper": 1, "oper_text": "up", "admin": 1}}, now)
+        database.replace_device_table(peer, "interfaces", {"8": {"if_index": 8, "label": "Port 8", "kind": "port", "oper": 1}}, now)
+        database.replace_device_table(DEV_GRAPH, "lldp", {"2.1": {"local_port_num": 2, "if_index": 2, "local_port": "Port 2",
+                                                                  "sys_name": "ui-lldp-peer", "chassis_mac": "", "mgmt_ip": "192.0.2.68",
+                                                                  "port_id": "Port 8", "port_desc": "", "remote_port": "Port 8"}}, now)
+        goto(b, "#/map")
+        run(b, "mapData = null; loadMap(); true")
+        b.wait_for("!!document.querySelector('#map-svg .map-link.lldp')", timeout=15)
+        words = b.eval("document.querySelector('#map-svg .map-link-g title').textContent")
+        assert "Seen over LLDP" in words and "Port 2" in words and "Port 8" in words, words
+        link = next(l for l in api("/api/map")["links"] if l["source"] == "lldp")
+        assert {link["a_port"], link["b_port"]} == {"Port 2", "Port 8"}, link
+        goto(b, f"#/device/{DEV_GRAPH}/ports")
+        b.wait_for("!!document.querySelector('#ports-body .port-neighbour')", timeout=15)
+        text = b.eval("document.querySelector('#ports-body .port-neighbour').textContent")
+        assert text == "to ui-lldp-peer Port 8", text
+        return "LLDP link drawn with both ports; Ports tab names the neighbour"
+    finally:
+        database.replace_device_table(DEV_GRAPH, "lldp", {}, now)
+        database.replace_device_table(DEV_GRAPH, "interfaces", {}, now)
+        api(f"/api/devices/{peer}", method="DELETE")
+
+
 @check("Map: a box folds away what is below it; Tidy closes up around it without saving")
 def t_map_fold(b):
     goto(b, "#/map")
@@ -1279,6 +1309,41 @@ def t_tag_quick(b):
     return "tag added from the list, filter always shown, new Problems tile shows tag rack"
 
 
+@check("Custom SNMP tab: a gauge can be a capacity reading with a limit; the server checks it, the card says so")
+def t_custom_oid_capacity(b):
+    goto(b, f"#/device/{DEV_GRAPH}/snmp")
+    b.wait_for("!!coidData")
+    run(b, "coidEditor({oid: '1.3.6.1.4.1.9999.3.1.0'}); true")
+    b.wait_for("!!document.querySelector('.coid-editor #coid-cap')")
+    hidden = lambda sel: b.eval(f"document.querySelector('.coid-editor {sel}').classList.contains('hidden')")
+    assert hidden(".coid-cap-row"), "capacity fields shown before asked"
+    run(b, "const k = document.querySelector('#coid-kind'); k.value = 'string'; k.dispatchEvent(new Event('change', {bubbles: true})); true")
+    assert hidden(".coid-gauge"), "capacity offered for text"
+    run(b, "const k = document.querySelector('#coid-kind'); k.value = 'gauge'; k.dispatchEvent(new Event('change', {bubbles: true}));"
+           "const c = document.querySelector('#coid-cap'); c.checked = true; c.dispatchEvent(new Event('change', {bubbles: true})); true")
+    assert not hidden(".coid-cap-row") and not hidden(".coid-cap-num") and hidden(".coid-cap-oid")
+    run(b, "const k = document.querySelector('#coid-cap-kind'); k.value = 'oid'; k.dispatchEvent(new Event('change', {bubbles: true})); true")
+    assert hidden(".coid-cap-num") and not hidden(".coid-cap-oid")
+    run(b, "const k = document.querySelector('#coid-cap-kind'); k.value = 'number'; k.dispatchEvent(new Event('change', {bubbles: true}));"
+           "document.querySelector('#coid-label').value = 'Leases in use'; document.querySelector('#coid-cap-res').value = 'DHCP scope';"
+           "document.querySelector('#coid-cap-limit').value = '254'; document.querySelector('#coid-cap-warn').value = '95';"
+           "document.querySelector('#coid-cap-crit').value = '90'; document.querySelector('.coid-editor').requestSubmit(); true")
+    b.wait_for("!document.querySelector('#coid-error').classList.contains('hidden')")
+    err = b.eval("document.querySelector('#coid-error').textContent")
+    assert "below the critical level" in err, err
+    run(b, "document.querySelector('#coid-cap-warn').value = '75'; document.querySelector('.coid-editor').requestSubmit(); true")
+    b.wait_for("!document.querySelector('.coid-editor')", timeout=10)
+    d = next(c for c in api(f"/api/custom-oids?device={DEV_GRAPH}")["definitions"] if c["label"] == "Leases in use")
+    try:
+        assert (d["cap_resource"], d["cap_limit"], d["cap_warn"], d["cap_crit"]) == ("DHCP scope", 254.0, 75.0, 90.0), d
+        b.wait_for(f"!!document.querySelector('[data-coid=\"{d['id']}\"]')", timeout=15)
+        meta = b.eval(f"document.querySelector('[data-coid=\"{d['id']}\"] .coid-meta').textContent")
+        assert "capacity reading for DHCP scope" in meta and "254" in meta, meta
+    finally:
+        api(f"/api/custom-oids/{d['id']}", method="DELETE")
+    return "capacity option only for a gauge, limit as number or OID, levels checked by the server, shown on the card"
+
+
 @check("Custom SNMP tab: custom value with its graph, Add to overview, browse built in; Overview: Choose graphs")
 def t_custom_snmp(b):
     import database
@@ -1766,6 +1831,38 @@ def t_ack(b):
     assert b.eval(f"!document.querySelector('#dash-grid ' + {sel})"), "acknowledged problem still on the dashboard"
     goto(b, "#/devices")
     return acked[0]["message"] + "; moved to Acknowledged problems, off the dashboard"
+
+
+@check("Incidents: open one from a problem, add an action, resolve it; the change log tab")
+def t_incidents(b):
+    goto(b, "#/devices")
+    # The offline device needs a few polls to go down: in a shard this check can come soon after the start.
+    b.wait_for("!!document.querySelector('#view-devices [data-incident-key]')", timeout=150)
+    b.eval("document.querySelector('#view-devices [data-incident-key]').click(); true")
+    b.wait_for("!!document.getElementById('inc-view') && location.hash.startsWith('#/incidents/')", timeout=20)
+    inc_id = int(b.eval("document.getElementById('inc-view').dataset.incId"))
+    inc = api(f"/api/incidents/{inc_id}")["incident"]
+    assert inc["problems"] and inc["devices"], inc
+    assert b.eval("document.querySelector('#inc-view .inc-ref').textContent") == inc["ref"]
+    run(b, "document.getElementById('inc-action-desc').value = 'Check the cable'; document.getElementById('inc-action-owner').value = 'ui-admin';"
+           "document.getElementById('inc-action-form').requestSubmit(); true")
+    b.wait_for("[...document.querySelectorAll('#inc-view .inc-table td')].some(t => t.textContent === 'Check the cable')")
+    _select(b, "inc-status", "Resolved")
+    assert not b.eval("document.getElementById('inc-resolved-wrap').classList.contains('hidden')")
+    run(b, "document.getElementById('inc-root').value = 'A loose cable'; document.getElementById('inc-edit-form').requestSubmit(); true")
+    b.wait_for("[...document.querySelectorAll('#inc-view .inc-pills .rep-pill')].some(p => p.textContent === 'Resolved')")
+    inc = api(f"/api/incidents/{inc_id}")["incident"]
+    assert inc["status"] == "Resolved" and inc["resolved_at"] and inc["root_cause"] == "A loose cable", inc
+    assert [a["description"] for a in inc["actions"]] == ["Check the cable"], inc["actions"]
+    goto(b, "#/incidents")
+    b.wait_for("!!document.querySelector('#incidents-root .inc-table')")
+    assert b.eval("document.getElementById('nav-incidents').classList.contains('active')")
+    run(b, "document.querySelector('[data-inc-show=\"all\"]').click(); true")
+    b.wait_for(f"[...document.querySelectorAll('#incidents-root a')].some(a => a.textContent === {json.dumps(inc['ref'])})")
+    goto(b, "#/incidents/changes")
+    b.wait_for("!!document.querySelector('#incidents-root [data-change-show]')")
+    goto(b, "#/devices")
+    return f"{inc['ref']} from a problem, one action, resolved"
 
 
 @check("Device page shows the LIVE badge")
@@ -2409,7 +2506,7 @@ def main() -> int:
 
         print(f"Browser checks against {BASE} (isolated database {_env.TMP})")
         for test in shard_checks([t_login, t_dashboard, t_resize, t_move, t_columns, t_graph_tile, t_content_follows, t_map, t_sort, t_groups,
-                     t_ack, t_live, t_snmp_check, t_snmp_v3_fields, t_snmp_test_before_saving, t_reload_after_update, t_reports, t_report_builder, t_alert_wifi, t_map_wifi_traffic, t_map_fold, t_scan_hide_monitored, t_inventory_groups, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_backup_passphrase_bar, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_guide_search, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
+                     t_ack, t_incidents, t_live, t_snmp_check, t_snmp_v3_fields, t_snmp_test_before_saving, t_reload_after_update, t_reports, t_report_builder, t_alert_wifi, t_map_wifi_traffic, t_map_lldp, t_map_fold, t_scan_hide_monitored, t_inventory_groups, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_backup_passphrase_bar, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_custom_oid_capacity, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_guide_search, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
             test(browser)
     finally:
         if browser:

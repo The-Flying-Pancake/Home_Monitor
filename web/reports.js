@@ -30,7 +30,7 @@ function newReportSpec(templateId) {
   const first = t.one_device && reportsData.devices.length ? reportsData.devices[0].id : 0;
   const spec = { template: t.id, period: t.default_period || "7d", filter: { group: "", tag: "", device: first }, columns: [...t.default],
     sort: { column: t.sort, desc: t.desc }, limit: 0, title: "" };
-  if (t.focus === "outage") spec.focus = { outage: 0 };
+  if (t.focus === "outage") spec.focus = { outage: 0, incident: 0 };
   return spec;
 }
 
@@ -190,6 +190,13 @@ function renderReportCustomizer() {
     const chosen = (s.focus || {}).outage || 0;
     outage.innerHTML = `<label for="rep-outage">Outage</label><select id="rep-outage"><option value="0">The longest in the period</option>
       ${(reportsData.outages || []).map(o => `<option value="${escapeHtml(o.id)}" ${o.id === chosen ? "selected" : ""}>${escapeHtml(`${o.device}, ${formatTime(o.started)}, ${formatDuration(o.seconds)}`)}</option>`).join("")}</select>`;
+    // Or an incident record: its write-up, notes and actions fill the review.
+    const incs = reportsData.incidents || [];
+    if (incs.length) {
+      const pick = (s.focus || {}).incident || 0;
+      outage.innerHTML += `<label for="rep-incident">Incident</label><select id="rep-incident"><option value="0">None (the outage above)</option>
+        ${incs.map(i => `<option value="${escapeHtml(i.id)}" ${i.id === pick ? "selected" : ""}>${escapeHtml(`${i.ref} ${i.title} (${i.priority}, ${i.status})`)}</option>`).join("")}</select>`;
+    }
   }
   if (!custom) {
     // Columns: the chosen ones in their order first (with arrows), then the others to tick.
@@ -230,7 +237,10 @@ function readReportCustomizer() {
   s.sort = { column: document.getElementById("rep-sort").value, desc: document.getElementById("rep-desc").value === "1" };
   s.limit = parseInt(document.getElementById("rep-limit").value, 10) || 0;
   const outage = document.getElementById("rep-outage");
-  if (outage && reportTemplate(s.template).focus === "outage") s.focus = { outage: parseInt(outage.value, 10) || 0 };
+  const incident = document.getElementById("rep-incident");
+  if (outage && reportTemplate(s.template).focus === "outage") {
+    s.focus = { outage: parseInt(outage.value, 10) || 0, incident: incident ? parseInt(incident.value, 10) || 0 : 0 };
+  }
   return s;
 }
 
@@ -367,7 +377,8 @@ function repTableEditor(path, b) {
   const statuses = Object.entries(t.status || {});
   const sparks = Object.entries(t.sparks || {});
   return `<div class="form-row">${repSelect(path, "entity", cat.tables.map(x => [x.id, x.label]), t.id, "Rows")}
-      ${b.entity === "group" ? repSelect(path, "split", [["auto", "Groups, or devices with one group"], ["group", "Groups"], ["device", "Devices"]], b.split || "auto", "One row per") : ""}</div>
+      ${b.entity === "group" ? repSelect(path, "split", [["auto", "Groups, or devices with one group"], ["group", "Groups"], ["device", "Devices"]], b.split || "auto", "One row per") : ""}
+      ${b.entity === "incident" ? repSelect(path, "show", [["period", "In the period"], ["open", "Open now"]], b.show || "period", "Which") : ""}</div>
     <div class="form-group"><span class="form-label">Columns</span><div class="rep-b-checks">${t.columns.map(c =>
       `<label class="checkbox-label"><input type="checkbox" data-bp="${escapeHtml(path)}" data-bf="column" value="${escapeHtml(c.key)}" ${chosen.has(c.key) ? "checked" : ""}> ${escapeHtml(c.label)}</label>`).join("")}</div></div>
     <div class="form-row">${statuses.length ? repSelect(path, "status", statuses, b.status || statuses[0][0], "Status column shows") : ""}

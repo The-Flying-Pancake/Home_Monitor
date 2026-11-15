@@ -342,6 +342,14 @@ RELEASES: List[Dict[str, Any]] = [
         "Where the monitor does not collect what a report would like, the report says so and shows the nearest thing.",
         "In Add device, Hide already monitored leaves only the new hosts in the scan results.",
     ]},
+    {"id": 44, "date": "2026-11-15", "title": "Incidents, changes and truer reports", "items": [
+        "Incidents: open one from scratch or straight from a problem, then keep its owner, priority, status, notes and actions with due dates in one place.",
+        "Changes: mark a maintenance window as a change and it joins a dated change log kept for a year.",
+        "The health summary, the outage review and the shift handover now use your incidents and changes.",
+        "Each ping check now sends three pings a fifth of a second apart. Reports show true packet loss and jitter.",
+        "Switches that speak LLDP tell the map exactly which port connects to which. Their neighbours show on the device's Ports tab.",
+        "A custom SNMP value can be a capacity reading with a limit, such as DHCP leases or firewall sessions. It joins the capacity bars and forecasts.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 

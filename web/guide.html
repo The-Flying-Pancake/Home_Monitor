@@ -226,6 +226,19 @@ ssh-keygen -Y verify -f release-signers -I release@home-monitor -n home-monitor-
   </ul>
 </section>
 
+<section id="incidents" data-title="Incidents and changes">
+  <h2>Incidents and changes</h2>
+  <p>An <strong>incident</strong> is the story of something that went wrong: what happened, who is looking at it and what is still to do. <strong>Incidents</strong> in the menu lists them (open ones first; <em>All</em> shows the resolved ones too).</p>
+  <ul>
+    <li><strong>Opening one</strong>: <em>New incident</em> on the Incidents page, or <em>Open incident</em> on a problem (in the Devices problem list or on the device's page). From a problem it fills in the device, the start time, a title and a priority from the problem's severity, and links the problem. If an open incident already has that problem, it opens that one.</li>
+    <li><strong>What it holds</strong>: a number (INC-0001), title, priority (P1 most urgent to P3), status (Open, Investigating, Monitoring, Resolved), owner, the devices and problems involved, a summary, the cause, the impact, the next step, a timeline of notes and actions with an owner, a due date and a status. Changing the status or priority is written into the timeline; setting Resolved records when.</li>
+    <li><strong>Telegram</strong> can tell you when an incident opens or is resolved (off until you switch it on in Settings, Notifications).</li>
+    <li><strong>Who</strong>: administrators and operators may open and update incidents (the permission <em>Open and update incidents</em>); others can read them. A user limited to some devices sees only incidents about their devices. Only an administrator can delete one.</li>
+  </ul>
+  <p><strong>Changes</strong> (the tab on the Incidents page) is a dated log of what was changed on the network, kept for a year. A change is a maintenance window marked as one: fill in <em>Change</em> when you plan the window, or press <em>Mark as change</em> afterwards. Reports show changes next to outages, so "it broke after the firmware update" is easy to see.</p>
+  <p>The Monthly health summary lists incidents as its top issues, the Outage review takes its summary, cause, impact and actions from the incident you choose, and the Shift handover shows open incidents and today's changes. Without incidents those reports fall back to the problems.</p>
+</section>
+
 <section id="maintenance" data-title="Maintenance windows">
   <h2>Maintenance windows</h2>
   <p>Planned work, such as a firmware update or a reboot. For the time you set, the devices covered still show their problems, but no messages are sent (no reminders and no "back online" either). Failed checks count as planned downtime: they appear in blue on the availability bar and do not lower the uptime figures.</p>
@@ -446,6 +459,7 @@ ssh-keygen -Y verify -f release-signers -I release@home-monitor -n home-monitor-
   who it is for. <em>What do you want to know?</em> suggests templates and charts for a question such as "Are we meeting our target?".</p>
   <p>Where the monitor does not collect what a report would like, it says so and shows the nearest thing: groups stand in for sites,
   failed checks for packet loss (one ping per check) and the spread of the answers for jitter.</p>
+  <p><strong>Packet loss and jitter</strong>: each regular ping check sends three pings a fifth of a second apart, so the reports show true packet loss and jitter (how much the answers vary). Periods from before this came in show the older stand-ins, labelled.</p>
   <h3>Your own report</h3>
   <p><strong>New custom report</strong> starts from an empty page; <strong>Start from this template</strong> copies a template so you can
   change it. Add blocks and put them in order: key figures (each with its comparison to the period before or a target), charts (pick the

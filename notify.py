@@ -52,6 +52,9 @@ EVENTS = {
     "workflow": ("Workflow finished", True, "Workflow {workflow}: {status}{failed_step}"),
     "workflow_start": ("Workflow started", False, "Workflow {workflow} started ({trigger})"),
     "new_device": ("New device on the network", True, "New on the network: {what}"),
+    # An incident record opened or resolved (incidents.py). Off until switched on.
+    "incident_opened": ("Incident opened", False, "{incident} opened, {priority}: {title}{if owner}, owner {owner}{end}"),
+    "incident_resolved": ("Incident resolved", False, "{incident} resolved after {duration}: {title}"),
     "certificate": ("HTTPS certificate expiring", True, "The monitor's HTTPS certificate expires on {date} ({days} days). Upload a new one in Settings, System, HTTPS."),
     # Changes to users, credentials and host keys, lockouts, HTTPS, updates and restores (SECURITY_TEXTS).
     "security": ("Security alerts", True, "Security: {what}\n{if who}By {who}{end}{if source} from {source}{end}"),
@@ -74,6 +77,8 @@ PLACEHOLDERS = {
     "date": "Expiry date of the certificate", "days": "Days left before it expires",
     "what": "The new device (its name or maker, address and where it is connected), or what happened (security alerts)",
     "who": "Who did it (security alerts)", "source": "The address it came from (security alerts)",
+    "incident": "The incident's reference, for example INC-0001", "title": "The incident's title",
+    "priority": "The incident's priority: P1, P2 or P3", "owner": "Who looks after the incident",
     "count": "How many messages were grouped", "offline_count": "Devices that went offline",
     "offline_list": "Their names, comma separated; devices unreachable behind one follow it in brackets", "online_count": "Devices back online", "online_list": "Their names",
     "other_list": "Every other message, one per line", "window": "Seconds the monitor waited to group them",
@@ -90,6 +95,8 @@ EVENT_PLACEHOLDERS = {
     "workflow": ["workflow", "status", "failed_step", "trigger", "time"],
     "workflow_start": ["workflow", "trigger", "time"],
     "security": ["what", "who", "source", "time"],
+    "incident_opened": ["incident", "title", "priority", "status", "owner", "device", "time"],
+    "incident_resolved": ["incident", "title", "priority", "status", "owner", "device", "duration", "time"],
     "grouped": ["count", "time", "window", "offline_count", "offline_list", "online_count", "online_list",
                 "proxmox_count", "proxmox_list", "other_list"],
 }
@@ -100,7 +107,8 @@ SAMPLE = {"device": "nas-01", "ip": "192.168.1.99", "template": "qnap_nas", "tim
           "trigger": "schedule", "count": 6, "offline_count": 4, "offline_list": "ap-living-room, ap-kitchen, ap-garden, ap-upstairs",
           "online_count": 0, "online_list": "", "other_list": "• warning: nas-01: CPU usage 97% (threshold 90%)\n• Resolved on pve: memory 91%",
           "proxmox_count": 1, "proxmox_list": "• warning: pve: Guest media-server (200) is stopped, although it starts at boot",
-          "window": 30, "what": "New user added: alex (Viewer)", "who": "admin", "source": "192.168.1.20"}
+          "window": 30, "what": "New user added: alex (Viewer)", "who": "admin", "source": "192.168.1.20",
+          "incident": "INC-0007", "title": "NAS offline after a power cut", "priority": "P1", "owner": "alex"}
 # Ready-made texts offered in the template editor, per event. Short on purpose.
 PRESETS = {
     "device_offline": ["🔴 {device} ({ip}) is offline. {problem}", "🔴 DOWN {device} ({ip}) at {time}",
@@ -112,6 +120,8 @@ PRESETS = {
     "reminder": ["🔁 Still open, {severity}: {device} ({ip}): {problem} (for {duration})"],
     "workflow": ["✅ Workflow {workflow}: {status}{failed_step}", "🔁 {workflow} finished: {status}{failed_step}"],
     "workflow_start": ["▶️ Workflow {workflow} started ({trigger})", "⏱️ {time}: running {workflow}"],
+    "incident_opened": ["🚨 {incident} opened, {priority}: {title}", "🚨 {priority} {incident}: {title}{if owner} ({owner}){end}"],
+    "incident_resolved": ["✅ {incident} resolved after {duration}: {title}"],
     "security": ["🔒 Security: {what}\n{if who}By {who}{end}{if source} from {source}{end}", "🚨 {what} ({time})"],
     "grouped": ["📣 {count} changes at {time}\n{if offline_count > 0}\n🔴 Offline ({offline_count}): {offline_list}\n{end}\n{if online_count > 0}\n🟢 Back online ({online_count}): {online_list}\n{end}\n{if proxmox_count > 0}\n🖥️ Proxmox ({proxmox_count}):\n{proxmox_list}\n{end}\n{other_list}",
                 "📣 {count} at once: {if offline_count > 0}{offline_count} down{end}{if online_count > 0} {online_count} up{end}\n{offline_list|before:\"Down: \"}\n{online_list|before:\"Up: \"}\n{other_list|first:5}"],

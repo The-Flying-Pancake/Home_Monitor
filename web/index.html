@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/reports.css">
   <link rel="stylesheet" href="/workflows.css">
+  <link rel="stylesheet" href="/incidents.css">
   <script src="/theme.js"></script>
 </head>
 <body>
@@ -47,6 +48,9 @@
       <a href="#/events" id="nav-events" class="nav-link" title="Events">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg>
         <span class="sidebar-text">Events</span></a>
+      <a href="#/incidents" id="nav-incidents" class="nav-link" title="Incidents">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.5 20h19z"/><path d="M12 10v4.5M12 17.5h.01"/></svg>
+        <span class="sidebar-text">Incidents</span></a>
       <a href="#/reports" id="nav-reports" class="nav-link" title="Reports">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16"/><rect x="5" y="11" width="3" height="6" rx="0.5"/><rect x="10.5" y="7" width="3" height="10" rx="0.5"/><rect x="16" y="4" width="3" height="13" rx="0.5"/></svg>
         <span class="sidebar-text">Reports</span></a>
@@ -1039,6 +1043,10 @@
                 <select id="maint-minutes"><option value="30">30 minutes</option><option value="60" selected>1 hour</option><option value="120">2 hours</option><option value="240">4 hours</option><option value="480">8 hours</option><option value="1440">1 day</option><option value="4320">3 days</option></select></div>
               <div class="form-group"><label for="maint-note">Note (optional)</label><input type="text" id="maint-note" maxlength="200" placeholder="Firmware update on the Flat switch"></div>
             </div>
+            <div class="form-row">
+              <div class="form-group"><label for="maint-change">Change (optional)</label><input type="text" id="maint-change" maxlength="200" placeholder="What is being changed, for the change log">
+                <div class="form-help">Filled in, the window is kept as a change on the Incidents page, Changes, for a year.</div></div>
+            </div>
             <div class="form-help" id="maint-msg"></div>
             <div class="pve-actions"><button type="submit" class="btn btn-primary">Add window</button></div>
           </form>
@@ -1337,6 +1345,13 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
       </div>
     </div>
     <div class="chart-grid" id="ph-charts"></div>
+  </main>
+
+  <main id="view-incidents" class="view-panel hidden">
+    <div class="section-header">
+      <span class="section-title page-title">Incidents</span>
+    </div>
+    <div id="incidents-root"></div>
   </main>
 
   <main id="view-reports" class="view-panel hidden">
@@ -1943,6 +1958,7 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
   <script src="/lan.js"></script>
   <script src="/inventory.js"></script>
   <script src="/reports.js"></script>
+  <script src="/incidents.js"></script>
   <script src="/guide.js"></script>
 </body>
 </html>

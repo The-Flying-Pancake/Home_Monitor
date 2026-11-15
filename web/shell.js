@@ -85,7 +85,7 @@ function toggleTheme() {
 // --- Menu and page title ---
 
 const PAGE_TITLES = {
-  "nav-dashboard": "Dashboard", "nav-devices": "Devices", "nav-map": "Network map", "nav-inventory": "Inventory", "nav-reports": "Reports", "nav-wifi": "Wi-Fi", "nav-pihole": "Pi-hole", "nav-events": "Event log", "nav-automation": "Automation",
+  "nav-dashboard": "Dashboard", "nav-devices": "Devices", "nav-map": "Network map", "nav-inventory": "Inventory", "nav-reports": "Reports", "nav-incidents": "Incidents", "nav-wifi": "Wi-Fi", "nav-pihole": "Pi-hole", "nav-events": "Event log", "nav-automation": "Automation",
   "nav-settings": "Settings", "nav-audit": "Audit log",
   "nav-availability": "Availability", "nav-proxmox": "Proxmox", "nav-guide": "Guide",
 };
@@ -124,7 +124,7 @@ function setSidebarCollapsed(collapsed) {
 
 const ALL_PERMISSIONS = ["devices.poll", "problems.ack", "devices.manage", "map.edit", "dashboard.edit", "automation.run",
   "automation.edit", "credentials.use", "credentials.manage", "settings.alerts", "settings.notifications", "settings.system",
-  "audit.view", "audit.sensitive", "users.manage", "reports.manage"];
+  "audit.view", "audit.sensitive", "users.manage", "reports.manage", "incidents.manage"];
 
 function can(perm) {
   if (!currentUser) return true;

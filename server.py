@@ -44,6 +44,7 @@ import changelog
 import digest
 import forecast
 import hostactions
+import incidents
 import inventory
 import lanhttp
 import maintenance
@@ -157,6 +158,8 @@ STATIC_FILES = {
     "/reports.css": ("reports.css", "text/css; charset=utf-8"),
     "/botcmds.js": ("botcmds.js", "application/javascript; charset=utf-8"),
     "/guide.js": ("guide.js", "application/javascript; charset=utf-8"),
+    "/incidents.js": ("incidents.js", "application/javascript; charset=utf-8"),
+    "/incidents.css": ("incidents.css", "text/css; charset=utf-8"),
     "/guide.html": ("guide.html", "text/html; charset=utf-8"),
 }
 
@@ -634,6 +637,202 @@ def maintenance_view(user: rbac.User, windows: List[Dict[str, Any]]) -> List[Dic
     if user.scope is None:
         return windows
     return [w for w in windows if maintenance_in_scope(user, w["scope"], w["target"])]
+
+
+# --- Incidents and change records (incidents.py, maintenance.py) -------------------------------------
+# Routes for the Incidents page: incidents with notes, actions and linked problems, and the change log
+# (maintenance windows kept a year, some marked as a change). Viewing follows device access; changes
+# need incidents.manage (rbac.ROUTE_PERMISSIONS), checked again per incident here.
+
+INCIDENT_LIST_LIMIT = 500
+
+
+def incident_visible(user: rbac.User, inc: Dict[str, Any]) -> bool:
+    return incidents.visible_to(inc, user.scope is None, user.sees_id)
+
+
+def incident_devices(user: rbac.User, raw: Any) -> List[Tuple[int, str]]:
+    """The devices chosen for an incident as (id, name), each one the user can see."""
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list) or not all(isinstance(d, int) and not isinstance(d, bool) for d in raw):
+        raise RequestError(400, "devices must be a list of device ids")
+    names = {d["id"]: d["hostname"] for d in database.list_devices()}
+    out = []
+    for d in dict.fromkeys(raw):
+        if d not in names or not user.sees_id(d):
+            raise RequestError(400, "One of the devices does not exist or is outside your device access")
+        out.append((d, names[d]))
+    if user.scope is not None and not out:
+        raise RequestError(400, "Choose at least one device for the incident")
+    return out
+
+
+def incident_open_problems() -> set:
+    return {(p["device_id"], p["problem_key"]) for p in database.list_active_problems()}
+
+
+def incident_for(user: rbac.User, incident_id: int) -> Dict[str, Any]:
+    """The incident, or 404 when it does not exist or lies outside the user's device access."""
+    inc = database.get_incident(incident_id)
+    if inc is None or not incident_visible(user, inc):
+        raise RequestError(404, "No such incident")
+    return inc
+
+
+def incident_problem(user: rbac.User, payload: Any) -> Dict[str, Any]:
+    """An open problem named by {"device_id", "problem_key"} on a device the user can see."""
+    if not isinstance(payload, dict):
+        raise RequestError(400, "Name the problem by device_id and problem_key")
+    device_id = _get_int(payload, "device_id", None, 1, 2 ** 62)
+    key = _get_str(payload, "problem_key", max_len=200)
+    if device_id is None or not user.sees_id(device_id):
+        raise RequestError(404, "No such open problem")
+    hit = next((p for p in database.list_active_problems() if p["device_id"] == device_id and p["problem_key"] == key), None)
+    if hit is None:
+        raise RequestError(404, "No such open problem")
+    return hit
+
+
+def incident_message(kind: str, inc: Dict[str, Any]) -> None:
+    """The optional Telegram message (off until switched on in Settings)."""
+    try:
+        NOTIFIER.event(kind, incidents.message_values(inc), critical=inc.get("priority") == "P1" and kind == "incident_opened")
+    except Exception:  # a message must never stop the change being saved
+        log.exception("Incident message %s failed", kind)
+
+
+def incidents_page(user: rbac.User, show: str) -> Dict[str, Any]:
+    rows = database.list_incidents(open_only=show == "open")
+    open_set = incident_open_problems()
+    listed = [incidents.view(i, open_set) for i in rows if incident_visible(user, i)][:INCIDENT_LIST_LIMIT]
+    devices = [{"id": d["id"], "name": d["hostname"]} for d in user.visible(database.list_devices(), key="id")]
+    can = user.can("incidents.manage")
+    return {"incidents": listed, "show": show, "can_manage": can, "devices": sorted(devices, key=lambda d: d["name"].lower()),
+            "owners": sorted(u["username"] for u in database.list_users() if not u.get("disabled")) if can else [],
+            "priorities": list(incidents.PRIORITIES), "statuses": list(incidents.STATUSES),
+            "action_statuses": list(incidents.ACTION_STATUSES)}
+
+
+def change_log_view(user: rbac.User, days: int, changes_only: bool) -> Dict[str, Any]:
+    """Maintenance windows of the last days (a year at most), newest first, with what they cover in
+    words; only those inside the user's device access."""
+    now = time.time()
+    rows = maintenance_view(user, maintenance.history(since=now - days * 86400, now=now, changes_only=changes_only))
+    names = {str(d["id"]): d["hostname"] for d in database.list_devices()}
+    groups = {g["id"]: g["name"] for g in taxonomy.groups()}
+    for w in rows:
+        w["covers"] = ("Every device" if w["scope"] == "all" else f"Device {names.get(w['target'], '#' + w['target'])}"
+                       if w["scope"] == "device" else f"Group {groups.get(w['target'], w['target'])}" if w["scope"] == "group"
+                       else f"Tag {w['target']}")
+    return {"windows": rows, "days": days, "changes_only": changes_only, "can_mark": user.can("problems.ack")}
+
+
+def incident_route(h: Any, method: str, path: str, data: Any) -> bool:
+    """Handles an incident or change log route. data: the query (GET) or the JSON body (POST, PUT).
+    Returns False when the path is not one of these."""
+    if not (path.startswith("/api/incidents") or path.startswith("/api/maintenance/")):
+        return False
+    user, now = h.user, int(time.time())
+    if method == "GET" and path == "/api/maintenance/history":
+        days = _get_int({"d": (data.get("days") or ["365"])[0]}, "d", 365, 1, 365)
+        h._send_json(200, change_log_view(user, days, (data.get("changes") or ["0"])[0] == "1"))
+        return True
+    m_change = re.fullmatch(r"/api/maintenance/(\d+)/change", path)
+    if method == "POST" and m_change:
+        wid = int(m_change.group(1))
+        known = next((w for w in maintenance.history(now=now) if w["id"] == wid), None)
+        if not known or not maintenance_in_scope(user, known["scope"], known["target"]):
+            raise RequestError(404, "No such maintenance window")
+        note = _get_str(data, "change_note", max_len=200)
+        w = maintenance.set_change(wid, note, now=now)
+        if not w:
+            raise RequestError(404, "No such maintenance window")
+        database.add_audit("maintenance", f"Maintenance window {wid} {'marked as a change' if note else 'no longer marked as a change'}",
+                           f"{note + '; ' if note else ''}by {user.username}")
+        h._send_json(200, {"success": True, "window": w})
+        return True
+    if not path.startswith("/api/incidents"):
+        return False
+    if method == "GET" and path == "/api/incidents":
+        show = (data.get("show") or ["open"])[0]
+        h._send_json(200, incidents_page(user, "all" if show == "all" else "open"))
+        return True
+    m = re.fullmatch(r"/api/incidents/(\d+)(?:/(notes|actions|problems)(?:/(\d+))?)?", path)
+    if method == "POST" and path == "/api/incidents":
+        problem = incident_problem(user, data["from_problem"]) if data.get("from_problem") else None
+        if problem:
+            existing = database.open_incident_with_problem(problem["device_id"], problem["problem_key"])
+            inc = database.get_incident(existing) if existing else None
+            if inc and incident_visible(user, inc):
+                h._send_json(200, {"success": True, "existing": True, "incident": incidents.view(inc, incident_open_problems())})
+                return True
+        try:
+            if problem:
+                fields = incidents.from_problem(problem, problem["hostname"])
+                fields.update(incidents.clean_fields({k: v for k, v in data.items() if k in database.INCIDENT_FIELDS}, partial=True, now=now))
+                devices = incident_devices(user, sorted({problem["device_id"], *(data.get("devices") or [])}))
+            else:
+                fields = incidents.clean_fields(data, partial=False, now=now)
+                devices = incident_devices(user, data.get("devices"))
+            inc = incidents.create(fields, devices, user.username, problem, now=now)
+        except incidents.IncidentError as exc:
+            raise RequestError(400, str(exc))
+        database.add_audit("incident", f"Opened {incidents.ref(inc['id'])}: {inc['title']}",
+                           f"{inc['priority']}; {len(devices)} device(s)" + ("; from a problem" if problem else "") + f"; by {user.username}")
+        incident_message("incident_opened", inc)
+        h._send_json(201, {"success": True, "incident": incidents.view(inc, incident_open_problems())})
+        return True
+    if not m:
+        return False
+    inc = incident_for(user, int(m.group(1)))
+    sub, sub_id = m.group(2), m.group(3)
+    name = incidents.ref(inc["id"])
+    try:
+        if sub is None and method == "GET":
+            h._send_json(200, {"incident": incidents.view(inc, incident_open_problems())})
+            return True
+        if sub is None and method == "PUT":
+            fields = incidents.clean_fields(data, partial=True, now=now)
+            devices = incident_devices(user, data["devices"]) if "devices" in data else None
+            after, changed = incidents.update(inc["id"], fields, devices, user.username, now=now)
+            if changed:
+                database.add_audit("incident", f"Changed {name}: {after['title']}",
+                                   f"{', '.join(c.replace('_', ' ') for c in changed)}; status {after['status']}; by {user.username}")
+            if inc["status"] != "Resolved" and after["status"] == "Resolved":
+                incident_message("incident_resolved", after)
+            h._send_json(200, {"success": True, "changed": changed, "incident": incidents.view(after, incident_open_problems())})
+            return True
+        if sub is None and method == "DELETE":
+            database.delete_incident(inc["id"])
+            database.add_audit("incident", f"Deleted {name}: {inc['title']}", f"By {user.username}")
+            h._send_json(200, {"success": True})
+            return True
+        if sub == "notes" and method == "POST" and sub_id is None:
+            incidents.add_note(inc["id"], data.get("text"), user.username, now=now)
+        elif sub == "actions" and method == "POST" and sub_id is None:
+            incidents.add_action(inc["id"], data, now=now)
+            database.add_audit("incident", f"Action added to {name}", f"{_get_str(data, 'description', max_len=300)}; by {user.username}")
+        elif sub == "actions" and method == "PUT" and sub_id:
+            if not incidents.update_action(inc["id"], int(sub_id), data, now=now):
+                raise RequestError(404, "No such action")
+            database.add_audit("incident", f"Action changed on {name}", f"Action {sub_id}; by {user.username}")
+        elif sub == "actions" and method == "DELETE" and sub_id:
+            if not database.delete_incident_action(inc["id"], int(sub_id)):
+                raise RequestError(404, "No such action")
+            database.add_audit("incident", f"Action removed from {name}", f"Action {sub_id}; by {user.username}")
+        elif sub == "problems" and method == "POST" and sub_id is None:
+            problem = incident_problem(user, data)
+            incidents.link_problem(inc["id"], problem, now=now)
+            if problem["device_id"] not in {d["id"] for d in inc["devices"]}:
+                database.update_incident(inc["id"], {}, [(d["id"], d["name"]) for d in inc["devices"]] + [(problem["device_id"], problem["hostname"])], now=now)
+            database.add_incident_note(inc["id"], f"Problem linked by {user.username}: {problem['message']}", user.username, kind="status", now=now)
+        else:
+            raise RequestError(405, "Not supported here")
+    except incidents.IncidentError as exc:
+        raise RequestError(400, str(exc))
+    h._send_json(200, {"success": True, "incident": incidents.view(database.get_incident(inc["id"]), incident_open_problems())})
+    return True
 
 
 WORKFLOW_SCOPE_MARKER = "checked_workflow_scope"
@@ -2600,6 +2799,8 @@ def map_view() -> Dict[str, Any]:
     for l in inferred["links"]:
         links[(l["a"], l["b"])] = dict(l, a_port=port_label(l["a"], l["a_port"]), b_port=port_label(l["b"], l["b_port"]),
                                        hidden=False)
+    # LLDP neighbours (poller.collect_lldp): exact links with the port on both ends, over the guesses.
+    topology.merge_lldp(links, lldp_map_links(devices, imacs, arp, labels))
     for m in database.list_map_links():
         if m["node_a"] not in keys or m["node_b"] not in keys:
             continue
@@ -2647,7 +2848,7 @@ def map_view() -> Dict[str, Any]:
             # A VM, container or service on a host: UniFi sees it on the host's switch port, but it
             # lives on the host (its virtual link stays).
             current = links.get(tuple(sorted((child, guessed)))) if guessed else None
-            if current and current.get("kind") in ("virtual", "service"):
+            if current and (current.get("kind") in ("virtual", "service") or current.get("source") == "lldp"):
                 continue
             if guessed and guessed != up:
                 links.pop(tuple(sorted((child, guessed))), None)
@@ -2697,6 +2898,53 @@ def map_view() -> Dict[str, Any]:
                         "links": [w["label"] for w in wans]}
     return {"nodes": nodes, "links": links_list, "root": root, "parent": parent, "internet": internet,
             "positions": database.get_map_positions(), "object_kinds": list(database.MAP_OBJECT_KINDS)}
+
+
+def lldp_map_links(devices: List[Dict[str, Any]], imacs: Dict[int, set], arp: Dict[str, str],
+                   labels: Dict[int, Dict[int, str]]) -> List[Dict[str, Any]]:
+    """Links from every device's LLDP table, the neighbour matched to a monitored device (topology.lldp_links)."""
+    lldp: Dict[int, Dict[str, Dict[str, Any]]] = {}
+    for r in database.get_table_all_devices("lldp"):
+        lldp.setdefault(r["device_id"], {})[r["row_key"]] = r
+    if not lldp:
+        return []
+    macs = {i: set(m) for i, m in imacs.items()}
+    for d in devices:
+        if arp.get(d["ip_address"]):
+            macs.setdefault(d["id"], set()).add(arp[d["ip_address"]])
+    return topology.lldp_links(devices, lldp, macs, labels)
+
+
+def lldp_neighbours(device_id: int) -> Dict[int, str]:
+    """{ifIndex: "to <device> <port>"} from the device's LLDP table, the neighbour named as the
+    monitor knows it when it is monitored (for the interface tables)."""
+    rows = database.get_device_table(device_id, "lldp")
+    if not rows:
+        return {}
+    devices = database.list_devices()
+    names = {f"d:{d['id']}": d["hostname"] for d in devices}
+    imacs: Dict[int, set] = {}
+    labels: Dict[int, Dict[int, str]] = {}
+    for r in database.get_table_all_devices("interfaces"):
+        if r.get("mac"):
+            imacs.setdefault(r["device_id"], set()).add(r["mac"])
+        labels.setdefault(r["device_id"], {})[r["if_index"]] = r.get("label") or str(r["if_index"])
+    me = f"d:{device_id}"
+    links = topology.lldp_links(devices, {device_id: rows}, imacs, labels)
+    out: Dict[int, str] = {}
+    for r in rows.values():
+        if r.get("if_index") is None:
+            continue
+        link = next((l for l in links if me in (l["a"], l["b"]) and (l["a_port"] if l["a"] == me else l["b_port"]) == r.get("local_port")), None)
+        if link:
+            other = link["b"] if link["a"] == me else link["a"]
+            port = link["b_port"] if link["a"] == me else link["a_port"]
+            text = f"to {names.get(other, r.get('sys_name') or 'a device')}" + (f" {port}" if port else "")
+        else:
+            who = r.get("sys_name") or r.get("chassis_mac") or r.get("mgmt_ip") or "a device"
+            text = f"to {who}" + (f" {r['remote_port']}" if r.get("remote_port") else "")
+        out.setdefault(int(r["if_index"]), text)
+    return out
 
 
 def unifi_map_links(devices: List[Dict[str, Any]], imacs: Dict[int, set], labels: Dict[int, Dict[int, str]]):
@@ -4438,6 +4686,8 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
         if path in STATIC_FILES:
             self._serve_file(*STATIC_FILES[path])
             return
+        if incident_route(self, "GET", path, parse_qs(parsed.query)):     # incidents and the change log
+            return
 
         if path == "/api/devices":
             self._send_json(200, {"devices": self.user.visible(device_list_view(), key="id")})
@@ -4545,6 +4795,8 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
                 "catalog": reports.catalog(self.user.scope is None),
                 # The outage review's choice: the longest outages of the user's own devices.
                 "outages": reports.outages(devices),
+                # ... or an incident record (incidents.py), of the user's own devices.
+                "incidents": reports.incident_choices(devices, self.user.scope is None),
                 "saved": [report_view(r) for r in database.list_reports() if may_see_report(self.user, r)],
                 "groups": [{"id": g["id"], "name": g["name"]} for g in taxonomy.groups()],
                 "tags": [t["name"] for t in taxonomy.tags()],
@@ -4958,8 +5210,11 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
                 mac_counts[row["if_index"]] = mac_counts.get(row["if_index"], 0) + 1
             rows = sorted(interfaces.values(), key=lambda r: r["if_index"])
             wan = {w["if_index"] for w in wan_interfaces() if w["device_id"] == device_id}
+            neighbours = lldp_neighbours(device_id)
             for r in rows:
                 r["mac_count"] = mac_counts.get(r["if_index"], 0)
+                if r["if_index"] in neighbours:
+                    r["neighbour"] = neighbours[r["if_index"]]
                 r["group"], r["group_rank"] = interface_group(r, ssid_by_iface)
                 r["wan"] = r["if_index"] in wan
             return {"ports": rows}
@@ -5023,6 +5278,8 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
     def _post(self, parsed) -> None:
         path = parsed.path.rstrip("/")
         payload = self._read_json()
+        if incident_route(self, "POST", path, payload):                    # incidents and the change log
+            return
 
         match_hk = re.fullmatch(r"/api/devices/(\d+)/hostkey", path)
         if match_hk:
@@ -5583,12 +5840,14 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
                 scope, target = _get_str(payload, "scope", max_len=10), _get_str(payload, "target", max_len=120)
                 if scope in maintenance.SCOPES and not maintenance_in_scope(self.user, scope, target):
                     raise RequestError(403, "That window covers devices outside your device access.")
-                w = maintenance.add(scope, target, start, end, _get_str(payload, "note", max_len=200), self.user.username, now)
+                w = maintenance.add(scope, target, start, end, _get_str(payload, "note", max_len=200), self.user.username, now,
+                                    change_note=_get_str(payload, "change_note", max_len=200))
             except (maintenance.MaintenanceError, TypeError, ValueError) as exc:
                 raise RequestError(400, str(exc))
             database.add_audit("maintenance", f"Maintenance window for {w['scope']} {w['target']}".strip(),
                                f"{datetime.fromtimestamp(w['start']):%Y-%m-%d %H:%M} to {datetime.fromtimestamp(w['end']):%Y-%m-%d %H:%M}"
-                               f"{'; ' + w['note'] if w['note'] else ''}; by {self.user.username}")
+                               f"{'; ' + w['note'] if w['note'] else ''}{'; change: ' + w['change_note'] if w['change_note'] else ''}"
+                               f"; by {self.user.username}")
             self._send_json(201, {"success": True, "window": w, "windows": maintenance_view(self.user, maintenance.windows())})
             return
         match_mw = re.fullmatch(r"/api/maintenance/(\d+)/end", path)
@@ -5830,6 +6089,8 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
 
     def _put(self, parsed) -> None:
         path = parsed.path.rstrip("/")
+        if path.startswith("/api/incidents/") and incident_route(self, "PUT", path, self._read_json()):
+            return
         match_report = re.fullmatch(r"/api/reports/(\d+)", path)
         if match_report:
             self._save_report(int(match_report.group(1)), self._read_json())
@@ -6135,6 +6396,8 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
 
     def _delete(self, parsed) -> None:
         path = parsed.path.rstrip("/")
+        if path.startswith("/api/incidents/") and incident_route(self, "DELETE", path, {}):
+            return
         match_report = re.fullmatch(r"/api/reports/(\d+)", path)
         if match_report:
             saved = database.get_report(int(match_report.group(1)))
@@ -6802,15 +7065,15 @@ class PollScheduler:
 
     def _ping_job(self, device: Dict[str, Any], timeout: float) -> Any:
         """The reachability check (ping, plus the port or HTTP test for service checks), recorded
-        as one availability beat. A failure to record never fails the check itself."""
-        result = poller.ping_device(device, timeout)
+        as one availability beat. The ping sends three echoes (poller.check_device), so the beat also
+        keeps the check's packet loss and jitter. A failure to record never fails the check itself."""
+        status, ping_ms, echo = poller.check_device(device, timeout)
         try:
-            status, ping_ms = result
             availability.record(device["id"], status == "online", availability.response_ms(device["id"], ping_ms),
-                                planned=maintenance_window(device) is not None)
+                                planned=maintenance_window(device) is not None, echo=echo)
         except Exception:
             log.exception("Could not record availability for device %s", device.get("id"))
-        return result
+        return status, ping_ms
 
     def _snmp_job(self, device: Dict[str, Any], timeout: float, retries: int) -> None:
         # Skip SNMP for hosts that just failed ICMP: each OID would wait out the full timeout.
@@ -7162,7 +7425,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "0.19.0"
+APP_VERSION = "0.20.0"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:

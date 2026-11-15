@@ -100,6 +100,121 @@ def ping_host(ip_address: str, timeout_seconds: float = 2.0) -> Tuple[bool, Opti
         return False, None
 
 
+# Several echoes per regular check, so the reports can show true packet loss and jitter. Kept
+# gentle: three small echoes 200 ms apart, one timeout for the whole check (never longer than a
+# single ping's). Only the scheduler's ping round uses this; live mode, scans and the Ping button
+# send one echo as before.
+PING_ECHOES = 3
+PING_GAP_SECONDS = 0.2
+_REPLY_SEQ = re.compile(r"icmp_seq=(\d+)", re.IGNORECASE)
+_REPLY_MS = re.compile(r"[=<]\s*(\d+(?:\.\d+)?)\s*ms", re.IGNORECASE)
+_SENT = re.compile(r"(\d+)\s+packets?\s+transmitted", re.IGNORECASE)
+
+
+def parse_ping_replies(output: str, windows: bool) -> List[Tuple[int, float]]:
+    """The answered echoes in a ping output as [(sequence, round trip ms)], in sequence order.
+
+    Linux (iputils, busybox): "64 bytes from 192.168.1.1: icmp_seq=2 ttl=64 time=0.456 ms"; a
+    duplicate answer ("DUP!") is counted once. Windows: "Reply from 192.168.1.1: bytes=32 time=1ms
+    TTL=64" or "time<1ms"; only a line with a TTL is an answer ("Destination host unreachable" from
+    a router is not), and the replies are numbered in the order they came."""
+    out: Dict[int, float] = {}
+    n = 0
+    for line in (output or "").splitlines():
+        if windows:
+            if "TTL=" not in line.upper():
+                continue
+            n += 1
+            seq = n
+        else:
+            if "DUP!" in line:
+                continue
+            m_seq = _REPLY_SEQ.search(line)
+            if not m_seq or "time" not in line.lower():
+                continue
+            seq = int(m_seq.group(1))
+        m_ms = _REPLY_MS.search(line.split("time", 1)[-1] if "time" in line.lower() else line)
+        if seq not in out:
+            out[seq] = float(m_ms.group(1)) if m_ms else 1.0
+    return sorted(out.items())
+
+
+def echo_stats(sent: int, rtts: List[float]) -> Dict[str, Any]:
+    """One check's summary: sent, received, min, avg and max round trip, loss and jitter.
+
+    Jitter is the mean absolute difference between consecutive answers (report spec 4.7, like the
+    RFC 3550 interarrival jitter); it needs two answers, so it is None with fewer."""
+    sent = max(int(sent), len(rtts))
+    got = len(rtts)
+    out: Dict[str, Any] = {"sent": sent, "received": got, "min": None, "avg": None, "max": None, "jitter": None,
+                           "loss_pct": round(100.0 * (sent - got) / sent, 2) if sent else None}
+    if got:
+        out.update(min=round(min(rtts), 3), avg=round(sum(rtts) / got, 3), max=round(max(rtts), 3))
+    if got > 1:
+        out["jitter"] = round(sum(abs(b - a) for a, b in zip(rtts, rtts[1:])) / (got - 1), 3)
+    return out
+
+
+def ping_echoes(ip_address: str, timeout_seconds: float = 2.0, count: int = PING_ECHOES) -> Dict[str, Any]:
+    """Sends count echoes about PING_GAP_SECONDS apart and returns echo_stats (alive: received > 0).
+
+    Linux: one ping process, "-c 3 -i 0.2 -w <timeout>": the deadline bounds the whole check, so a
+    host that does not answer costs the same time as one ping did. Windows (development only) has
+    no interval option, so three single pings start 200 ms apart and each waits only for what is
+    left of the timeout."""
+    count = max(1, min(5, int(count)))
+    if not ip_address or ip_address.startswith("-"):
+        return echo_stats(count, [])
+    if _simulated(ip_address):
+        return _simulated_echoes(demo.ping_address(ip_address), count)
+    if platform.system().lower() == "windows":
+        return _ping_echoes_windows(ip_address, timeout_seconds, count)
+    deadline = max(1, int(timeout_seconds))
+    cmd = ["ping", "-c", str(count), "-i", f"{PING_GAP_SECONDS:g}", "-w", str(deadline), ip_address]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                              timeout=timeout_seconds + 1.0, shell=False)
+    except (subprocess.TimeoutExpired, OSError):
+        return echo_stats(count, [])
+    # iputils exits 1 when some echoes were lost before the deadline, so the output decides.
+    replies = parse_ping_replies(proc.stdout, windows=False)
+    m_sent = _SENT.search(proc.stdout or "")
+    if not replies and not m_sent and proc.returncode not in (0, 1):
+        # A ping without the interval option (an old busybox): one echo the old way.
+        alive, ms = ping_host(ip_address, timeout_seconds)
+        return echo_stats(1, [ms] if alive and ms is not None else [])
+    return echo_stats(int(m_sent.group(1)) if m_sent else count, [ms for _, ms in replies])
+
+
+def _ping_echoes_windows(ip_address: str, timeout_seconds: float, count: int) -> Dict[str, Any]:
+    import threading
+    results: List[Optional[float]] = [None] * count
+
+    def one(i: int) -> None:
+        time.sleep(i * PING_GAP_SECONDS)
+        alive, ms = ping_host(ip_address, max(0.2, timeout_seconds - i * PING_GAP_SECONDS))
+        results[i] = ms if alive and ms is not None else None
+
+    threads = [threading.Thread(target=one, args=(i,), daemon=True) for i in range(count)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout_seconds + 2.0)
+    return echo_stats(count, [ms for ms in results if ms is not None])
+
+
+def _simulated_echoes(answer: Tuple[bool, Optional[float]], count: int) -> Dict[str, Any]:
+    """The demo: the simulated ping, spread a little between echoes; now and then one goes missing."""
+    alive, ms = answer
+    if not alive or ms is None:
+        return echo_stats(count, [])
+    rng = secrets.SystemRandom()
+    rtts = [round(max(0.05, ms * (1 + rng.uniform(-0.12, 0.12))), 3) for _ in range(count)]
+    if rng.random() < 0.03:
+        rtts.pop()
+    return echo_stats(count, rtts)
+
+
 # --- Minimal ASN.1 BER SNMPv2c Implementation ---
 
 TAG_INTEGER = 0x02
@@ -715,15 +830,37 @@ def _poll_settings() -> Tuple[float, int]:
 
 
 def ping_device(device: Dict[str, Any], timeout_seconds: float = 1.5) -> Tuple[str, Optional[float]]:
-    """Pings a device, updates its status and records latency.
+    """Pings a device once, updates its status and records latency (Poll now)."""
+    status, ping_ms, _ = check_device(device, timeout_seconds, echoes=1)
+    return status, ping_ms
 
-    Up/down events come from the problem engine (server.ProblemEngine), which
-    logs the unreachable problem opening and resolving with its duration.
+
+def check_device(device: Dict[str, Any], timeout_seconds: float = 1.5,
+                 echoes: int = PING_ECHOES) -> Tuple[str, Optional[float], Optional[Dict[str, Any]]]:
+    """The regular reachability check: pings a device, updates its status and records latency.
+
+    With several echoes (the scheduler's ping round) the ping time is their average, and the
+    packet loss and jitter of the check are recorded too (icmp_loss_pct, icmp_jitter_ms). Returns
+    (status, ping ms, echo summary or None for a single echo). Up/down events come from the
+    problem engine (server.ProblemEngine), which logs the unreachable problem opening and
+    resolving with its duration.
     """
-    if _simulated(device["ip_address"]):
+    echo = None
+    if echoes > 1:
+        if _simulated(device["ip_address"]):
+            echo = _simulated_echoes(demo.ping(device), echoes)
+        else:
+            echo = ping_echoes(device["ip_address"], timeout_seconds, echoes)
+        alive, ping_ms = echo["received"] > 0, echo["avg"]
+    elif _simulated(device["ip_address"]):
         alive, ping_ms = demo.ping(device)
     else:
         alive, ping_ms = ping_host(device["ip_address"], timeout_seconds=timeout_seconds)
+    echo_metrics: Dict[str, float] = {}
+    if echo and alive:
+        echo_metrics["icmp_loss_pct"] = echo["loss_pct"]
+        if echo["jitter"] is not None:
+            echo_metrics["icmp_jitter_ms"] = echo["jitter"]
     port = device.get("service_port") or 0
     if port:
         # Port check: the service is up when the port accepts a connection. ICMP still gives
@@ -734,15 +871,16 @@ def ping_device(device: Dict[str, Any], timeout_seconds: float = 1.5) -> Tuple[s
         metrics = {"service_up": 1.0 if open_ else 0.0, **extra}
         if alive:
             metrics["icmp_ping_ms"] = ping_ms or 0.0
+            metrics.update(echo_metrics)
         if open_:
             metrics["tcp_connect_ms"] = connect_ms
         database.record_metrics(device["id"], metrics)
-        return status, ping_ms
+        return status, ping_ms, echo
     status = "online" if alive else "offline"
     database.update_device_status(device["id"], status=status, ping_ms=ping_ms)
     if alive:
-        database.record_metrics(device["id"], {"icmp_ping_ms": ping_ms or 0.0})
-    return status, ping_ms
+        database.record_metrics(device["id"], {"icmp_ping_ms": ping_ms or 0.0, **echo_metrics})
+    return status, ping_ms, echo
 
 
 HTTP_MAX_BODY = 512 * 1024
@@ -1352,6 +1490,78 @@ def build_defined_rows(spec: Dict[str, Any], cols: Dict[int, Dict[str, Any]]) ->
     return rows, metrics
 
 
+# LLDP-MIB (IEEE 802.1AB): neighbours seen on each local port.
+LLDP_REM_ENTRY = "1.0.8802.1.1.2.1.4.1.1"        # lldpRemEntry, index timeMark.localPortNum.remIndex
+LLDP_LOC_PORT_ENTRY = "1.0.8802.1.1.2.1.3.7.1"   # lldpLocPortEntry, index localPortNum
+LLDP_REM_MAN_ADDR_IF = "1.0.8802.1.1.2.1.4.2.1.3"  # lldpRemManAddrIfSubtype, index ...remIndex.addrSubtype.len.addr
+LLDP_MAX_NEIGHBOURS = 500
+
+
+def _lldp_text(value: Any) -> str:
+    return str(value).strip()[:120] if value not in (None, "") else ""
+
+
+def _lldp_chassis(subtype: Any, value: Any) -> Tuple[str, str]:
+    """(mac, ip) from lldpRemChassisId: subtype 4 is a MAC, 5 a network address (family byte first)."""
+    text = _lldp_text(value).lower()
+    hexes = text.split(":")
+    if subtype == 4 and len(hexes) == 6 and all(len(h) == 2 for h in hexes):
+        return text, ""
+    if subtype == 5 and len(hexes) == 5 and hexes[0] == "01":
+        try:
+            return "", ".".join(str(int(h, 16)) for h in hexes[1:])
+        except ValueError:
+            return "", ""
+    if re.fullmatch(r"([0-9a-f]{2}:){5}[0-9a-f]{2}", text):
+        return text, ""
+    return "", ""
+
+
+def parse_lldp(remote: Dict[str, Any], local: Dict[str, Any], mgmt: Dict[str, Any],
+               interfaces: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Builds the "lldp" device table from the walks: one row per neighbour, keyed localPort.remIndex.
+
+    Each row: the local port (number, ifIndex when it can be matched, its label), the neighbour's
+    system name, chassis MAC or address, management address, port id and port description, and
+    remote_port, the name to show for the neighbour's port (its description, else its id)."""
+    rem = _table_columns(remote)
+    loc = _table_columns(local)
+    by_name: Dict[str, int] = {}
+    for idx, r in interfaces.items():
+        for key in ("name", "descr", "label", "alias"):
+            v = str(r.get(key) or "").strip().lower()
+            if v:
+                by_name.setdefault(v, int(idx))
+    addrs: Dict[str, str] = {}
+    for index in mgmt:
+        parts = index.split(".")
+        # timeMark.localPort.remIndex.subtype(1 = IPv4).length(4).a.b.c.d
+        if len(parts) == 9 and parts[3] == "1" and parts[4] == "4":
+            addrs.setdefault(".".join(parts[1:3]), ".".join(parts[5:9]))
+    rows: Dict[str, Dict[str, Any]] = {}
+    for index in sorted(set(rem.get(5, {})) | set(rem.get(9, {})) | set(rem.get(7, {})))[:LLDP_MAX_NEIGHBOURS]:
+        parts = index.split(".")
+        if len(parts) < 3 or not parts[1].isdigit():
+            continue
+        port_num, key = int(parts[1]), ".".join(parts[1:3])
+        mac, ip = _lldp_chassis(rem.get(4, {}).get(index), rem.get(5, {}).get(index))
+        port_id, port_desc = _lldp_text(rem.get(7, {}).get(index)), _lldp_text(rem.get(8, {}).get(index))
+        if rem.get(6, {}).get(index) == 3 and not port_desc:
+            port_id = port_id.lower()
+        sys_name = _lldp_text(rem.get(9, {}).get(index))
+        loc_id = _lldp_text(loc.get(3, {}).get(str(port_num)))
+        loc_desc = _lldp_text(loc.get(4, {}).get(str(port_num)))
+        if_index = next((by_name[v.lower()] for v in (loc_id, loc_desc) if v and v.lower() in by_name), None)
+        if if_index is None and str(port_num) in interfaces:
+            if_index = port_num
+        label = (interfaces.get(str(if_index), {}).get("label") if if_index is not None else None) or loc_id or loc_desc or str(port_num)
+        rows[key] = {"local_port_num": port_num, "if_index": if_index, "local_port": str(label),
+                     "sys_name": sys_name, "chassis_mac": mac, "chassis_ip": ip, "mgmt_ip": addrs.get(key, ip),
+                     "port_id": port_id, "port_desc": port_desc, "remote_port": port_desc or port_id,
+                     "sys_descr": _lldp_text(rem.get(10, {}).get(index))[:200]}
+    return rows
+
+
 def _mac_from_index(index: str) -> str:
     """Converts a MAC encoded as six decimal sub-identifiers into colon hex."""
     parts = index.split(".")[-6:]
@@ -1402,7 +1612,29 @@ class TableCollector:
                     written.append(spec["table"])
             except Exception:
                 log.exception("Device %s: %s table definition failed", self.device["id"], spec.get("table"))
+        # LLDP neighbours on every SNMP device: one short walk when the device does not speak LLDP.
+        if "lldp" not in self.profile.get("tables", []):
+            try:
+                if self.collect_lldp():
+                    written.append("lldp")
+            except Exception:
+                log.exception("Device %s: lldp collection failed", self.device["id"])
         return written
+
+    def collect_lldp(self) -> bool:
+        """LLDP-MIB neighbours (lldpRemTable), with the local port named from lldpLocPortTable and
+        matched to an interface, and the neighbour's management address when it gives one."""
+        remote = self.walk(LLDP_REM_ENTRY)
+        if not remote:
+            if database.get_device_table(self.device["id"], "lldp"):
+                database.replace_device_table(self.device["id"], "lldp", {}, self.now)
+            return False
+        local = self.walk(LLDP_LOC_PORT_ENTRY)
+        mgmt = self.walk(LLDP_REM_MAN_ADDR_IF)
+        interfaces = database.get_device_table(self.device["id"], "interfaces")
+        rows = parse_lldp(remote, local, mgmt, interfaces)
+        database.replace_device_table(self.device["id"], "lldp", rows, self.now)
+        return bool(rows)
 
     def collect_defined(self, spec: Dict[str, Any]) -> bool:
         """A table described in the profile JSON (see build_defined_rows)."""

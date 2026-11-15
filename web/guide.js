@@ -13,7 +13,7 @@ const GUIDE_CHAPTERS = [
   { id: "basics", title: "The basics", tone: "blue", blurb: "Install, add devices and find your way around",
     sections: ["start", "adding", "devices", "device", "groups", "dashboard"] },
   { id: "watching", title: "Watching the network", tone: "green", blurb: "Availability, problems, the map and what changed",
-    sections: ["availability", "alerts", "maintenance", "shutdown-alerts", "inventory", "map", "reports", "logs"] },
+    sections: ["availability", "alerts", "incidents", "maintenance", "shutdown-alerts", "inventory", "map", "reports", "logs"] },
   { id: "connected", title: "Connected systems", tone: "purple", blurb: "Proxmox, UniFi and Pi-hole",
     sections: ["proxmox", "unifi", "pihole"] },
   { id: "acting", title: "Telegram and automation", tone: "orange", blurb: "Messages, commands and workflows",

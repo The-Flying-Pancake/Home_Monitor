@@ -79,6 +79,13 @@ def request(method: str, path: str, body=None, headers=None, raw: bytes = None, 
 def add_device(name: str, ip: str, community: str = "", profile: str = "generic_device") -> int:
     status, body, _ = request("POST", "/api/devices", {"hostname": name, "ip_address": ip,
                                                         "profile_id": profile, "snmp_community": community})
+    if status == 409 or (status == 400 and "already exists" in str(body)):
+        # The shards mix test classes differently on each run, and two classes may use the same example
+        # address: the device that is already there (a plain one, without a port) is used.
+        import database
+        same = [d for d in database.list_devices() if d["ip_address"] == ip and not d.get("service_port")]
+        if same:
+            return same[0]["id"]
     assert status == 201, body
     return body["device_id"]
 

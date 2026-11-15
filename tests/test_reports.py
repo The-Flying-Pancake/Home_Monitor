@@ -90,7 +90,9 @@ class ReportTests(unittest.TestCase):
         for tid in reports.TEMPLATE_ORDER:
             for period in ("24h", "90d"):
                 r = self.run_spec(template=tid, period=period)
-                self.assertEqual(len(r["columns"]), len(reports.TEMPLATES[tid]["default"]), tid)
+                # With no open incident the handover lists the open problems instead (their own columns).
+                stand_in = tid == "handover" and r["table_title"] == "Open problems"
+                self.assertEqual(len(r["columns"]), len(reports.TABLES["problem"]["default"] if stand_in else reports.TEMPLATES[tid]["default"]), tid)
                 self.assertTrue(all(len(row) == len(r["columns"]) for row in r["rows"]), tid)
                 # The report layout: header, key figures, a summary in words and a footer.
                 self.assertTrue(r["purpose"] and r["facts"] and r["footer"], tid)

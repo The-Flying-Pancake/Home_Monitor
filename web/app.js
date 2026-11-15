@@ -739,6 +739,8 @@ function handleRouting() {
     view("view-wifi"); nav("nav-wifi"); loadWifi();
   } else if (hash === "#/pihole") {
     view("view-pihole"); nav("nav-pihole"); loadPiholePage();
+  } else if (/^#\/incidents(?:\/(?:\d+|changes))?$/.test(hash)) {
+    view("view-incidents"); nav("nav-incidents"); loadIncidents(incRoute());
   } else if (hash === "#/reports") {
     view("view-reports"); nav("nav-reports"); loadReports(true);
   } else if (hash === "#/inventory") {
@@ -879,7 +881,7 @@ function renderFleet(allDevices, problems) {
       <tr class="acked">
         <td data-sort="${Number(SEVERITY_RANK[p.severity] ?? 3)}">${severityPill(p.severity)}</td>
         <td class="text-cell"><a class="device-link" href="#/device/${Number(p.device_id)}">${escapeHtml(p.hostname)}</a></td>
-        <td class="text-cell">${escapeHtml(p.message)} <span class="dim">for ${escapeHtml(formatSince(p.since))}</span>${ackLabel(p)} ${ackButton(p)}</td>
+        <td class="text-cell">${escapeHtml(p.message)} <span class="dim">for ${escapeHtml(formatSince(p.since))}</span>${ackLabel(p)} ${ackButton(p)}${incidentButton(p)}</td>
       </tr>`).join(""), "", 3);
   } else {
     hide(ackedPanel);
@@ -890,7 +892,7 @@ function renderFleet(allDevices, problems) {
       <tr class="${p.acknowledged_at ? "acked" : ""}">
         <td data-sort="${Number(SEVERITY_RANK[p.severity] ?? 3)}">${severityPill(p.severity)}</td>
         <td class="text-cell"><a class="device-link" href="#/device/${Number(p.device_id)}">${escapeHtml(p.hostname)}</a></td>
-        <td class="text-cell">${escapeHtml(p.message)} <span class="dim">for ${escapeHtml(formatSince(p.since))}</span>${ackLabel(p)} ${ackButton(p)}${haProblemButton(p, devById[p.device_id])}</td>
+        <td class="text-cell">${escapeHtml(p.message)} <span class="dim">for ${escapeHtml(formatSince(p.since))}</span>${ackLabel(p)} ${ackButton(p)}${haProblemButton(p, devById[p.device_id])}${incidentButton(p)}</td>
       </tr>`).join(""), "", 3);
   } else {
     hide(panel);
@@ -1104,6 +1106,8 @@ async function deleteTarget(id) {
 
 const METRIC_INFO = {
   icmp_ping_ms: ["Ping latency", v => `${v.toFixed(1)} ms`],
+  icmp_loss_pct: ["Packet loss", v => `${v.toFixed(v && v < 1 ? 2 : 0)} %`],
+  icmp_jitter_ms: ["Ping jitter", v => `${v.toFixed(2)} ms`],
   tcp_connect_ms: ["Port connect time", v => `${v.toFixed(1)} ms`],
   tls_days_left: ["Certificate days left", v => v < 0 ? `expired ${Math.abs(v).toFixed(0)} days ago` : `${v.toFixed(0)} days`],
   "dns.ms": ["DNS answer time", v => `${v.toFixed(1)} ms`],
@@ -1338,7 +1342,7 @@ async function loadDeviceDetail(id, isRefresh = false) {
   if (data.problems.length) {
     probBox.innerHTML = data.problems.map(p =>
       `<div class="problem sev-${escapeHtml(p.severity)} ${p.acknowledged_at ? "acked" : ""}"><span>${severityPill(p.severity)} ${escapeHtml(p.message)}` +
-      ` <span class="dim">for ${escapeHtml(formatSince(p.since))}</span>${ackLabel(p)}</span><span>${haProblemButton(p, d)}${p.severity !== "info" ? ackButton(p) : ""}</span></div>`).join("");
+      ` <span class="dim">for ${escapeHtml(formatSince(p.since))}</span>${ackLabel(p)}</span><span>${haProblemButton(p, d)}${p.severity !== "info" ? ackButton(p) : ""}${incidentButton(p)}</span></div>`).join("");
     show(probBox);
   } else {
     hide(probBox);
@@ -1505,7 +1509,7 @@ async function loadPorts(fromCache = false) {
   const live = liveRatesNow();
   const rows = portsCache.filter(r =>
     (showAll || r.kind === "port" || r.kind === "guest") &&
-    (!filter || [r.label, r.alias, r.descr, r.mac, r.oper_text, r.ssid].some(v => String(v || "").toLowerCase().includes(filter))))
+    (!filter || [r.label, r.alias, r.descr, r.mac, r.oper_text, r.ssid, r.neighbour].some(v => String(v || "").toLowerCase().includes(filter))))
     .map(r => (live[r.if_index] ? Object.assign({}, r, live[r.if_index]) : r));
 
   const rowHtml = r => {
@@ -1522,7 +1526,7 @@ async function loadPorts(fromCache = false) {
       <tr class="port-row" data-ifindex="${idx}">
         <td>${idx}</td>
         <td class="text-cell"><strong>${escapeHtml(r.label)}</strong></td>
-        <td class="text-cell">${escapeHtml(r.alias && r.alias !== r.label ? r.alias : "")}</td>
+        <td class="text-cell">${escapeHtml(r.alias && r.alias !== r.label ? r.alias : "")}${r.neighbour ? `<div class="dim port-neighbour" title="From LLDP">${escapeHtml(r.neighbour)}</div>` : ""}</td>
         <td class="text-cell dim">${escapeHtml(r.kind)}</td>
         <td data-sort="${disabled ? 3 : r.oper === 1 ? 0 : 2}"><span class="status-pill ${statusCls}">${escapeHtml(statusText)}</span></td>
         <td data-sort="${escapeHtml(r.speed_mbps || "")}">${formatSpeed(r.speed_mbps)}</td>
@@ -2042,7 +2046,7 @@ function metricCategory(x) {
   const k = x.metric_key;
   const info = lastDetail && lastDetail.metric_info && lastDetail.metric_info[k];
   if (info && info.group) return [info.group, PROFILE_GROUP_RANK[info.group] ?? 8];
-  if (k === "icmp_ping_ms" || k === "uptime_seconds") return ["Reachability", 1];
+  if (k === "icmp_ping_ms" || k === "icmp_loss_pct" || k === "icmp_jitter_ms" || k === "uptime_seconds") return ["Reachability", 1];
   if (/^(cpu|mem)_/.test(k)) return ["CPU and memory", 2];
   if (/^(clients|radio)_/.test(k)) return ["Wireless", 3];
   if (/temp|fan/.test(k)) return ["Temperature and cooling", 4];
@@ -2217,6 +2221,9 @@ function graphDefinitions(detail, ports) {
 
   add("Port connect time", [["tcp_connect_ms", "Connect"]], "ms", { overview: true });
   add("Ping latency", [["icmp_ping_ms", "RTT"]], "ms", { overview: true });
+  // Three echoes per check: the share lost and how much the answers differ from one to the next.
+  add("Packet loss", [["icmp_loss_pct", "Lost"]], "pct", { max: 100 });
+  add("Ping jitter", [["icmp_jitter_ms", "Jitter"]], "ms");
   // Pi-hole (pihole.py) and UniFi (unifi.py) figures, and certificates of website checks.
   add("DNS answer time", [["dns.ms", "Answer"]], "ms", { overview: true });
   add("DNS queries today", [["pihole.queries", "Queries"], ["pihole.blocked", "Blocked"]], "int");

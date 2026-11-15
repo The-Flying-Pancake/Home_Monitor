@@ -3,6 +3,7 @@
 Source: the hourly averages (metrics_hourly) of the "used percent" series:
   vol.<n>.used_pct   NAS volumes (QNAP, Synology)
   stor.<n>.used_pct  disks and mount points of hosts (HOST-RESOURCES-MIB, recorded by the poller)
+  custom.<id>.used_pct  capacity readings from custom OIDs (customoids.py: DHCP scope, sessions, licences)
 
 A straight line (least squares) through the last LOOKBACK_DAYS of hours gives the growth per
 day; the days left are (100 - now) / growth. Too little history (under MIN_HOURS, or spread over
@@ -22,7 +23,7 @@ MIN_HOURS = 24
 MIN_SPAN_HOURS = 48
 MIN_GROWTH_PER_DAY = 0.01      # percent points per day; below this the volume is effectively flat
 MAX_DAYS = 3650
-KEY_RE = re.compile(r"^(vol|stor|pvs)\.([^.]+)\.used_pct$")
+KEY_RE = re.compile(r"^(vol|stor|pvs|custom)\.([^.]+)\.used_pct$")
 CACHE_SECONDS = 3600
 _cache: Dict[str, Any] = {"at": 0.0, "data": {}}
 
@@ -54,7 +55,8 @@ def compute(now: Optional[float] = None) -> Dict[int, List[Dict[str, Any]]]:
     series: Dict[tuple, List[List[float]]] = {}
     with database.get_connection() as conn:
         for r in conn.execute("SELECT device_id, metric_key, hour, avg FROM metrics_hourly WHERE hour >= ? AND "
-                              "(metric_key LIKE 'vol.%.used_pct' OR metric_key LIKE 'stor.%.used_pct' OR metric_key LIKE 'pvs.%.used_pct') "
+                              "(metric_key LIKE 'vol.%.used_pct' OR metric_key LIKE 'stor.%.used_pct' OR metric_key LIKE 'pvs.%.used_pct' "
+                              "OR metric_key LIKE 'custom.%.used_pct') "
                               "ORDER BY device_id, metric_key, hour;", (since,)):
             series.setdefault((r["device_id"], r["metric_key"]), []).append([r["hour"], r["avg"]])
     out: Dict[int, List[Dict[str, Any]]] = {}
@@ -85,6 +87,12 @@ def _labels(device_id: int) -> Dict[str, str]:
     import proxmox
     for s in proxmox.layout().get("storage", []):
         out[f"pvs.{proxmox.storage_slug(s['storage'])}.used_pct"] = f"Proxmox storage {s['storage']}"
+    # Capacity readings from custom OIDs, named by their resource.
+    device = database.get_device(device_id)
+    if device:
+        import customoids
+        for c in customoids.capacity_readings(device):
+            out[c["key"]] = f"{c['resource']} ({c['label']})" if c["label"] != c["resource"] else c["resource"]
     return out
 
 

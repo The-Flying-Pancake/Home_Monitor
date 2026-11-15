@@ -47,6 +47,9 @@ PERMISSIONS = [
     ("reports.manage", "Save and schedule reports",
      "Save reports, run them on a schedule and delete them. A saved report runs with the device access of whoever saved it. "
      "Anyone can run and download a report of what they can see."),
+    ("incidents.manage", "Open and update incidents",
+     "Open incidents (also from a problem), change them, add notes and actions. Anyone can read the incidents whose "
+     "devices they can see."),
 ]
 PERMISSION_KEYS = [p[0] for p in PERMISSIONS]
 
@@ -56,7 +59,7 @@ ROLES = {
                              "dashboard. Host actions and workflow commands run as a stored credential's user, often "
                              "root, on every device the Operator can reach.",
                  {"devices.poll", "problems.ack", "automation.run", "credentials.use", "map.edit", "dashboard.edit",
-                  "audit.view", "reports.manage"}),
+                  "audit.view", "reports.manage", "incidents.manage"}),
     "viewer": ("Viewer", "Read only.", set()),
     "custom": ("Custom", "Exactly the permissions ticked below.", None),
 }
@@ -133,6 +136,14 @@ ROUTE_PERMISSIONS = [
     ("PUT", r"/api/(?:pihole|unifi)/config", "settings.system"),
     ("POST", r"/api/(?:pihole|unifi)/(?:test|fingerprint)", "settings.system"),
     ("POST", r"/api/maintenance(?:/\d+/end)?", "problems.ack"),
+    # Incidents and change records (incidents.py): device access is checked per incident in the
+    # handler. Deleting an incident is left unlisted, so only an administrator may.
+    ("POST", r"/api/maintenance/\d+/change", "problems.ack"),
+    ("POST", r"/api/incidents", "incidents.manage"),
+    ("PUT", r"/api/incidents/\d+", "incidents.manage"),
+    ("POST", r"/api/incidents/\d+/(?:notes|actions|problems)", "incidents.manage"),
+    ("PUT", r"/api/incidents/\d+/actions/\d+", "incidents.manage"),
+    ("DELETE", r"/api/incidents/\d+/actions/\d+", "incidents.manage"),
     ("POST", r"/api/inventory/known", "devices.manage"),
     ("POST", r"/api/inventory", "devices.manage"),
     ("PUT", r"/api/inventory/quiet-ssids", "devices.manage"),

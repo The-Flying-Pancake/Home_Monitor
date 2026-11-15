@@ -12,6 +12,10 @@ Tables:
                    HOURLY_KEEP_DAYS (uptime % over 24 h to 90 d, the 30-day bar)
   avail_incidents  down periods: opened by the first failed check, closed by the first good one
 
+The regular ping sends three echoes per check (poller.ping_echoes). Each beat keeps what it sent
+and got back, its fastest and slowest answer and its jitter; the hourly rows sum them, so reports
+can work out true packet loss and jitter over any period (echo_totals).
+
 Up means the device status after the check is "online": a ping device answered, a port
 or HTTP check got its answer. A port check whose host answers ping but not the port
 ("degraded") counts as down: the service is what is being watched.
@@ -30,6 +34,15 @@ WINDOWS = {"24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "90d": 90 * 86400}
 RANGE_BARS = {"24h": (1, 24), "7d": (6, 28), "30d": (24, 30), "90d": (24, 90)}
 # Response time comes from the check that decides up or down, in this order.
 RESPONSE_KEYS = ("http_response_ms", "tcp_connect_ms", "icmp_ping_ms")
+# Echo columns (fixed names, never from outside). Beats: one check. Hourly: sums over the hour, so
+# loss over any period is (sent - received) / sent and jitter is jitter_sum / jitter_n.
+ECHO_COLUMNS = {
+    "avail_beats": (("echo_sent", "INTEGER"), ("echo_recv", "INTEGER"), ("rtt_min", "REAL"), ("rtt_max", "REAL"),
+                    ("jitter", "REAL")),
+    "avail_hourly": (("echo_sent", "INTEGER NOT NULL DEFAULT 0"), ("echo_recv", "INTEGER NOT NULL DEFAULT 0"),
+                     ("jitter_sum", "REAL NOT NULL DEFAULT 0"), ("jitter_n", "INTEGER NOT NULL DEFAULT 0"),
+                     ("rtt_min", "REAL"), ("rtt_max", "REAL")),
+}
 
 
 def init() -> None:
@@ -63,6 +76,14 @@ def init() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_avail_incidents ON avail_incidents (device_id, started);
         """)
+        # Several echoes per check (poller.ping_echoes): what each check sent and got back, its
+        # fastest and slowest answer and its jitter, kept on the beat and summed per hour. Added to
+        # the tables above so a database from before keeps its rows; checks from before have none.
+        for table, columns in ECHO_COLUMNS.items():
+            have = {r[1] for r in conn.execute(f"PRAGMA table_info({table});")}
+            for name, decl in columns:
+                if name not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl};")
         conn.commit()
 
 
@@ -81,12 +102,19 @@ def response_ms(device_id: int, ping_ms: Optional[float]) -> Optional[float]:
     return ping_ms
 
 
-def record(device_id: int, up: bool, ms: Optional[float], ts: Optional[int] = None, planned: bool = False) -> None:
+def _num(v: Any) -> Optional[float]:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
+
+
+def record(device_id: int, up: bool, ms: Optional[float], ts: Optional[int] = None, planned: bool = False,
+           echo: Optional[Dict[str, Any]] = None) -> None:
     """Records one check: a beat, the hour's counters and the incident state.
 
     planned: the device is in a maintenance window (maintenance.py). A failed check then counts as
     planned downtime: the beat is kept (shown as planned, up = 2), the hour's counters and the
-    incidents leave it out, so it does not lower uptime."""
+    incidents leave it out, so it does not lower uptime.
+    echo: the ping's summary when the check sent several echoes (poller.echo_stats): sent,
+    received, fastest, slowest and jitter go on the beat and into the hour's sums."""
     ts = int(ts if ts is not None else time.time())
     hour = ts - ts % 3600
     ms = float(ms) if ms is not None and math.isfinite(ms) else None
@@ -95,19 +123,34 @@ def record(device_id: int, up: bool, ms: Optional[float], ts: Optional[int] = No
             conn.execute("INSERT INTO avail_beats (device_id, ts, up, ms) VALUES (?, ?, 2, NULL);", (device_id, ts))
             conn.commit()
         return
+    sent = recv = None
+    rmin = rmax = jit = None
+    if echo and isinstance(echo.get("sent"), int) and echo["sent"] > 0:
+        sent = int(echo["sent"])
+        recv = max(0, min(sent, int(echo.get("received") or 0)))
+        rmin, rmax, jit = _num(echo.get("min")), _num(echo.get("max")), _num(echo.get("jitter"))
     with database.get_connection() as conn:
-        conn.execute("INSERT INTO avail_beats (device_id, ts, up, ms) VALUES (?, ?, ?, ?);",
-                     (device_id, ts, 1 if up else 0, ms if up else None))
+        conn.execute("INSERT INTO avail_beats (device_id, ts, up, ms, echo_sent, echo_recv, rtt_min, rtt_max, jitter) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                     (device_id, ts, 1 if up else 0, ms if up else None, sent, recv, rmin, rmax, jit))
         conn.execute("""
-            INSERT INTO avail_hourly (device_id, hour, checks, ups, ms_sum, ms_count, ms_max)
-            VALUES (?, ?, 1, ?, ?, ?, ?)
+            INSERT INTO avail_hourly (device_id, hour, checks, ups, ms_sum, ms_count, ms_max,
+                                      echo_sent, echo_recv, jitter_sum, jitter_n, rtt_min, rtt_max)
+            VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (device_id, hour) DO UPDATE SET
                 checks = checks + 1, ups = ups + excluded.ups, ms_sum = ms_sum + excluded.ms_sum,
                 ms_count = ms_count + excluded.ms_count,
                 ms_max = CASE WHEN excluded.ms_max IS NULL THEN ms_max
-                              WHEN ms_max IS NULL OR excluded.ms_max > ms_max THEN excluded.ms_max ELSE ms_max END;
+                              WHEN ms_max IS NULL OR excluded.ms_max > ms_max THEN excluded.ms_max ELSE ms_max END,
+                echo_sent = echo_sent + excluded.echo_sent, echo_recv = echo_recv + excluded.echo_recv,
+                jitter_sum = jitter_sum + excluded.jitter_sum, jitter_n = jitter_n + excluded.jitter_n,
+                rtt_min = CASE WHEN excluded.rtt_min IS NULL THEN rtt_min
+                               WHEN rtt_min IS NULL OR excluded.rtt_min < rtt_min THEN excluded.rtt_min ELSE rtt_min END,
+                rtt_max = CASE WHEN excluded.rtt_max IS NULL THEN rtt_max
+                               WHEN rtt_max IS NULL OR excluded.rtt_max > rtt_max THEN excluded.rtt_max ELSE rtt_max END;
         """, (device_id, hour, 1 if up else 0, ms if up and ms is not None else 0.0,
-              1 if up and ms is not None else 0, ms if up else None))
+              1 if up and ms is not None else 0, ms if up else None,
+              sent or 0, recv or 0, jit or 0.0, 1 if jit is not None else 0, rmin, rmax))
         open_ = conn.execute("SELECT id FROM avail_incidents WHERE device_id = ? AND ended IS NULL "
                              "ORDER BY started DESC LIMIT 1;", (device_id,)).fetchone()
         if not up and not open_:
@@ -115,6 +158,26 @@ def record(device_id: int, up: bool, ms: Optional[float], ts: Optional[int] = No
         elif up and open_:
             conn.execute("UPDATE avail_incidents SET ended = ? WHERE id = ?;", (ts, open_["id"]))
         conn.commit()
+
+
+def echo_totals(device_ids: Iterable[int], start: int, end: int) -> Dict[int, Dict[str, Any]]:
+    """Per device, over the hours from start to end: echoes sent and answered, packet loss % and
+    mean jitter. Only devices with echo data in the window appear, with "since" the first hour that
+    has it (checks from before several echoes per check began have none)."""
+    ids = sorted(set(int(i) for i in device_ids))
+    out: Dict[int, Dict[str, Any]] = {}
+    if not ids:
+        return out
+    marks = ",".join("?" * len(ids))
+    with database.get_connection() as conn:
+        for r in conn.execute(f"SELECT device_id, SUM(echo_sent) AS s, SUM(echo_recv) AS r, SUM(jitter_sum) AS js, "
+                              f"SUM(jitter_n) AS jn, MIN(hour) AS h FROM avail_hourly WHERE device_id IN ({marks}) "
+                              f"AND hour >= ? AND hour < ? AND echo_sent > 0 GROUP BY device_id;",
+                              (*ids, start - start % 3600, end)):
+            out[r["device_id"]] = {"sent": r["s"], "received": r["r"], "since": r["h"],
+                                   "loss_pct": round(100.0 * (r["s"] - r["r"]) / r["s"], 3) if r["s"] else None,
+                                   "jitter_ms": round(r["js"] / r["jn"], 3) if r["jn"] else None}
+    return out
 
 
 def purge(now: Optional[int] = None) -> None:

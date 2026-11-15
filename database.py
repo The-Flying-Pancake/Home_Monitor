@@ -37,9 +37,10 @@ DB_FILE = os.environ.get(
 # is brought forward on start. A file with a higher number was written by a newer build: this code
 # does not know its tables and would misread them, so it refuses to start on it rather than guess.
 # Raise SCHEMA_VERSION with every schema change; tests/test_compat.py holds the fingerprint of each.
-SCHEMA_VERSION = 9                 # 4: inventory.ssid and inventory.quiet; 5: action_runs; 6: workflows.saved_by;
+SCHEMA_VERSION = 10                # 4: inventory.ssid and inventory.quiet; 5: action_runs; 6: workflows.saved_by;
                                    # 7: audit_log.actor and audit_log.source; 8: devices.snmp_v3;
-                                   # 9: reports and report_runs
+                                   # 9: reports and report_runs;
+                                   # 10: incidents, maintenance history, ping echoes, custom OID capacity
 # The oldest version this build can migrate from (raise only if a migration is ever dropped).
 MIN_SCHEMA_VERSION = 0
 
@@ -745,6 +746,81 @@ def init_db() -> None:
                 """,
                 (key, val, desc, now)
             )
+
+        # --- Incidents and change records (incidents.py, maintenance.py) ---------------------------
+        # An incident: a person's record of something that went wrong, with its devices (a name is
+        # kept, so a deleted device still reads), the problems it grew from, a timeline of notes and
+        # follow-up actions. maintenance_history keeps ended maintenance windows (and those marked as
+        # a change) for a year once they leave the short list in the settings.
+        cursor.executescript("""
+            CREATE TABLE IF NOT EXISTS incidents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                priority TEXT NOT NULL DEFAULT 'P3',
+                status TEXT NOT NULL DEFAULT 'Open',
+                owner TEXT NOT NULL DEFAULT '',
+                started_at INTEGER NOT NULL,
+                resolved_at INTEGER,
+                summary TEXT NOT NULL DEFAULT '',
+                root_cause TEXT NOT NULL DEFAULT '',
+                impact TEXT NOT NULL DEFAULT '',
+                next_step TEXT NOT NULL DEFAULT '',
+                created_by TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_incidents_started ON incidents (started_at);
+            CREATE TABLE IF NOT EXISTS incident_devices (
+                incident_id INTEGER NOT NULL,
+                device_id INTEGER NOT NULL,
+                hostname TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (incident_id, device_id),
+                FOREIGN KEY (incident_id) REFERENCES incidents (id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS incident_problems (
+                incident_id INTEGER NOT NULL,
+                device_id INTEGER NOT NULL,
+                problem_key TEXT NOT NULL,
+                message TEXT NOT NULL DEFAULT '',
+                since INTEGER,
+                linked_at INTEGER NOT NULL,
+                PRIMARY KEY (incident_id, device_id, problem_key),
+                FOREIGN KEY (incident_id) REFERENCES incidents (id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS incident_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_id INTEGER NOT NULL,
+                at INTEGER NOT NULL,
+                author TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT 'note',
+                text TEXT NOT NULL,
+                FOREIGN KEY (incident_id) REFERENCES incidents (id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_incident_notes ON incident_notes (incident_id, at);
+            CREATE TABLE IF NOT EXISTS incident_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_id INTEGER NOT NULL,
+                description TEXT NOT NULL,
+                owner TEXT NOT NULL DEFAULT '',
+                due TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'Plan',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (incident_id) REFERENCES incidents (id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS maintenance_history (
+                id INTEGER PRIMARY KEY,
+                scope TEXT NOT NULL,
+                target TEXT NOT NULL DEFAULT '',
+                start_at INTEGER NOT NULL,
+                end_at INTEGER NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                by_user TEXT NOT NULL DEFAULT '',
+                change INTEGER NOT NULL DEFAULT 0,
+                change_note TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_maintenance_history ON maintenance_history (start_at);
+        """)
 
         conn.commit()
 
@@ -2552,3 +2628,213 @@ def get_report_run_file(run_id: int, kind: str) -> Optional[Tuple[int, int, byte
     with get_connection() as conn:
         row = conn.execute(f"SELECT report_id, made_at, {kind} AS data FROM report_runs WHERE id = ?;", (run_id,)).fetchone()
         return (row["report_id"], row["made_at"], bytes(row["data"])) if row and row["data"] is not None else None
+
+
+
+# --- Incidents (incidents.py) ----------------------------------------------------------------------
+
+INCIDENT_FIELDS = ("title", "priority", "status", "owner", "started_at", "resolved_at", "summary", "root_cause", "impact",
+                   "next_step")
+
+
+def add_incident(fields: Dict[str, Any], devices: List[Tuple[int, str]], by: str, now: Optional[int] = None) -> int:
+    """Adds an incident with its devices ((id, name) pairs). Returns its id."""
+    now = int(now if now is not None else time.time())
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO incidents (title, priority, status, owner, started_at, resolved_at, summary, root_cause, impact, "
+            "next_step, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+            tuple(fields.get(k, None if k in ("started_at", "resolved_at") else "") for k in INCIDENT_FIELDS)
+            + (by, now, now))
+        incident_id = int(cur.lastrowid)
+        conn.executemany("INSERT OR IGNORE INTO incident_devices (incident_id, device_id, hostname) VALUES (?, ?, ?);",
+                         [(incident_id, d, name) for d, name in devices])
+        conn.commit()
+        return incident_id
+
+
+def update_incident(incident_id: int, fields: Dict[str, Any], devices: Optional[List[Tuple[int, str]]] = None,
+                    now: Optional[int] = None) -> None:
+    """Changes the given fields (names from INCIDENT_FIELDS only) and, when devices is given, replaces the devices."""
+    now = int(now if now is not None else time.time())
+    keys = [k for k in INCIDENT_FIELDS if k in fields]
+    with get_connection() as conn:
+        if keys:
+            conn.execute(f"UPDATE incidents SET {', '.join(k + ' = ?' for k in keys)}, updated_at = ? WHERE id = ?;",
+                         tuple(fields[k] for k in keys) + (now, incident_id))
+        if devices is not None:
+            conn.execute("DELETE FROM incident_devices WHERE incident_id = ?;", (incident_id,))
+            conn.executemany("INSERT OR IGNORE INTO incident_devices (incident_id, device_id, hostname) VALUES (?, ?, ?);",
+                             [(incident_id, d, name) for d, name in devices])
+            conn.execute("UPDATE incidents SET updated_at = ? WHERE id = ?;", (now, incident_id))
+        conn.commit()
+
+
+def delete_incident(incident_id: int) -> bool:
+    with get_connection() as conn:
+        for table in ("incident_devices", "incident_problems", "incident_notes", "incident_actions"):
+            conn.execute(f"DELETE FROM {table} WHERE incident_id = ?;", (incident_id,))
+        gone = conn.execute("DELETE FROM incidents WHERE id = ?;", (incident_id,)).rowcount > 0
+        conn.commit()
+        return gone
+
+
+def _incident_parts(conn: sqlite3.Connection, ids: List[int]) -> Dict[int, Dict[str, list]]:
+    out: Dict[int, Dict[str, list]] = {i: {"devices": [], "problems": [], "notes": [], "actions": []} for i in ids}
+    if not ids:
+        return out
+    marks = ",".join("?" * len(ids))
+    for r in conn.execute(f"SELECT incident_id, device_id, hostname FROM incident_devices WHERE incident_id IN ({marks}) "
+                          "ORDER BY hostname COLLATE NOCASE;", ids):
+        out[r["incident_id"]]["devices"].append({"id": r["device_id"], "name": r["hostname"]})
+    for r in conn.execute(f"SELECT * FROM incident_problems WHERE incident_id IN ({marks}) ORDER BY linked_at;", ids):
+        out[r["incident_id"]]["problems"].append({k: r[k] for k in ("device_id", "problem_key", "message", "since", "linked_at")})
+    for r in conn.execute(f"SELECT * FROM incident_notes WHERE incident_id IN ({marks}) ORDER BY at, id;", ids):
+        out[r["incident_id"]]["notes"].append({k: r[k] for k in ("id", "at", "author", "kind", "text")})
+    for r in conn.execute(f"SELECT * FROM incident_actions WHERE incident_id IN ({marks}) ORDER BY id;", ids):
+        out[r["incident_id"]]["actions"].append({k: r[k] for k in ("id", "description", "owner", "due", "status", "created_at",
+                                                                    "updated_at")})
+    return out
+
+
+def list_incidents(open_only: bool = False, since: Optional[int] = None, until: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Incidents with their devices, problems, notes and actions, newest first. open_only: not resolved.
+    since / until: only those that overlap that window."""
+    where, params = [], []
+    if open_only:
+        where.append("status != 'Resolved'")
+    if since is not None:
+        where.append("(resolved_at IS NULL OR resolved_at >= ?)")
+        params.append(int(since))
+    if until is not None:
+        where.append("started_at <= ?")
+        params.append(int(until))
+    sql = "SELECT * FROM incidents" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY started_at DESC, id DESC;"
+    with get_connection() as conn:
+        rows = [dict(r) for r in conn.execute(sql, params)]
+        parts = _incident_parts(conn, [r["id"] for r in rows])
+    return [dict(r, **parts[r["id"]]) for r in rows]
+
+
+def get_incident(incident_id: int) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM incidents WHERE id = ?;", (incident_id,)).fetchone()
+        if not row:
+            return None
+        return dict(dict(row), **_incident_parts(conn, [incident_id])[incident_id])
+
+
+def add_incident_note(incident_id: int, text: str, author: str, kind: str = "note", now: Optional[int] = None) -> int:
+    now = int(now if now is not None else time.time())
+    with get_connection() as conn:
+        cur = conn.execute("INSERT INTO incident_notes (incident_id, at, author, kind, text) VALUES (?, ?, ?, ?, ?);",
+                           (incident_id, now, author, kind, text))
+        conn.execute("UPDATE incidents SET updated_at = ? WHERE id = ?;", (now, incident_id))
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def link_incident_problem(incident_id: int, device_id: int, problem_key: str, message: str, since: Optional[int],
+                          now: Optional[int] = None) -> bool:
+    """Links an open problem to the incident. False when it was linked already."""
+    now = int(now if now is not None else time.time())
+    with get_connection() as conn:
+        added = conn.execute("INSERT OR IGNORE INTO incident_problems (incident_id, device_id, problem_key, message, since, linked_at) "
+                             "VALUES (?, ?, ?, ?, ?, ?);", (incident_id, device_id, problem_key, message, since, now)).rowcount > 0
+        conn.commit()
+        return added
+
+
+def open_incident_with_problem(device_id: int, problem_key: str) -> Optional[int]:
+    """The newest incident not yet resolved that the problem is linked to, or None."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT i.id FROM incidents i JOIN incident_problems p ON p.incident_id = i.id "
+                           "WHERE p.device_id = ? AND p.problem_key = ? AND i.status != 'Resolved' ORDER BY i.id DESC LIMIT 1;",
+                           (device_id, problem_key)).fetchone()
+        return int(row["id"]) if row else None
+
+
+def add_incident_action(incident_id: int, description: str, owner: str, due: str, status: str, now: Optional[int] = None) -> int:
+    now = int(now if now is not None else time.time())
+    with get_connection() as conn:
+        cur = conn.execute("INSERT INTO incident_actions (incident_id, description, owner, due, status, created_at, updated_at) "
+                           "VALUES (?, ?, ?, ?, ?, ?, ?);", (incident_id, description, owner, due, status, now, now))
+        conn.execute("UPDATE incidents SET updated_at = ? WHERE id = ?;", (now, incident_id))
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def update_incident_action(incident_id: int, action_id: int, fields: Dict[str, str], now: Optional[int] = None) -> bool:
+    now = int(now if now is not None else time.time())
+    keys = [k for k in ("description", "owner", "due", "status") if k in fields]
+    with get_connection() as conn:
+        done = conn.execute(f"UPDATE incident_actions SET {', '.join(k + ' = ?' for k in keys + ['updated_at'])} "
+                            "WHERE id = ? AND incident_id = ?;",
+                            tuple(fields[k] for k in keys) + (now, action_id, incident_id)).rowcount > 0
+        if done:
+            conn.execute("UPDATE incidents SET updated_at = ? WHERE id = ?;", (now, incident_id))
+        conn.commit()
+        return done
+
+
+def delete_incident_action(incident_id: int, action_id: int) -> bool:
+    with get_connection() as conn:
+        gone = conn.execute("DELETE FROM incident_actions WHERE id = ? AND incident_id = ?;", (action_id, incident_id)).rowcount > 0
+        conn.commit()
+        return gone
+
+
+# --- Maintenance history (maintenance.py): ended windows and changes, kept a year ------------------
+
+def _maint_row(r: sqlite3.Row) -> Dict[str, Any]:
+    return {"id": r["id"], "scope": r["scope"], "target": r["target"], "start": r["start_at"], "end": r["end_at"],
+            "note": r["note"], "by": r["by_user"], "change": bool(r["change"]), "change_note": r["change_note"]}
+
+
+def archive_maintenance_windows(windows: List[Dict[str, Any]]) -> None:
+    """Keeps windows that leave the short list (maintenance.py) in the history table."""
+    if not windows:
+        return
+    with get_connection() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO maintenance_history (id, scope, target, start_at, end_at, note, by_user, change, change_note) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+            [(int(w["id"]), str(w.get("scope") or "all"), str(w.get("target") or ""), int(w["start"]), int(w["end"]),
+              str(w.get("note") or ""), str(w.get("by") or ""), int(bool(w.get("change"))), str(w.get("change_note") or ""))
+             for w in windows])
+        conn.commit()
+
+
+def list_maintenance_history(since: Optional[int] = None, until: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Archived windows that overlap since..until, newest start first."""
+    where, params = [], []
+    if since is not None:
+        where.append("end_at >= ?")
+        params.append(int(since))
+    if until is not None:
+        where.append("start_at <= ?")
+        params.append(int(until))
+    sql = "SELECT * FROM maintenance_history" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY start_at DESC, id DESC;"
+    with get_connection() as conn:
+        return [_maint_row(r) for r in conn.execute(sql, params)]
+
+
+def set_maintenance_history_change(window_id: int, change: bool, note: str) -> bool:
+    with get_connection() as conn:
+        done = conn.execute("UPDATE maintenance_history SET change = ?, change_note = ? WHERE id = ?;",
+                            (int(change), note, window_id)).rowcount > 0
+        conn.commit()
+        return done
+
+
+def max_maintenance_history_id() -> int:
+    with get_connection() as conn:
+        row = conn.execute("SELECT MAX(id) AS m FROM maintenance_history;").fetchone()
+        return int(row["m"] or 0)
+
+
+def purge_maintenance_history(before: int) -> int:
+    with get_connection() as conn:
+        n = conn.execute("DELETE FROM maintenance_history WHERE end_at < ?;", (int(before),)).rowcount
+        conn.commit()
+        return n

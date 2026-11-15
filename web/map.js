@@ -1038,9 +1038,11 @@ function drawMap() {
     }
     const hot = mapSelected && (affected.has(l.a) || affected.has(l.b) || l.a === mapSelected || l.b === mapSelected);
     const cls = ["map-link", l.source === "manual" || l.source === "owner" ? "manual" : "", l.kind === "virtual" || l.kind === "service" ? "virtual" : "",
-      l.kind === "wifi" ? "wifi" : "",
+      l.kind === "wifi" ? "wifi" : "", l.source === "lldp" ? "lldp" : "",
       l.hidden ? "hidden-link" : "", hot ? "hot" : "", mapSelected && !hot ? "dim" : ""].filter(Boolean).join(" ");
     html += `<g data-link="${i}" data-a="${escapeHtml(l.a)}" data-b="${escapeHtml(l.b)}" class="map-link-g${mapSelected && !hot ? " dim" : ""}">` +
+      // A link the devices reported over LLDP names the port on both ends.
+      (l.source === "lldp" ? `<title>${escapeHtml(mapLinkWords(l))}</title>` : "") +
       `<path class="map-link-hit" d="${escapeHtml(d)}"></path><path class="${cls}" d="${escapeHtml(d)}"></path>` +
       `<circle class="map-link-end" cx="${escapeHtml(c[0][0])}" cy="${escapeHtml(c[0][1])}" r="3"></circle><circle class="map-link-end" cx="${escapeHtml(c[3][0])}" cy="${escapeHtml(c[3][1])}" r="3"></circle></g>`;
     // Port tags just off each end, along the side the link leaves by; drawn above everything.
@@ -1093,6 +1095,13 @@ function drawMap() {
   }
   svg.innerHTML = under + html + tags.join("");
   renderMapInfo(affected);
+}
+
+/** "Seen over LLDP: core port 2 to edge port 8" for a link's tooltip. */
+function mapLinkWords(l) {
+  const name = k => (mapData.nodes.find(n => n.key === k) || {}).label || k;
+  const end = (k, p) => name(k) + (p ? ` port ${p}` : "");
+  return `Seen over LLDP: ${end(l.a, l.a_port)} to ${end(l.b, l.b_port)}`;
 }
 
 /** Where this monitor sits: the box it hangs off and the port, from the links. */

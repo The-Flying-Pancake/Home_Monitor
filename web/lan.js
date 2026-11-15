@@ -174,7 +174,7 @@ async function loadMaintenance() {
   }
   document.getElementById("maint-body").innerHTML = maintData.windows.length ? maintData.windows.map(w => `<tr>
       <td class="text-cell">${escapeHtml(maintCovers(w))}</td><td>${escapeHtml(fmtWhen(w.start))}</td><td>${escapeHtml(fmtWhen(w.end))}</td>
-      <td class="text-cell">${escapeHtml(w.note || "")}</td>
+      <td class="text-cell">${escapeHtml(w.note || "")}${w.change ? ` <span class="rep-pill rt-info">Change</span> ${escapeHtml(w.change_note)}` : ""}</td>
       <td><span class="status-pill ${w.state === "active" ? "status-warn" : w.state === "scheduled" ? "status-ok" : "status-unknown"}">${escapeHtml(w.state)}</span></td>
       <td class="actions-cell">${w.state !== "ended" ? `<button type="button" class="btn btn-small" data-perm="problems.ack" data-maint-end="${escapeHtml(w.id)}">${w.state === "active" ? "End now" : "Cancel"}</button>` : ""}</td></tr>`).join("")
     : `<tr><td colspan="6" class="empty-cell">No maintenance windows.</td></tr>`;
@@ -274,10 +274,11 @@ function initMaintenance() {
     try {
       await addMaintenance({ scope, target: scope === "all" ? "" : document.getElementById("maint-target").value,
         start: at ? Math.floor(new Date(at).getTime() / 1000) : null, minutes: Number(document.getElementById("maint-minutes").value),
-        note: document.getElementById("maint-note").value });
+        note: document.getElementById("maint-note").value, change_note: document.getElementById("maint-change").value });
       msg.textContent = "Added.";
       msg.className = "form-help text-ok";
       document.getElementById("maint-note").value = "";
+      document.getElementById("maint-change").value = "";
       loadMaintenance();
     } catch (err) {
       msg.textContent = err.message;

@@ -11,6 +11,10 @@ Proxmox guests (Proxmox's bc:24:11 MAC prefix) that appear on the same
 switch port as a Proxmox host are attached to that host instead, since
 their traffic leaves through its NIC.
 
+Switches that speak LLDP report their neighbours exactly (lldp_links); those
+links carry the port on both ends and replace the guesses for that port
+(merge_lldp).
+
 The result is a list of nodes and links. Pure functions, no database
 access, so the rules can be tested with literal tables.
 """
@@ -190,3 +194,105 @@ def downstream(parent: Dict[str, Optional[str]], node: str) -> List[str]:
         out.append(n)
         stack.extend(children.get(n, []))
     return sorted(out)
+
+
+# --- LLDP neighbours ---
+# A switch that speaks LLDP says, per port, which device is at the other end and on which of its
+# ports. That is exact, so an LLDP link (both port names known) replaces the guess from forwarding
+# tables for that port.
+
+def _short(name: Any) -> str:
+    return str(name or "").strip().lower().split(".")[0]
+
+
+def lldp_links(devices: List[Dict[str, Any]], lldp: Dict[int, Dict[str, Dict[str, Any]]],
+               macs: Dict[int, Set[str]], labels: Dict[int, Dict[int, str]]) -> List[Dict[str, Any]]:
+    """Links from LLDP tables ({device_id: {key: row}}, rows as poller.parse_lldp builds them).
+
+    The neighbour is matched to a monitored device by management address, chassis MAC (any MAC
+    of its interfaces, macs) or system name (its SNMP sysName or its name in the monitor). Each
+    link has a_port and b_port (port names on each end) and source "lldp". When both ends report
+    each other, each end's own report names its port."""
+    boxes = [d for d in devices if not d.get("service_port")]
+    by_ip = {d["ip_address"]: d["id"] for d in boxes}
+    by_mac: Dict[str, int] = {}
+    for did, ms in macs.items():
+        for m in ms:
+            by_mac.setdefault(str(m).lower(), did)
+    by_name: Dict[str, int] = {}
+    for d in boxes:
+        for n in ((d.get("inventory") or {}).get("sys_name"), d.get("hostname")):
+            if _short(n):
+                by_name.setdefault(_short(n), d["id"])
+    known = {d["id"] for d in boxes}
+
+    def match(row: Dict[str, Any]) -> Optional[int]:
+        for ip in (row.get("mgmt_ip"), row.get("chassis_ip")):
+            if ip and ip in by_ip:
+                return by_ip[ip]
+        mac = str(row.get("chassis_mac") or "").lower()
+        if mac and mac in by_mac:
+            return by_mac[mac]
+        return by_name.get(_short(row.get("sys_name"))) if _short(row.get("sys_name")) else None
+
+    def remote_label(dev: int, row: Dict[str, Any]) -> Optional[str]:
+        own = labels.get(dev, {})
+        for v in (row.get("port_id"), row.get("port_desc")):
+            if not v:
+                continue
+            for idx, label in own.items():
+                if str(label).lower() == str(v).lower() or str(idx) == str(v):
+                    return str(label)
+        return row.get("remote_port") or None
+
+    out: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    reported: Set[Tuple[str, str]] = set()      # (node, other node) the node itself reported
+    for dev_id in sorted(lldp):
+        if dev_id not in known:
+            continue
+        for row in lldp[dev_id].values():
+            other = match(row)
+            if other is None or other == dev_id:
+                continue
+            me, them = device_key(dev_id), device_key(other)
+            pair = tuple(sorted((me, them)))
+            link = out.setdefault(pair, {"a": pair[0], "b": pair[1], "a_port": None, "b_port": None, "source": "lldp",
+                                         "neighbour": True})
+            mine, theirs = ("a_port", "b_port") if pair[0] == me else ("b_port", "a_port")
+            if (me, them) not in reported:
+                link[mine] = row.get("local_port") or None
+                reported.add((me, them))
+            if (them, me) not in reported and not link[theirs]:
+                link[theirs] = remote_label(other, row)
+    for link in out.values():
+        link.pop("neighbour", None)
+    return list(out.values())
+
+
+def merge_lldp(links: Dict[Tuple[str, str], Dict[str, Any]], lldp: List[Dict[str, Any]]) -> None:
+    """Puts LLDP links into links ({(a, b): link}) in place, over the forwarding-table guesses.
+
+    A guessed link from the same port of either end to some other node X is wrong: X sits behind
+    the LLDP neighbour. It goes, and X hangs off the neighbour instead (unless already linked)."""
+    for l in lldp:
+        pair = (l["a"], l["b"])
+        old = links.get(pair) or {}
+        links[pair] = dict(l, hidden=old.get("hidden", False))
+    for l in lldp:
+        for end, port, other in ((l["a"], l["a_port"], l["b"]), (l["b"], l["b_port"], l["a"])):
+            if not port:
+                continue
+            for pair, g in list(links.items()):
+                if g.get("source") != "auto" or g.get("kind") or end not in pair:
+                    continue
+                x = pair[1] if pair[0] == end else pair[0]
+                my_port = g["a_port"] if pair[0] == end else g["b_port"]
+                if x == other or str(my_port or "") != str(port):
+                    continue
+                links.pop(pair, None)
+                if any(other in p and x in p for p in links):
+                    continue
+                new = tuple(sorted((other, x)))
+                x_port = g["b_port"] if pair[0] == end else g["a_port"]
+                links[new] = {"a": new[0], "b": new[1], "a_port": x_port if new[0] == x else None,
+                              "b_port": x_port if new[1] == x else None, "source": "auto", "hidden": g.get("hidden", False)}

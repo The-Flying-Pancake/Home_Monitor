@@ -1249,6 +1249,7 @@ tr:hover .row-select, .row-select:checked { opacity: 1; }
 .lacks-audit-sensitive [data-perm~="audit.sensitive"],
 .lacks-users-manage [data-perm~="users.manage"] { display: none !important; }
 .lacks-reports-manage [data-perm~="reports.manage"] { display: none !important; }
+.lacks-incidents-manage [data-perm~="incidents.manage"] { display: none !important; }
 .scoped [data-unscoped] { display: none !important; }
 /* Said instead of the Review host key button to those who cannot approve a key. */
 body:not(.lacks-credentials-manage) .hk-ask { display: none; }

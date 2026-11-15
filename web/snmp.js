@@ -8,6 +8,8 @@
  * Each numeric value gets a graph here (and on the Graphs tab), can be put on
  * the Overview, can open a problem at a threshold and can start a workflow
  * (Automation, "A measurement goes above or below a value").
+ * A gauge can be a capacity reading (DHCP scope, sessions, licences): an amount against a limit,
+ * a fixed number or a second OID. Its used percent joins the capacity bars, forecasts and reports.
  * Relies on app.js helpers (api, escapeHtml, showToast, confirmDialog, lastDetail, can,
  * drawDefinition, overviewDefs, devicePortsForGraphs, loadDeviceDetail).
  */
@@ -46,12 +48,15 @@ async function loadCustomOids(detail, isRefresh = false) {
     const where = c.scope === "template" ? `every ${escapeHtml(c.target)} device` : "this device only";
     const alertText = c.alert_op ? `Problem (${escapeHtml(c.alert_severity)}) when ${escapeHtml(c.alert_op)} ${escapeHtml(String(c.alert_value))}${c.unit ? " " + escapeHtml(c.unit) : ""}` : "No problem threshold";
     const numeric = c.kind !== "string";
+    const capText = c.cap_resource ? ` &middot; capacity reading for <strong>${escapeHtml(c.cap_resource)}</strong>, limit ${
+      c.cap_limit_oid ? `from ${escapeHtml(c.cap_limit_oid)}` : escapeHtml(Number(c.cap_limit).toLocaleString())}, amber from ${
+      escapeHtml(String(c.cap_warn))}% and red from ${escapeHtml(String(c.cap_crit))}%` : "";
     return `<div class="coid-card" data-coid="${Number(c.id)}">
       <div class="coid-head">
         <div><strong>${escapeHtml(c.label)}</strong><div class="dim coid-oid">${escapeHtml(c.oid)}</div></div>
         <div class="coid-now" data-coid-now="${Number(c.id)}"></div>
       </div>
-      <div class="coid-meta dim">${escapeHtml(COID_KIND_WORDS[c.kind] || c.kind)}${c.scale !== 1 ? `, times ${escapeHtml(String(c.scale))}` : ""} &middot; polled for ${where} &middot; ${alertText}</div>
+      <div class="coid-meta dim">${escapeHtml(COID_KIND_WORDS[c.kind] || c.kind)}${c.scale !== 1 ? `, times ${escapeHtml(String(c.scale))}` : ""} &middot; polled for ${where} &middot; ${alertText}${capText}</div>
       ${numeric ? `<div class="chart-host coid-chart" data-coid-chart="${Number(c.id)}"></div>` : ""}
       <div class="coid-actions">
         ${numeric ? `<button type="button" class="btn btn-small chart-pin${onOverview.includes(key) ? " on" : ""}" data-perm="devices.manage"
@@ -74,8 +79,10 @@ function updateCoidReadings(detail) {
     const el = document.querySelector(`[data-coid-now="${Number(c.id)}"]`);
     if (!el) continue;
     const v = c.kind === "string" ? strings[c.oid] : latest[`custom.${c.id}`];
+    const used = c.cap_resource ? latest[`custom.${c.id}.used_pct`] : undefined;
     el.innerHTML = v === undefined || v === null ? '<span class="dim">no answer yet</span>'
-      : escapeHtml(c.kind === "string" ? v : `${Number(v).toLocaleString()}${c.unit ? " " + c.unit : ""}${c.kind === "counter" ? "/s" : ""}`);
+      : escapeHtml(c.kind === "string" ? v : `${Number(v).toLocaleString()}${c.unit ? " " + c.unit : ""}${c.kind === "counter" ? "/s" : ""}`)
+        + (isNum(used) ? ` <span class="dim">(${escapeHtml(Number(used).toFixed(used < 10 ? 1 : 0))}% used)</span>` : "");
   }
 }
 
@@ -111,6 +118,23 @@ function coidEditor(prefill) {
         <div class="form-group"><label for="coid-value">Value</label><input type="number" id="coid-value" step="any"></div>
         <div class="form-group"><label for="coid-sev">Severity</label><select id="coid-sev">${["info", "warning", "high", "critical"].map(s => `<option ${s === "warning" ? "selected" : ""}>${escapeHtml(s)}</option>`).join("")}</select></div>
       </div>
+      <div class="form-group coid-gauge"><label class="check-label"><input type="checkbox" id="coid-cap"> It is a capacity reading: an amount in use against a limit</label>
+        <div class="form-help">For example DHCP leases in use, firewall sessions or licences. Its share of the limit appears with the disks and memory in the capacity bars, forecasts and reports.</div></div>
+      <div class="coid-cap-row hidden">
+        <div class="form-row">
+          <div class="form-group"><label for="coid-cap-res">Resource</label><input type="text" id="coid-cap-res" maxlength="40" placeholder="DHCP scope"></div>
+          <div class="form-group"><label for="coid-cap-kind">The limit is</label>
+            <select id="coid-cap-kind"><option value="number">A fixed number</option><option value="oid">Read from another OID</option></select></div>
+        </div>
+        <div class="form-group coid-cap-num"><label for="coid-cap-limit">Limit</label><input type="number" id="coid-cap-limit" step="any" min="0" placeholder="254">
+          <div class="form-help">In the same units as the value after Multiply by.</div></div>
+        <div class="form-group coid-cap-oid hidden"><label for="coid-cap-oid">Limit OID</label><input type="text" id="coid-cap-oid" spellcheck="false" placeholder="1.3.6.1.4.1.9.9.2.0">
+          <div class="form-help">The OID that holds the maximum, read in the same units as the value.</div></div>
+        <div class="form-row">
+          <div class="form-group"><label for="coid-cap-warn">Amber from (%)</label><input type="number" id="coid-cap-warn" min="1" max="100" step="any" value="75"></div>
+          <div class="form-group"><label for="coid-cap-crit">Red from (%)</label><input type="number" id="coid-cap-crit" min="1" max="100" step="any" value="90"></div>
+        </div>
+      </div>
       <div class="form-error hidden" id="coid-error"></div>
     </div>
     <div class="modal-footer"><button type="button" class="btn" data-x>Cancel</button><button type="submit" class="btn btn-primary">Add</button></div>
@@ -122,6 +146,13 @@ function coidEditor(prefill) {
     box.querySelector("#coid-kind-help").textContent = COID_KIND_HELP[kind];
     box.querySelectorAll(".coid-num").forEach(el => el.classList.toggle("hidden", kind === "string"));
     box.querySelector(".coid-alert-row").classList.toggle("hidden", kind === "string" || !box.querySelector("#coid-alert").checked);
+    // Capacity only for a gauge (an amount now), with the limit as a number or an OID.
+    box.querySelectorAll(".coid-gauge").forEach(el => el.classList.toggle("hidden", kind !== "gauge"));
+    const cap = kind === "gauge" && box.querySelector("#coid-cap").checked;
+    box.querySelector(".coid-cap-row").classList.toggle("hidden", !cap);
+    const byOid = box.querySelector("#coid-cap-kind").value === "oid";
+    box.querySelector(".coid-cap-num").classList.toggle("hidden", byOid);
+    box.querySelector(".coid-cap-oid").classList.toggle("hidden", !byOid);
   };
   sync();
   box.addEventListener("change", sync);
@@ -138,6 +169,12 @@ function coidEditor(prefill) {
     if (box.querySelector("#coid-alert").checked && body.kind !== "string") {
       Object.assign(body, { alert_op: box.querySelector("#coid-op").value, alert_value: box.querySelector("#coid-value").value,
         alert_severity: box.querySelector("#coid-sev").value });
+    }
+    if (box.querySelector("#coid-cap").checked && body.kind === "gauge") {
+      const byOid = box.querySelector("#coid-cap-kind").value === "oid";
+      Object.assign(body, { cap_resource: box.querySelector("#coid-cap-res").value.trim(),
+        cap_warn: box.querySelector("#coid-cap-warn").value, cap_crit: box.querySelector("#coid-cap-crit").value },
+        byOid ? { cap_limit_oid: box.querySelector("#coid-cap-oid").value.trim() } : { cap_limit: box.querySelector("#coid-cap-limit").value });
     }
     try {
       await api("/api/custom-oids", { method: "POST", body });

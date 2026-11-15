@@ -8,8 +8,10 @@ A window covers every device, one device, one group or one tag, from a start to 
   - a failed reachability check is recorded as planned downtime: it does not count against
     uptime and opens no incident (availability.record, planned=True).
 
-Stored as one internal setting (a JSON list); ended windows are kept a week for the record,
-then dropped. A normal backup carries them.
+Stored as one internal setting (a JSON list); ended windows stay in it a week, then move to the
+maintenance_history table, where they are kept a year (the change log and the outage timeline read
+both). A window can be marked as a change, with a short description of what was changed. A normal
+backup carries them.
 """
 
 import json
@@ -20,7 +22,8 @@ import database
 
 KEY = "maintenance_windows"
 SCOPES = ("all", "device", "group", "tag")
-KEEP_ENDED_SECONDS = 7 * 86400
+KEEP_ENDED_SECONDS = 7 * 86400          # in the short list (Settings, the dashboard)
+KEEP_HISTORY_SECONDS = 365 * 86400      # in the history table, for the change log and the reports
 MAX_SECONDS = 14 * 86400
 MAX_WINDOWS = 100
 
@@ -38,8 +41,18 @@ def _load() -> List[Dict[str, Any]]:
 
 
 def _save(windows: List[Dict[str, Any]], now: float) -> None:
-    keep = [w for w in windows if w["end"] > now - KEEP_ENDED_SECONDS]
-    database.set_internal_setting(KEY, json.dumps(keep[-MAX_WINDOWS:]))
+    keep = [w for w in windows if w["end"] > now - KEEP_ENDED_SECONDS][-MAX_WINDOWS:]
+    kept = {w["id"] for w in keep}
+    # Windows that leave the short list are kept in the history (only those that began: a cancelled
+    # scheduled one never happened).
+    database.archive_maintenance_windows([w for w in windows if w["id"] not in kept and w["start"] <= now])
+    database.purge_maintenance_history(int(now - KEEP_HISTORY_SECONDS))
+    database.set_internal_setting(KEY, json.dumps(keep))
+
+
+def _next_id(stored: List[Dict[str, Any]]) -> int:
+    """Ids are never reused: the history holds older ones."""
+    return max([x["id"] for x in stored] + [database.max_maintenance_history_id()]) + 1
 
 
 def windows(now: Optional[float] = None) -> List[Dict[str, Any]]:
@@ -52,7 +65,9 @@ def windows(now: Optional[float] = None) -> List[Dict[str, Any]]:
     return sorted(out, key=lambda w: -w["start"])
 
 
-def add(scope: str, target: str, start: float, end: float, note: str, by: str, now: Optional[float] = None) -> Dict[str, Any]:
+def add(scope: str, target: str, start: float, end: float, note: str, by: str, now: Optional[float] = None,
+        change_note: str = "") -> Dict[str, Any]:
+    """Adds a window. change_note: what is being changed, which marks the window as a change."""
     now = now if now is not None else time.time()
     if scope not in SCOPES:
         raise MaintenanceError("Cover every device, one device, one group or one tag")
@@ -66,8 +81,10 @@ def add(scope: str, target: str, start: float, end: float, note: str, by: str, n
     if end - start > MAX_SECONDS:
         raise MaintenanceError("A window can last at most 14 days")
     stored = _load()
-    w = {"id": max([x["id"] for x in stored] or [0]) + 1, "scope": scope, "target": "" if scope == "all" else str(target).strip(),
-         "start": int(start), "end": int(end), "note": str(note or "").strip()[:200], "by": by}
+    change_note = str(change_note or "").strip()[:200]
+    w = {"id": _next_id(stored), "scope": scope, "target": "" if scope == "all" else str(target).strip(),
+         "start": int(start), "end": int(end), "note": str(note or "").strip()[:200], "by": by,
+         "change": bool(change_note), "change_note": change_note}
     stored.append(w)
     _save(stored, now)
     return w
@@ -127,3 +144,43 @@ def active_for(device: Optional[Dict[str, Any]], now: Optional[float] = None,
         if w["start"] <= now < w["end"] and covers(w, device):
             return w
     return None
+
+
+def _state(w: Dict[str, Any], now: float) -> str:
+    return "scheduled" if w["start"] > now else "active" if w["end"] > now else "ended"
+
+
+def history(since: Optional[float] = None, until: Optional[float] = None, now: Optional[float] = None,
+            changes_only: bool = False) -> List[Dict[str, Any]]:
+    """Every window kept (the short list and the year of history) that overlaps since..until, newest
+    start first, each with its state and change fields. changes_only: those marked as a change."""
+    now = now if now is not None else time.time()
+    out: Dict[int, Dict[str, Any]] = {}
+    for w in database.list_maintenance_history(None if since is None else int(since), None if until is None else int(until)):
+        out[w["id"]] = w
+    for w in _load():
+        if (since is None or w["end"] >= since) and (until is None or w["start"] <= until):
+            out[w["id"]] = dict(w, change=bool(w.get("change")), change_note=w.get("change_note") or "")
+    rows = [dict(w, state=_state(w, now)) for w in out.values() if not changes_only or w.get("change")]
+    return sorted(rows, key=lambda w: (-w["start"], -w["id"]))
+
+
+def set_change(window_id: int, change_note: str, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """Marks a window as a change with what was changed, or clears the mark when change_note is
+    empty. Works on the short list and on the history. Returns the window, or None when unknown."""
+    now = now if now is not None else time.time()
+    note = str(change_note or "").strip()[:200]
+    stored = _load()
+    hit = next((w for w in stored if w["id"] == window_id), None)
+    if hit:
+        hit["change"], hit["change_note"] = bool(note), note
+        database.set_internal_setting(KEY, json.dumps(stored))
+        return dict(hit, state=_state(hit, now))
+    if database.set_maintenance_history_change(window_id, bool(note), note):
+        return next((w for w in history(now=now) if w["id"] == window_id), None)
+    return None
+
+
+def members(w: Dict[str, Any], devices: List[Dict[str, Any]]) -> List[int]:
+    """Ids of the devices (each with its effective group under "group") the window covers."""
+    return [d["id"] for d in devices if covers(w, d)]

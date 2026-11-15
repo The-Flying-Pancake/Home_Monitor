@@ -15,6 +15,15 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 0.20.0: Release 44, Incidents, changes and truer reports (2026-11-15)
+
+- Incidents: open one from scratch or straight from a problem, then keep its owner, priority, status, notes and actions with due dates in one place.
+- Changes: mark a maintenance window as a change and it joins a dated change log kept for a year.
+- The health summary, the outage review and the shift handover now use your incidents and changes.
+- Each ping check now sends three pings a fifth of a second apart. Reports show true packet loss and jitter.
+- Switches that speak LLDP tell the map exactly which port connects to which. Their neighbours show on the device's Ports tab.
+- A custom SNMP value can be a capacity reading with a limit, such as DHCP leases or firewall sessions. It joins the capacity bars and forecasts.
+
 ### 0.19.0: Release 43, Your own reports and many more templates (2026-11-15)
 
 - New custom report builds a report from scratch: key figures, charts, tables, your own text and device details, in the order you choose.

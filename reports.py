@@ -65,7 +65,7 @@ PILL_TONES = {
     "Running": "good", "Paused": "warn", "Stopped": "none",
     "On": "good", "Off": "bad", "Yes": "good", "No": "warn",
     "Finished": "good", "Failed": "bad", "Acknowledged": "info", "Open": "bad",
-    "Healthy": "good", "Done": "good", "Plan": "info", "Investigating": "warn", "Monitoring": "warn",
+    "Healthy": "good", "Done": "good", "Plan": "info", "Investigating": "warn", "Monitoring": "warn", "In progress": "warn",
     "P1": "bad", "P2": "warn", "P3": "info", "Maintenance": "none", "Still down": "bad", "Busy now": "warn",
 }
 
@@ -99,7 +99,8 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
         "sources": "ping and service checks, SNMP and the problem log",
         "period": True, "default_period": "30d", "all_devices": False,
         "columns": [_col("problem", "Issue"), SEVERITY_COLS[0], _col("count", "Times", "num"), _col("devices", "Devices", "num"),
-                    _col("where", "Where"), _col("last", "Last seen", "time"), _col("state", "Now", "pill")],
+                    _col("where", "Where"), _col("last", "Last seen", "time"), _col("state", "Now", "pill"),
+                    _col("impact", "Impact"), _col("duration", "Duration", "duration"), _col("owner", "Owner")],
         "default": ["problem", "severity", "count", "devices", "where", "last", "state"],
         "sort": "count", "desc": True, "table_title": "Top issues",
     },
@@ -144,7 +145,7 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
         "purpose": "Which links carry the most traffic and whether any of them is running full.",
         "sources": "SNMP interface counters",
         "period": True, "all_devices": False,
-        "columns": DEVICE_COLS + [_col("interface", "Interface"), _col("description", "Description"), _col("speed", "Speed", "mbps"),
+        "columns": DEVICE_COLS + [_col("interface", "Interface"), _col("description", "Description"), _col("neighbour", "Neighbour"), _col("speed", "Speed", "mbps"),
                                   _col("in_p95", "In (95th pct)", "bps"), _col("out_p95", "Out (95th pct)", "bps"), _col("peak", "Peak", "bps"),
                                   _col("util", "Use (95th pct)", "pct"), _col("state", "Load", "pill")],
         "default": ["name", "interface", "description", "speed", "in_p95", "out_p95", "peak", "util", "state"],
@@ -168,7 +169,7 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
         "purpose": "A close look at one device over the period.",
         "sources": "ping and service checks, SNMP and the problem log",
         "period": True, "all_devices": False, "one_device": True,
-        "columns": [_col("interface", "Interface"), _col("description", "Description"), _col("speed", "Speed", "mbps"),
+        "columns": [_col("interface", "Interface"), _col("description", "Description"), _col("neighbour", "Neighbour"), _col("speed", "Speed", "mbps"),
                     _col("in_p95", "In (95th pct)", "bps"), _col("out_p95", "Out (95th pct)", "bps"), _col("peak", "Peak", "bps"),
                     _col("util", "Use (95th pct)", "pct"), _col("state", "Load", "pill")],
         "default": ["interface", "description", "speed", "in_p95", "out_p95", "peak", "util", "state"],
@@ -492,6 +493,33 @@ def _avail(ids: List[int], start: int, end: int) -> Dict[int, List[Tuple[int, in
                               "AND hour >= ? AND hour < ? ORDER BY hour;", (*ids, start - start % 3600, end)):
             out[r[0]].append((r[1], r[2], r[3], r[4], r[5]))
     return out
+
+
+def _echo_hours(ids: List[int], start: int, end: int) -> Dict[int, List[Tuple[int, int, int, float, int]]]:
+    """Per device: the hours with several echoes per check (hour, echoes sent, answered, jitter sum,
+    checks with a jitter). Hours from before the monitor sent several echoes are left out."""
+    out: Dict[int, List[Tuple[int, int, int, float, int]]] = {}
+    if not ids:
+        return out
+    marks = ",".join("?" * len(ids))
+    with database.get_connection() as conn:
+        for r in conn.execute(f"SELECT device_id, hour, echo_sent, echo_recv, jitter_sum, jitter_n FROM avail_hourly "
+                              f"WHERE device_id IN ({marks}) AND hour >= ? AND hour < ? AND echo_sent > 0 ORDER BY hour;",
+                              (*ids, start - start % 3600, end)):
+            out.setdefault(r[0], []).append((r[1], r[2], r[3], r[4], r[5]))
+    return out
+
+
+def _loss_of(hours: List[Tuple[int, int, int, float, int]]) -> Optional[float]:
+    """True packet loss in percent: echoes that got no answer out of those sent (spec 4.7)."""
+    sent = sum(h[1] for h in hours)
+    return round(100.0 * (sent - sum(h[2] for h in hours)) / sent, 3) if sent else None
+
+
+def _jitter_of(hours: List[Tuple[int, int, int, float, int]]) -> Optional[float]:
+    """Mean jitter in ms: the mean absolute difference between consecutive answers of a check."""
+    n = sum(h[4] for h in hours)
+    return round(sum(h[3] for h in hours) / n, 3) if n else None
 
 
 def _uptime(hours: List[Tuple[int, int, int, float, int]]) -> Optional[float]:
@@ -1225,6 +1253,7 @@ def _monthly(devices, period, now, ctx):
                      "where": ", ".join(where[:3]) + (f" and {len(where) - 3} more" if len(where) > 3 else ""), "last": i["last"],
                      "state": "Still open" if i["ids"] & active.get(_stem(i["problem"]), set()) else "Resolved"})
     rows.sort(key=lambda r: -r["count"])
+    inc_rows = _monthly_incidents(devices, period, start, now, ctx)
     if up is None:
         summary = f"There are no checks recorded for {PERIOD_NAMES[period]} yet."
     else:
@@ -1237,14 +1266,40 @@ def _monthly(devices, period, now, ctx):
         if ms is not None:
             parts.append(f"Devices answered in {_ms(ms)} on average.")
         summary = " ".join(parts)
-    return _result(rows, kpis, summary, main, [
+    if inc_rows:
+        still = sum(1 for r in inc_rows if r["state"] != "Resolved")
+        summary += f" {_count(len(inc_rows), 'incident')} recorded" + (f", {still} still open." if still else ", all resolved.")
+    out = _result(inc_rows or rows, kpis, summary, main, [
         donut if devices else None,
         _severity_columns(events, start, now, f"Problems opened per {step}", "New problems, by how serious they were.") if events else None])
+    if inc_rows:
+        out["main_columns"] = MONTHLY_INCIDENT_COLS
+    return out
+
+
+def _neighbours(device_id: int) -> Dict[int, str]:
+    """{ifIndex: "to <device> <port>"} from the device's LLDP table (server.lldp_neighbours)."""
+    if not database.get_device_table(device_id, "lldp"):
+        return {}
+    try:
+        import server
+        return server.lldp_neighbours(device_id)
+    except Exception:
+        return {}
+
+
+def _with_neighbour(alias: str, near: str) -> str:
+    """The description with the LLDP neighbour after it, so tables without a Neighbour column show it too."""
+    if not near or near.lower() in alias.lower():
+        return alias
+    return f"{alias} ({near})" if alias else near
 
 
 def _interfaces(device: Dict[str, Any], start: int, end: int, wan: set) -> List[Dict[str, Any]]:
-    """The device's physical ports and WAN links that have traffic readings in the window."""
+    """The device's physical ports and WAN links that have traffic readings in the window, each with
+    its LLDP neighbour ("to <device> <port>") when the device reports one."""
     out = []
+    near = _neighbours(device["id"])
     for idx, r in database.get_device_table(device["id"], "interfaces").items():
         try:
             if_index = int(r.get("if_index") or idx)
@@ -1265,7 +1320,8 @@ def _interfaces(device: Dict[str, Any], start: int, end: int, wan: set) -> List[
         state = "No speed" if util is None else "Saturated" if util >= LINK_BAD else "Busy" if util >= LINK_WARN else "OK"
         label = str(r.get("label") or r.get("descr") or idx)
         nums = {k: r.get(k) for k in ("in_errors", "out_errors", "in_discards", "out_discards", "in_ucast", "out_ucast")}
-        out.append(dict(_base(device), device_id=device["id"], idx=idx, wan=is_wan, interface=label, description=str(r.get("alias") or ""),
+        out.append(dict(_base(device), device_id=device["id"], idx=idx, wan=is_wan, interface=label, description=_with_neighbour(str(r.get("alias") or ""), near.get(if_index, "")),
+                        neighbour=near.get(if_index, ""),
                         speed=speed, in_p95=in_p95, out_p95=out_p95, peak=peak, util=round(util, 1) if util is not None else None,
                         state=state, _in=ins, _out=outs, _counters=nums))
     return out
@@ -1855,6 +1911,29 @@ def _hours(c: Ctx, start: int, end: int) -> Dict[int, List[Tuple[int, int, int, 
     return c.memo(("avail", start, end), lambda: _avail([d["id"] for d in c.all], start, end))
 
 
+def _echoes(c: Ctx, start: int, end: int) -> Dict[int, List[Tuple[int, int, int, float, int]]]:
+    return c.memo(("echo", start, end), lambda: _echo_hours([d["id"] for d in c.all], start, end))
+
+
+def _loss_jitter(c: Ctx, devs: List[Dict[str, Any]], start: int, end: int) -> Dict[str, Any]:
+    """Packet loss and jitter for a set of devices: true values where the checks sent several echoes,
+    with the stand-ins (failed checks, the standard deviation of the answers) for devices that have
+    no such checks in the window yet. "true" says which: True, False or "mixed"."""
+    eh = _echoes(c, start, end)
+    with_echo = [d for d in devs if eh.get(d["id"])]
+    rows = [h for d in with_echo for h in eh[d["id"]]]
+    since = min((h[0] for h in rows), default=None)
+    if not with_echo:
+        hrs = _hours(c, start, end)
+        up = _uptime([h for d in devs for h in hrs.get(d["id"], [])])
+        return {"true": False, "loss": None if up is None else round(100 - up, 3), "jitter": None, "since": None}
+    rest = [d for d in devs if not eh.get(d["id"])]
+    hrs = _hours(c, start, end)
+    rest_has = any(hrs.get(d["id"]) for d in rest)
+    return {"true": "mixed" if rest_has else True, "loss": _loss_of(rows), "jitter": _jitter_of(rows),
+            "since": since if since is not None and since > start + 3600 else None}
+
+
 def _outages(c: Ctx, start: int, end: int) -> Dict[int, List[Tuple[int, Optional[int]]]]:
     """Per device: its outages overlapping the window as (started, ended or None while still down)."""
     def load() -> Dict[int, List[Tuple[int, Optional[int]]]]:
@@ -2000,10 +2079,10 @@ def _now_words(c: Ctx) -> Dict[int, Tuple[str, str, str]]:
 
 
 def _maint_spans(c: Ctx, d: Dict[str, Any], start: int, end: int) -> List[Tuple[int, int]]:
-    """Maintenance windows over the device inside the window (the monitor keeps ended ones a week)."""
+    """Maintenance windows over the device inside the window (the monitor keeps ended ones a year)."""
     def load() -> List[Dict[str, Any]]:
         import maintenance
-        return maintenance.windows(c.now)
+        return maintenance.history(now=c.now)
     probe = {"id": d["id"], "group": d.get("group_id") or "", "tags": d.get("tags") or []}
     out = []
     import maintenance
@@ -2047,18 +2126,21 @@ def _health_scores(c: Ctx, devs: List[Dict[str, Any]], start: int, end: int) -> 
     disks = [x["used_pct"] for d in devs for x in _disks(d["id"]) if x["used_pct"] is not None]
     probs = len(_opened(c, devs, start, end))
     med = _median(pings)
+    lj = _loss_jitter(c, devs, start, end)
+    lost = lj["loss"] if lj["true"] is True else (100 - up if up is not None else None)
     clamp = lambda v: None if v is None else round(max(0.0, min(100.0, v)), 1)
     return {"Availability": clamp(100 - (100 - up) * 100) if up is not None else None,
             "Ping": clamp(100 - med / PING_BAD_MS * 100) if med is not None else None,
             "Processor": clamp(100 - _quantile(cpu, 0.95)) if cpu else None,
             "Memory": clamp(100 - _quantile(mem, 0.95)) if mem else None,
-            "Failed checks": clamp(100 - (100 - up) * 50) if up is not None else None,
+            ("Packet loss" if lj["true"] is True else "Failed checks"): clamp(100 - lost * 50) if lost is not None else None,
             "Disk": clamp(100 - max(disks)) if disks else None,
             "Problems": clamp(100 - 10 * probs) if (up is not None or pings or cpu) else None}
 
 
 SCORE_NOTE = ("Scores run from 0 to 100, 100 is best: availability 100 at 100% and 0 at 99%; ping 100 at 0 ms and 0 at "
-              f"{PING_BAD_MS:.0f} ms (median); processor and memory 100 minus the 95th percentile; failed checks 0 at 2%; "
+              f"{PING_BAD_MS:.0f} ms (median); processor and memory 100 minus the 95th percentile; packet loss (or failed checks "
+              "before the monitor sent several echoes per check) 0 at 2%; "
               "disk 100 minus the fullest disk; problems 10 less for each one opened.")
 
 
@@ -2070,19 +2152,22 @@ def _group_score(c: Ctx, devs: List[Dict[str, Any]], start: int, end: int) -> Di
     med = _median([v for d in devs for _, v, _ in _pings(c, d, start, end)])
     utils = [i["util"] for i in _all_interfaces(c, devs, start, end) if i["util"] is not None]
     peak = max(utils) if utils else None
+    lj = _loss_jitter(c, devs, start, end)
+    lost = lj["loss"] if lj["true"] is True else (round(100 - up, 3) if up is not None else None)
     parts = {"availability": max(0.0, min(100.0, 100 - (100 - up) * 100)) if up is not None else None,
              "ping": max(0.0, min(100.0, 100 - med / PING_BAD_MS * 100)) if med is not None else None,
-             "failed": max(0.0, min(100.0, 100 - (100 - up) * 50)) if up is not None else None,
+             "failed": max(0.0, min(100.0, 100 - lost * 50)) if lost is not None else None,
              "headroom": max(0.0, 100 - peak) if peak is not None else None}
     weights = [(parts[k], w) for k, w in SCORE_WEIGHTS if parts[k] is not None]
     score = sum(v * w for v, w in weights) / sum(w for _, w in weights) if weights else None
     return {"score": round(score) if score is not None else None, "availability": up, "ping": med,
-            "failed": round(100 - up, 3) if up is not None else None, "util": peak}
+            "failed": lost, "util": peak, "loss_true": lj["true"] is True}
 
 
-SCORE_TEXT = ("Score = " + ", ".join(f"{w}% {n}" for n, w in (("availability", 40), ("ping", 30), ("failed checks", 15)))
+SCORE_TEXT = ("Score = " + ", ".join(f"{w}% {n}" for n, w in (("availability", 40), ("ping", 30), ("packet loss", 15)))
               + " and 15% headroom on the busiest link. Availability scores 0 at 99%, ping 0 at "
-              + f"{PING_BAD_MS:.0f} ms, failed checks 0 at 2%. A figure without data drops out and the others share its weight.")
+              + f"{PING_BAD_MS:.0f} ms, packet loss 0 at 2% (failed checks stand in for times before the monitor sent "
+              + "several echoes per check). A figure without data drops out and the others share its weight.")
 
 
 def _score_word(score: Optional[float]) -> str:
@@ -2318,7 +2403,7 @@ def _gantt(c: Ctx, devs: List[Dict[str, Any]], start: int, end: int, top: int, t
     rows.sort(key=lambda r: (-r[0], r[1].lower()))
     marks, fmt = _slots(start, end)
     return {"kind": "gantt", "title": title, "start": start, "end": end,
-            "note": "Red is down, hatched grey is planned maintenance (the monitor keeps maintenance windows a week after they end).",
+            "note": "Red is down, hatched grey is planned maintenance (the monitor keeps maintenance windows a year).",
             "rows": [{"name": n, "spans": s} for _, n, s in rows[:top]],
             "marks": [[t, l] for t, l in zip(marks, _slot_labels(marks, fmt))]}
 
@@ -2587,43 +2672,96 @@ def _v_ping_dist(c, b, devs, start, end, period):
             "note": "The box runs from the 25th to the 75th percentile with the median inside; whiskers reach 1.5 box lengths, dots are answers beyond them."}
 
 
+def _since_text(since: Optional[int]) -> str:
+    return f" Measured from {_date(since, True)}, when the monitor began sending several echoes per check." if since else ""
+
+
+STANDIN_LOSS = "Failed checks stand in where there is no echo count yet (before the monitor sent several echoes per check)."
+STANDIN_JITTER = "The standard deviation of the answers stands in where there is no jitter yet (before the monitor sent several echoes per check)."
+
+
 def _v_ping_stddev(c, b, devs, start, end, period):
     import statistics
     split = _split(b, devs)
-    pairs = []
+    pairs, real, stand = [], 0, 0
     for label, members in _cats(devs, split):
+        lj = _loss_jitter(c, members, start, end)
+        if lj["true"] is True and lj["jitter"] is not None:
+            pairs.append((label, round(lj["jitter"], 2)))
+            real += 1
+            continue
         vals = [v for d in members for _, v, _ in _pings(c, d, start, end)]
         pairs.append((label, round(statistics.pstdev(vals), 2) if len(vals) > 1 else None))
+        stand += 1 if len(vals) > 1 else 0
+    if real and not stand:
+        return _category_chart(b, "Jitter", "How much the answers of one check differ from each other: the mean difference between "
+                               "consecutive echoes (three per check), averaged over the period.", pairs, "ms", lambda v: None, True, _top(b, 10))
+    if real:
+        return _category_chart(b, "Jitter, or RTT standard deviation", "Jitter (the mean difference between consecutive echoes of a check) "
+                               "where measured. " + STANDIN_JITTER, pairs, "ms", lambda v: None, True, _top(b, 10))
     return _category_chart(b, "RTT standard deviation", "How much ping varies from one check to the next (standard deviation of the answers). "
-                           "This is not jitter: the monitor sends one ping per check.", pairs, "ms", lambda v: None, True, _top(b, 10))
+                           "This is not jitter: these checks sent one ping each.", pairs, "ms", lambda v: None, True, _top(b, 10))
 
 
 def _failed_pairs(c, devs, start, end, split):
-    return [(l, round(100 - v, 3) if v is not None else None) for l, v in _cat_avail(c, devs, start, end, split)]
+    """(label, packet loss or failed checks %, true) per device or group."""
+    out = []
+    for label, members in _cats(devs, split):
+        lj = _loss_jitter(c, members, start, end)
+        out.append((label, lj["loss"], lj["true"] is True))
+    return out
 
 
 def _v_failed_per(c, b, devs, start, end, period):
     split = _split(b, devs)
     warn, bad, _ = _limits(b, FAILED_WARN, FAILED_BAD)
-    return _category_chart(b, "Failed checks per " + ("group" if split == "group" else "device"),
-                           f"Share of checks that got no answer. Not packet loss: the monitor sends one ping per check. Amber from {warn:g}%, red from {bad:g}%.",
-                           _failed_pairs(c, devs, start, end, split), "%", lambda v: _tone_at(v, warn, bad), True, _top(b, 10),
+    trip = _failed_pairs(c, devs, start, end, split)
+    real = [t for t in trip if t[2] and t[1] is not None]
+    stand = [t for t in trip if not t[2] and t[1] is not None]
+    who = "group" if split == "group" else "device"
+    if real:
+        title = f"Packet loss per {who}" if not stand else f"Packet loss (or failed checks) per {who}"
+        note = (f"Share of ping echoes that got no answer, three per check. Amber from {warn:g}%, red from {bad:g}%."
+                + (" " + STANDIN_LOSS if stand else "") + _since_text(_loss_jitter(c, devs, start, end)["since"]))
+    else:
+        title = f"Failed checks per {who}"
+        note = f"Share of checks that got no answer. Not packet loss: these checks sent one ping each. Amber from {warn:g}%, red from {bad:g}%."
+    return _category_chart(b, title, note, [(l, v) for l, v, _ in trip], "%", lambda v: _tone_at(v, warn, bad), True, _top(b, 10),
                            [{"value": warn, "tone": "warn", "label": f"{warn:g}%"}, {"value": bad, "tone": "bad", "label": f"{bad:g}%"}])
+
+
+def _loss_per_slot(c, devs, start, end, starts):
+    """Per slot: packet loss where the slot has echo counts, else failed checks; and whether any slot is true loss."""
+    eh = _echoes(c, start, end)
+    sums = [[0, 0] for _ in starts]
+    for d in devs:
+        for h in eh.get(d["id"], []):
+            x = sums[_slot_of(starts, h[0])]
+            x[0] += h[1]
+            x[1] += h[2]
+    failed = [round(100 - v, 3) if v is not None else None for v in _per_slot(_hours(c, start, end), devs, starts)]
+    vals = [round(100.0 * (s_ - r_) / s_, 3) if s_ else f for (s_, r_), f in zip(sums, failed)]
+    real = sum(1 for s_, _ in sums if s_)
+    return vals, real, sum(1 for (s_, _), f in zip(sums, failed) if not s_ and f is not None)
 
 
 def _v_failed_time(c, b, devs, start, end, period):
     starts, fmt = _slots(start, end)
-    vals = [round(100 - v, 3) if v is not None else None for v in _per_slot(_hours(c, start, end), devs, starts)]
+    vals, real, stand = _loss_per_slot(c, devs, start, end, starts)
     warn, bad, _ = _limits(b, FAILED_WARN, FAILED_BAD)
+    if real:
+        name = "Packet loss"
+        note = "Share of ping echoes that got no answer, three per check." + (" " + STANDIN_LOSS if stand else "")
+    else:
+        name = "Failed checks"
+        note = "Share of checks that got no answer (one ping per check, so not packet loss)."
     if b["chart"] == "columns":
-        return {"kind": "columns", "title": f"Failed checks per {_step_name(fmt)}", "unit": "%", "labels": _slot_labels(starts, fmt),
-                "series": [{"name": "Failed checks", "values": vals}], "bar_tones": [_tone_at(v, warn, bad) for v in vals],
-                "note": "Share of checks that got no answer (one ping per check, so not packet loss).",
-                "target": {"value": warn, "label": f"{warn:g}%", "tone": "warn"}}
-    return {"kind": "line", "title": f"Failed checks per {_step_name(fmt)}", "unit": "%", "start": start, "end": end,
-            "series": [{"name": "Failed checks", "points": list(zip(_slot_mid(starts, fmt), vals))}],
-            "thresholds": [{"value": warn, "tone": "warn", "label": f"{warn:g}%"}],
-            "note": "Share of checks that got no answer (one ping per check, so not packet loss)."}
+        return {"kind": "columns", "title": f"{name} per {_step_name(fmt)}", "unit": "%", "labels": _slot_labels(starts, fmt),
+                "series": [{"name": name, "values": vals}], "bar_tones": [_tone_at(v, warn, bad) for v in vals],
+                "note": note, "target": {"value": warn, "label": f"{warn:g}%", "tone": "warn"}}
+    return {"kind": "line", "title": f"{name} per {_step_name(fmt)}", "unit": "%", "start": start, "end": end,
+            "series": [{"name": name, "points": list(zip(_slot_mid(starts, fmt), vals))}],
+            "thresholds": [{"value": warn, "tone": "warn", "label": f"{warn:g}%"}], "note": note}
 
 
 def _v_cpu_mem(c, b, devs, start, end, period):
@@ -2711,9 +2849,20 @@ def _fit_line(points: List[Tuple[int, float]]) -> Optional[Dict[str, float]]:
     return {"slope": slope, "icpt": icpt, "se": se, "mx": mx, "sxx": sxx, "n": n}
 
 
+def _capacity_readings(d: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The device's capacity readings from custom OIDs (customoids.py), with the used percent now."""
+    import customoids
+    rows = customoids.capacity_readings(d)
+    if not rows:
+        return []
+    latest = {m["metric_key"]: m["value"] for m in database.get_latest_metrics(d["id"])}
+    return [dict(r, now=latest.get(r["key"]) if isinstance(latest.get(r["key"]), (int, float)) else None) for r in rows]
+
+
 def _resources(c: Ctx, devs: List[Dict[str, Any]], now: int) -> List[Dict[str, Any]]:
-    """Every finite resource with a daily peak history: disks and volumes, memory, and link use
-    (the larger of in and out against the link speed). Each with its fit and days until the limit."""
+    """Every finite resource with a daily peak history: disks and volumes, memory, link use (the
+    larger of in and out against the link speed) and capacity readings from custom OIDs (DHCP
+    scope, sessions, licences). Each with its fit and days until the limit."""
     def load():
         out = []
         wan = c.memo("wan", lambda: c.env["wan"]() if callable(c.env.get("wan")) else set())
@@ -2721,13 +2870,22 @@ def _resources(c: Ctx, devs: List[Dict[str, Any]], now: int) -> List[Dict[str, A
             keys = []
             for x in _disks(d["id"]):
                 prefix = "vol" if x["table"] == "volumes" else "stor"
-                keys.append((f"{prefix}.{x['idx']}.used_pct", x["name"], "Disk", x["used_pct"], LOAD_BAD))
-            keys.append(("mem_used_pct", "Memory", "Memory", None, LOAD_BAD))
-            for key, name, kind, current, limit in keys:
+                keys.append((f"{prefix}.{x['idx']}.used_pct", x["name"], "Disk", x["used_pct"], LOAD_BAD, None))
+            keys.append(("mem_used_pct", "Memory", "Memory", None, LOAD_BAD, None))
+            for r in _capacity_readings(d):
+                keys.append((r["key"], r["resource"], "Capacity reading", r["now"], r["crit"], r["warn"]))
+            for key, name, kind, current, limit, warn in keys:
                 peaks = _daily_peaks(d["id"], key, now)
                 if not peaks:
-                    continue
-                out.append(_forecast_row(d, name, kind, peaks, current, limit, now))
+                    if kind == "Capacity reading" and current is not None:
+                        # A new reading: shown with its use now; the forecast comes with the history.
+                        peaks = [(now, current)]
+                    else:
+                        continue
+                row = _forecast_row(d, name, kind, peaks, current, limit, now)
+                if warn is not None:
+                    row["warn"] = warn
+                out.append(row)
             for i in _interfaces(d, now - 7 * 86400, now, wan):
                 if not i.get("speed"):
                     continue
@@ -3210,6 +3368,7 @@ def _v_timeline(c, b, devs, start, end, period):
                 else "good" if msg.startswith("Resolved: ") or "back online" in msg.lower() or "recovered" in msg.lower()
                 else "info" if msg.startswith("Acknowledged: ") else "warn" if _sev(e["severity"]) == "Warning" else "bad" if _sev(e["severity"]) in ("Critical", "High") else "info")
         events.append([e["timestamp"], f"{names.get(e['device_id'], '')}: {msg}", tone])
+    events += _incident_events(c, devs, start, end)
     events.sort(key=lambda x: x[0])
     down = _outages(c, start, end)
     spans = [(max(s, start), min(e or end, end)) for d in ids for s, e in down.get(d, [])]
@@ -3219,7 +3378,7 @@ def _v_timeline(c, b, devs, start, end, period):
         impact = [a, z, f"Devices down ({_minutes(z - a)})"]
     step = max(1, len(events) // 14)
     return {"kind": "timeline", "title": "Timeline", "start": start, "end": end, "impact": impact, "events": events[::step][:16],
-            "note": f"Times are local ({_tz()}). Red is a failure, amber an alert, blue an action, green a recovery; the shaded band is when devices were down."
+            "note": f"Times are local ({_tz()}). Red is a failure, amber an alert, blue an action (incident notes and changes too), green a recovery; the shaded band is when devices were down."
                     + (f" Every {step}th event of {len(events)} is shown." if step > 1 else "")}
 
 
@@ -3354,12 +3513,28 @@ def _v_device_gauges(c, b, devs, start, end, period):
 
 
 def _v_capacity_now(c, b, devs, start, end, period):
-    warn, bad, _ = _limits(b, LOAD_WARN, LOAD_BAD)
+    warn, bad, override = _limits(b, LOAD_WARN, LOAD_BAD)
     rows = _resources(c, devs, c.now)
-    items = [(f"{r['device']} {r['resource'].lower() if r['kind'] == 'Memory' else r['resource']}", r["now"]) for r in rows]
-    return _category_chart(b, "Current use, highest first", f"Disks, memory and links (95th percentile against link speed). Lines at {warn:g}% and {bad:g}%.",
-                           items, "%", lambda v: _tone_at(v, warn, bad), True, _top(b, 10),
+    label = lambda r: f"{r['device']} {r['resource'].lower() if r['kind'] == 'Memory' else r['resource']}"
+    items = [(label(r), r["now"]) for r in rows]
+    vendor = any(r["kind"] == "Capacity reading" for r in rows)
+    note = (f"Disks, memory{', links and capacity readings' if vendor else ' and links'} (links at the 95th percentile against "
+            f"their speed). Lines at {warn:g}% and {bad:g}%.")
+    if vendor and not override:
+        note += " A capacity reading is coloured by its own levels (75% and 90% unless set)."
+    spec = _category_chart(b, "Current use, highest first", note, items, "%", lambda v: _tone_at(v, warn, bad), True, _top(b, 10),
                            [{"value": warn, "tone": "warn", "label": f"{warn:g}%"}, {"value": bad, "tone": "bad", "label": f"{bad:g}%"}], 100.0)
+    if vendor and not override:
+        # Capacity readings have their own warning and critical levels.
+        own = {label(r): (r.get("warn", LOAD_WARN), r["limit"]) for r in rows if r["kind"] == "Capacity reading"}
+        for key in ("bars", "items"):
+            for item in spec.get(key) or []:
+                if item[0] in own:
+                    item[2] = _tone_at(item[1], *own[item[0]])
+        if spec.get("bar_tones") and spec.get("labels"):
+            spec["bar_tones"] = [_tone_at(v, *own[l]) if l in own else t
+                                 for l, v, t in zip(spec["labels"], spec["series"][0]["values"], spec["bar_tones"])]
+    return spec
 
 
 def _view(label: str, shape: str, charts: List[str], fn: Callable[..., Dict[str, Any]], aggs: Optional[List[str]] = None,
@@ -3405,9 +3580,10 @@ SOURCES: Dict[str, Dict[str, Any]] = {
     "ping": {"label": "Ping", "about": "How long devices take to answer ping, in milliseconds.", "views": dict(_metric_views("ping"), **{
         "band": _view("Typical and spread over time", "pct_time", ["band"], _v_ping_band, limits="target"),
         "distribution": _view("Every answer", "distribution", ["box", "histogram", "cdf"], _v_ping_dist, splits=["auto", "device", "group"], top=12, limits="target"),
-        "stddev": _view("How much it varies (standard deviation)", "category", ["bar", "lollipop", "columns"], _v_ping_stddev, splits=["auto", "device", "group"], top=10),
+        "stddev": _view("How much it varies (jitter)", "category", ["bar", "lollipop", "columns"], _v_ping_stddev, splits=["auto", "device", "group"], top=10),
         "watch": _view("List with trend lines", "list", ["sparktable"], _v_ping_watch, top=10, limits="target")})},
-    "failed": {"label": "Failed checks", "about": "Share of checks that got no answer. The monitor sends one ping per check, so this is not packet loss.", "views": {
+    "failed": {"label": "Packet loss", "about": "Share of ping echoes that got no answer (three per check). For times before the monitor sent several "
+               "echoes per check, the share of failed checks stands in and the chart says so.", "views": {
         "per": _view("Per device or group", "category", ["lollipop", "bar", "columns"], _v_failed_per, splits=["auto", "device", "group"], top=10, limits="warn_bad"),
         "time": _view("Over time", "series", ["line", "columns"], _v_failed_time, limits="warn_bad")}},
     "cpu": {"label": "Processor use", "about": "Processor use read over SNMP or from the host, in percent.", "views": dict(_metric_views("cpu"), **{
@@ -3422,7 +3598,8 @@ SOURCES: Dict[str, Dict[str, Any]] = {
         "now": _view("Now", "current", ["gauge", "bar", "lollipop"], _v_temp, top=10, limits="warn_bad")}},
     "storage": {"label": "Disks and volumes", "about": "How full each disk, volume and storage pool is now.", "views": {
         "per": _view("How full now", "category", ["capacity", "bar", "treemap"], _v_storage_per, top=10, limits="warn_bad")}},
-    "capacity": {"label": "Capacity", "about": "Disks, memory and link use, with a trend on the daily peaks.", "views": {
+    "capacity": {"label": "Capacity", "about": "Disks, memory, link use and capacity readings from custom OIDs (DHCP scope, sessions, licences), "
+                 "with a trend on the daily peaks.", "views": {
         "now": _view("Current use", "category", ["capacity", "bar", "lollipop"], _v_capacity_now, top=10, limits="warn_bad"),
         "forecast": _view("Trend and forecast (most urgent)", "forecast", ["forecast"], _v_forecast, limits="warn_bad")}},
     "traffic": {"label": "Interface traffic", "about": "Bits per second in and out, from the SNMP interface counters.", "views": {
@@ -3473,8 +3650,9 @@ CHART_SHAPES = {"line": "series", "threshold": "series", "baseline": "series", "
 # "now" figure (no previous period to compare with) and the function: (c, devs, start, end, tile) ->
 # {"v": number or None, "text": shown value, "sub": small line, "tone": its own status when it has one}.
 
-def _km(v: Optional[float], text: str, sub: str = "", tone: Optional[str] = None) -> Dict[str, Any]:
-    return {"v": v, "text": text, "sub": sub, "tone": tone}
+def _km(v: Optional[float], text: str, sub: str = "", tone: Optional[str] = None, label: Optional[str] = None) -> Dict[str, Any]:
+    """label: the figure's own name when it depends on the data (packet loss or its stand-in)."""
+    return {"v": v, "text": text, "sub": sub, "tone": tone, "label": label}
 
 
 def _k_avail(c, devs, s, e, t):
@@ -3521,17 +3699,25 @@ def _k_ping(c, devs, s, e, t):
 
 
 def _k_failed(c, devs, s, e, t):
-    hrs = _hours(c, s, e)
-    up = _uptime([h for d in devs for h in hrs.get(d["id"], [])])
-    v = None if up is None else round(100 - up, 3)
-    return _km(v, _pct_text(v) if v is None or v >= 0.1 else f"{v:.3f}%", "Not packet loss: one ping per check", _tone_at(v, FAILED_WARN, FAILED_BAD))
+    lj = _loss_jitter(c, devs, s, e)
+    v = lj["loss"]
+    text = _pct_text(v) if v is None or v == 0 or v >= 0.1 else f"{v:.3f}%"
+    tone = _tone_at(v, FAILED_WARN, FAILED_BAD)
+    if lj["true"] is True:
+        return _km(v, text, "Echoes with no answer" + (f", since {_date(lj['since'], True)}" if lj["since"] else ""), tone, "Packet loss")
+    if lj["true"] == "mixed":
+        return _km(v, text, "Echoes with no answer; some devices have failed checks only", tone, "Packet loss")
+    return _km(v, text, "Not packet loss: one ping per check", tone, "Failed checks")
 
 
 def _k_stddev(c, devs, s, e, t):
+    lj = _loss_jitter(c, devs, s, e)
+    if lj["true"] is True and lj["jitter"] is not None:
+        return _km(lj["jitter"], _ms(lj["jitter"]), "Mean difference between consecutive echoes", None, "Jitter")
     import statistics
     vals = [x for d in devs for _, x, _ in _pings(c, d, s, e)]
     v = statistics.pstdev(vals) if len(vals) > 1 else None
-    return _km(v, _ms(v), "RTT standard deviation, not jitter")
+    return _km(v, _ms(v), "RTT standard deviation, not jitter", None, "RTT standard deviation")
 
 
 def _k_load(key: str):
@@ -3737,14 +3923,226 @@ def _k_peak_down(c, devs, s, e, t):
     return _km(peak, str(peak), "Down at the same time", "bad" if peak > 1 else "warn" if peak else "good")
 
 
+# Incidents and change records (incidents.py, maintenance.py) -------------------------------------------
+# A report shows an incident only when the person running it could see it: every one of its devices
+# is in the report (someone who sees every device sees them all), and a filtered report keeps those
+# that touch its devices. Changes follow the same idea: a user limited to some devices sees only the
+# windows on one of their devices.
+
+def _inc_ok(c: "Ctx", inc: Dict[str, Any]) -> bool:
+    ids = c.memo("inc_ids", lambda: {d["id"] for d in c.all})
+    devs = {d["id"] for d in inc.get("devices", [])}
+    if not c.all_devices and (not devs or not devs <= ids):
+        return False
+    if c.env.get("filtered") and not devs & ids:
+        return False
+    return True
+
+
+def _incidents_in(c: "Ctx", start: int, end: int, open_only: bool = False) -> List[Dict[str, Any]]:
+    """Incidents that overlap the window (open_only: those not resolved, whenever they started)."""
+    import incidents
+
+    def load() -> List[Dict[str, Any]]:
+        rows = database.list_incidents(open_only=True) if open_only else database.list_incidents(since=start, until=end)
+        return [incidents.view(i, now=c.now) for i in rows if _inc_ok(c, i)]
+    return c.memo(("incidents", start, end, open_only), load)
+
+
+def _any_incidents(c: "Ctx") -> bool:
+    return c.memo("any_incidents", lambda: any(_inc_ok(c, i) for i in database.list_incidents()))
+
+
+def _changes_in(c: "Ctx", start: int, end: int, changes_only: bool = True) -> List[Dict[str, Any]]:
+    """Maintenance windows (changes_only: those marked as a change) that overlap the window."""
+    import maintenance
+
+    def load() -> List[Dict[str, Any]]:
+        ids = {d["id"] for d in c.all}
+        probes = [{"id": d["id"], "group": d.get("group_id") or "", "tags": d.get("tags") or []} for d in c.all]
+        out = []
+        for w in maintenance.history(since=start, until=end, now=c.now, changes_only=changes_only):
+            if not c.all_devices:
+                if not (w["scope"] == "device" and str(w["target"]).isdigit() and int(w["target"]) in ids):
+                    continue
+            elif c.env.get("filtered") and not any(maintenance.covers(w, p) for p in probes):
+                continue
+            out.append(w)
+        return out
+    return c.memo(("changes", start, end, changes_only), load)
+
+
+def _covers_text(c: "Ctx", w: Dict[str, Any]) -> str:
+    if w["scope"] == "all":
+        return "Every device"
+    if w["scope"] == "device":
+        name = next((d["name"] for d in c.all if str(d["id"]) == str(w["target"])), "")
+        return f"Device {name or '#' + str(w['target'])}"
+    if w["scope"] == "group":
+        name = next((d["group"] for d in c.all if d.get("group_id") == w["target"]), w["target"])
+        return f"Group {name}"
+    return f"Tag {w['target']}"
+
+
+def _day_start(ts: int) -> int:
+    return int(datetime.fromtimestamp(ts).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+
+
+def _k_open_incidents(c, devs, s, e, t):
+    rows = _incidents_in(c, s, e, open_only=True)
+    if not rows and not _any_incidents(c):
+        probs = _open_now(devs)
+        return dict(_km(len(probs), str(len(probs)), "No incidents recorded yet: open problems", "bad" if probs else "good"),
+                    label="Open problems")
+    p1 = sum(1 for i in rows if i["priority"] == "P1")
+    return _km(len(rows), str(len(rows)), f"{p1} x P1" if p1 else ("None at P1" if rows else "Nothing open"),
+               "bad" if p1 else "warn" if rows else "good")
+
+
+def _k_changes_today(c, devs, s, e, t):
+    day0 = _day_start(c.now)
+    rows = _changes_in(c, day0, day0 + 86400, changes_only=True)
+    label = "Changes today"
+    if not rows:
+        rows = _changes_in(c, day0, day0 + 86400, changes_only=False)
+        label = "Maintenance today" if rows else label
+    when = ", ".join(datetime.fromtimestamp(w["start"]).strftime("%H:%M") for w in sorted(rows, key=lambda w: w["start"])[:3])
+    sub = (f"At {when}" if when else "None planned") + ("" if label == "Changes today" else " (no change marked)")
+    return dict(_km(len(rows), str(len(rows)), sub, "info"), label=label)
+
+
+def _incident_row(inc: Dict[str, Any]) -> Dict[str, Any]:
+    return {"ref": inc["ref"], "priority": inc["priority"], "title": inc["title"], "started": inc["started_at"],
+            "owner": inc.get("owner") or "", "next_step": inc.get("next_step") or "",
+            "devices": ", ".join(d["name"] for d in inc.get("devices", [])), "impact": inc.get("impact") or "",
+            "duration": inc["seconds"], "resolved": inc.get("resolved_at"), "actions": inc["open_actions"], "status": inc["status"]}
+
+
+def _rows_incident(c, b, devs, start, end, keys):
+    narrow = bool((b.get("scope") or {}).get("kind"))
+    ids = {d["id"] for d in devs}
+    rows = []
+    for inc in _incidents_in(c, start, end, open_only=b.get("show") == "open"):
+        if narrow and not {d["id"] for d in inc["devices"]} & ids:
+            continue
+        rows.append(_incident_row(inc))
+    rows.sort(key=lambda r: (r["status"] == "Resolved", r["priority"], r["started"]))
+    return rows
+
+
+def _rows_action(c, b, devs, start, end, keys):
+    focus = c.focus_info.get("incident")
+    rows = []
+    for inc in [focus] if focus or getattr(c, "review", False) else _incidents_in(c, start, end):
+        if not inc:
+            continue
+        for a in inc.get("actions", []):
+            rows.append({"n": len(rows) + 1, "incident": inc["ref"], "description": a["description"], "owner": a["owner"],
+                         "due": a["due"], "status": a["status"]})
+    return rows
+
+
+def _rows_change(c, b, devs, start, end, keys):
+    return [{"when": w["start"], "ended": w["end"], "duration": max(0, min(w["end"], c.now) - w["start"]), "covers": _covers_text(c, w),
+             "what": w.get("change_note") or w.get("note") or "", "note": w.get("note") or "", "by": w.get("by") or ""}
+            for w in _changes_in(c, start, end, changes_only=True)]
+
+
+def _auto_incident_field(key: str):
+    def fn(c, devs, s, e, period):
+        inc = c.focus_info.get("incident")
+        return (inc.get(key) or None) if inc else None
+    return fn
+
+
+def _incident_events(c: "Ctx", devs: List[Dict[str, Any]], start: int, end: int) -> List[List[Any]]:
+    """Timeline markers: incidents opened and resolved, their notes, and changes that began."""
+    ids = {d["id"] for d in devs}
+    focus = c.focus_info.get("incident")
+    out: List[List[Any]] = []
+    for inc in [focus] if focus else _incidents_in(c, start, end):
+        if not focus and ids and not {d["id"] for d in inc["devices"]} & ids and inc["devices"]:
+            continue
+        if start <= inc["started_at"] <= end:
+            out.append([inc["started_at"], f"{inc['ref']} opened ({inc['priority']}): {inc['title']}", "bad"])
+        for n in inc.get("notes", []):
+            # The opening and the move to Resolved have markers of their own.
+            if start <= n["at"] <= end and not n["text"].startswith("Opened by ") and " to Resolved by " not in n["text"]:
+                out.append([n["at"], f"{inc['ref']}: {n['text']}", "info"])
+        if inc.get("resolved_at") and start <= inc["resolved_at"] <= end:
+            out.append([inc["resolved_at"], f"{inc['ref']} resolved", "good"])
+    for w in _changes_in(c, start, end, changes_only=True):
+        if start <= w["start"] <= end:
+            out.append([w["start"], f"Change ({_covers_text(c, w)}): {w.get('change_note') or w.get('note')}", "info"])
+    return out
+
+
+def incident_choices(devices: List[Dict[str, Any]], all_devices: bool, now: Optional[int] = None, days: int = 365,
+                     limit: int = 40) -> List[Dict[str, Any]]:
+    """Recent incidents the outage review can be about (only those the person could see)."""
+    import incidents
+    now = int(now if now is not None else time.time())
+    c = Ctx(devices, "90d", now, {}, all_devices)
+    rows = [incidents.view(i, now=now) for i in database.list_incidents(since=now - days * 86400) if _inc_ok(c, i)]
+    return [{"id": i["id"], "ref": i["ref"], "title": i["title"], "priority": i["priority"], "status": i["status"],
+             "started": i["started_at"], "seconds": i["seconds"]} for i in rows[:limit]]
+
+
+def _focus_incident(c: "Ctx", want: int) -> bool:
+    """The outage review about an incident: its window, with some time before and after."""
+    import incidents
+    inc = database.get_incident(want) if want else None
+    if inc is None or not _inc_ok(c, inc):
+        return False
+    inc = incidents.view(inc, now=c.now)
+    a, z = inc["started_at"], inc.get("resolved_at") or c.now
+    pad = max(1800, (z - a) // 4)
+    c.focus = (a - pad, min(c.now, z + pad))
+    ids = {d["id"] for d in inc["devices"]}
+    first = next((e["timestamp"] for e in _problem_log(c, a - 900, a + 7200) if e["device_id"] in ids
+                  and str(e["message"]).startswith("Problem: ")), None)
+    c.focus_info = {"id": 0, "device": _and([d["name"] for d in inc["devices"]][:3]) or "no device", "started": a,
+                    "ended": inc.get("resolved_at"), "seconds": z - a, "detected": max(0, first - a) if first is not None else None,
+                    "incident": inc}
+    return True
+
+
+def _match_incident(c: "Ctx") -> None:
+    """An incident about the outage being reviewed: on its device and overlapping it, P1 first."""
+    import incidents
+    f = c.focus_info
+    did = next((d["id"] for d in c.all if d["name"] == f.get("device")), None)
+    z = f.get("ended") or c.now
+    hits = [i for i in database.list_incidents(since=f["started"], until=z)
+            if _inc_ok(c, i) and did in {d["id"] for d in i["devices"]}]
+    if hits:
+        c.focus_info["incident"] = incidents.view(sorted(hits, key=lambda i: (i["priority"], i["started_at"]))[0], now=c.now)
+
+
+MONTHLY_INCIDENT_COLS = [_col("problem", "Issue"), _col("severity", "Pri", "pill"), _col("impact", "Impact"),
+                         _col("duration", "Duration", "duration"), _col("owner", "Owner"), _col("state", "Status", "pill")]
+
+
+def _monthly_incidents(devices, period, start, now, ctx) -> List[Dict[str, Any]]:
+    """The incidents of the period as top issues, worst first (priority, then the longest)."""
+    c = Ctx(devices, period, now, ctx or {}, bool((ctx or {}).get("all_devices")))
+    rows = []
+    for i in _incidents_in(c, start, now):
+        rows.append({"problem": f"{i['ref']} {i['title']}", "severity": i["priority"], "impact": i.get("impact") or "",
+                     "duration": i["seconds"], "owner": i.get("owner") or "", "state": i["status"], "count": None,
+                     "devices": len(i["devices"]), "where": ", ".join(d["name"] for d in i["devices"][:3]), "last": i["started_at"]})
+    rows.sort(key=lambda r: (r["severity"], -r["duration"]))
+    return rows
+
+
 KPI_METRICS: Dict[str, Dict[str, Any]] = {
     "availability": {"label": "Availability", "kind": "points", "better": "up", "fn": _k_avail, "target": UPTIME_TARGET},
     "downtime": {"label": "Time down", "kind": "minutes", "better": "down", "fn": _k_down},
     "outages": {"label": "Outages", "kind": "count", "better": "down", "fn": _k_outages},
     "mttr": {"label": "Mean time to repair", "kind": "minutes", "better": "down", "fn": _k_mttr},
     "ping": {"label": "Ping", "kind": "ms", "better": "down", "fn": _k_ping, "aggs": ["median", "p95", "avg", "max"], "target": PING_TARGET_MS},
-    "failed": {"label": "Failed checks", "kind": "points", "better": "down", "fn": _k_failed, "target": FAILED_WARN},
-    "rtt_sd": {"label": "RTT standard deviation", "kind": "ms", "better": "down", "fn": _k_stddev},
+    "failed": {"label": "Packet loss", "kind": "points", "better": "down", "fn": _k_failed, "target": FAILED_WARN},
+    "rtt_sd": {"label": "Jitter", "kind": "ms", "better": "down", "fn": _k_stddev},
     "cpu": {"label": "Processor", "kind": "points", "better": "down", "fn": _k_load("cpu"), "aggs": ["p95", "avg", "max", "median"], "target": LOAD_WARN},
     "memory": {"label": "Memory", "kind": "points", "better": "down", "fn": _k_load("memory"), "aggs": ["p95", "avg", "max", "median"], "target": LOAD_WARN},
     "problems": {"label": "Problems opened", "kind": "count", "better": "down", "fn": _k_problems},
@@ -3772,6 +4170,8 @@ KPI_METRICS: Dict[str, Dict[str, Any]] = {
     "avg_score": {"label": "Average score", "kind": "points", "better": "up", "fn": _k_avg_score},
     "groups": {"label": "Groups", "kind": "count", "better": "", "fn": _k_groups, "now": True},
     "maintenance": {"label": "Maintenance today", "kind": "count", "better": "", "fn": _k_maint, "now": True},
+    "open_incidents": {"label": "Open incidents", "kind": "count", "better": "down", "fn": _k_open_incidents, "now": True},
+    "changes_today": {"label": "Changes today", "kind": "count", "better": "", "fn": _k_changes_today, "now": True},
     "outage_duration": {"label": "Duration", "kind": "minutes", "better": "down", "fn": _k_focus_duration, "now": True},
     "affected": {"label": "Devices affected", "kind": "count", "better": "down", "fn": _k_affected, "now": True},
     "peak_down": {"label": "Most down at once", "kind": "count", "better": "down", "fn": _k_peak_down, "now": True},
@@ -3783,7 +4183,7 @@ def _tile(c: Ctx, t: Dict[str, Any], devs: List[Dict[str, Any]], start: int, end
     how = t.get("agg") or (m.get("aggs") or [""])[0]
     tt = dict(t, agg=how)
     cur = m["fn"](c, devs, start, end, tt)
-    label = t.get("label") or (m["label"] + (f" ({AGGS[how][0].lower()})" if how and how != (m.get("aggs") or [""])[0] else ""))
+    label = t.get("label") or ((cur.get("label") or m["label"]) + (f" ({AGGS[how][0].lower()})" if how and how != (m.get("aggs") or [""])[0] else ""))
     better = t.get("better") or m["better"]
     compare = t.get("compare") or ("none" if m.get("now") else "previous")
     tone, note, trend, sub = cur.get("tone") or "info", "", None, cur.get("sub") or ""
@@ -3817,8 +4217,8 @@ TABLES: Dict[str, Dict[str, Any]] = {
         _col("name", "Device"), _col("ip", "Address"), _col("group", "Group"), _col("tags", "Tags"), _col("model", "Model"),
         _col("now", "Now", "pill"), _col("availability", "Availability", "pct"), _col("downtime", "Time down", "duration"),
         _col("outages", "Outages", "num"), _col("ping_min", "Fastest ping", "ms"), _col("ping_median", "Median ping", "ms"),
-        _col("ping_p95", "95th pct ping", "ms"), _col("ping_max", "Slowest ping", "ms"), _col("failed", "Failed checks", "pct"),
-        _col("rtt_sd", "RTT std dev", "ms"), _col("cpu_p95", "CPU 95th pct", "pct"), _col("mem_p95", "Memory 95th pct", "pct"),
+        _col("ping_p95", "95th pct ping", "ms"), _col("ping_max", "Slowest ping", "ms"), _col("failed", "Packet loss", "pct"),
+        _col("rtt_sd", "Jitter", "ms"), _col("cpu_p95", "CPU 95th pct", "pct"), _col("mem_p95", "Memory 95th pct", "pct"),
         _col("disk", "Fullest disk", "pct"), _col("problems", "Problems", "num")],
         "default": ["name", "group", "availability", "downtime", "outages", "ping_median", "status"], "sort": "availability", "desc": False,
         "status": {"availability": "Against the target", "load": "Load", "ping": "Against the ping target", "now": "Now"},
@@ -3827,12 +4227,13 @@ TABLES: Dict[str, Dict[str, Any]] = {
         _col("group", "Group"), _col("devices", "Devices", "num"), _col("availability", "Availability", "pct"),
         _col("downtime", "Time down", "duration"), _col("outages", "Outages", "num"), _col("ping_min", "Fastest ping", "ms"),
         _col("ping_median", "Median ping", "ms"), _col("ping_p95", "95th pct ping", "ms"), _col("ping_max", "Slowest ping", "ms"),
-        _col("rtt_sd", "RTT std dev", "ms"), _col("failed", "Failed checks", "pct"), _col("util", "Busiest link", "pct"),
+        _col("rtt_sd", "Jitter", "ms"), _col("failed", "Packet loss", "pct"), _col("util", "Busiest link", "pct"),
         _col("score", "Score", "num"), _col("rank", "Rank", "num")],
         "default": ["group", "devices", "availability", "ping_median", "failed", "status"], "sort": "availability", "desc": False,
         "status": {"availability": "Against the target", "ping": "Against the ping target", "score": "Status"}, "sparks": {}},
     "interface": {"label": "Interfaces", "columns": [
-        _col("name", "Device"), _col("interface", "Interface"), _col("description", "Description"), _col("speed", "Speed", "mbps"),
+        _col("name", "Device"), _col("interface", "Interface"), _col("description", "Description"), _col("neighbour", "Neighbour"),
+        _col("speed", "Speed", "mbps"),
         _col("in_p95", "In (95th pct)", "bps"), _col("out_p95", "Out (95th pct)", "bps"), _col("peak", "Peak", "bps"), _col("util", "Use (95th pct)", "pct")],
         "default": ["name", "interface", "description", "speed", "in_p95", "out_p95", "util", "status"], "sort": "util", "desc": True,
         "status": {"load": "Load"}, "sparks": {"traffic": "Traffic"}},
@@ -3857,6 +4258,20 @@ TABLES: Dict[str, Dict[str, Any]] = {
         _col("duration", "Down for", "duration")],
         "default": ["name", "group", "started", "ended", "duration", "status"], "sort": "started", "desc": True,
         "status": {"state": "Now"}, "sparks": {}},
+    "incident": {"label": "Incidents", "columns": [
+        _col("ref", "ID"), _col("priority", "Pri", "pill"), _col("title", "Summary"), _col("started", "Since", "time"),
+        _col("owner", "Owner"), _col("next_step", "Next step"), _col("devices", "Devices"), _col("impact", "Impact"),
+        _col("duration", "Duration", "duration"), _col("resolved", "Resolved", "time"), _col("actions", "Open actions", "num")],
+        "default": ["ref", "priority", "title", "started", "owner", "next_step", "status"], "sort": "", "desc": False,
+        "status": {"state": "Status"}, "sparks": {}, "fallbacks": ("problem",)},
+    "action": {"label": "Incident actions", "columns": [
+        _col("n", "#", "num"), _col("incident", "Incident"), _col("description", "Action"), _col("owner", "Owner"), _col("due", "Due")],
+        "default": ["n", "description", "owner", "due", "status"], "sort": "", "desc": False,
+        "status": {"state": "Status"}, "sparks": {}, "fallbacks": ("text",)},
+    "change": {"label": "Changes", "columns": [
+        _col("when", "When", "time"), _col("ended", "Ended", "time"), _col("duration", "Lasted", "duration"), _col("covers", "Covers"),
+        _col("what", "What was changed"), _col("note", "Maintenance note"), _col("by", "By")],
+        "default": ["when", "covers", "what", "by", "duration"], "sort": "when", "desc": True, "status": {}, "sparks": {}},
     "event": {"label": "Events", "columns": [
         _col("time", "When", "time"), _col("name", "Device"), _col("severity", "Severity", "pill"), _col("type", "Type"), _col("message", "What happened")],
         "default": ["time", "name", "severity", "type", "message"], "sort": "time", "desc": True, "status": {}, "sparks": {}},
@@ -3892,13 +4307,17 @@ def _rows_device(c, b, devs, start, end, keys):
         r: Dict[str, Any] = dict(_base(d), model=d.get("model") or "", _id=d["id"])
         up = _uptime(hrs.get(d["id"], []))
         secs = _down_seconds(down.get(d["id"], []), start, end) if up is not None else None
+        lj = _loss_jitter(c, [d], start, end)
         r.update(availability=up, downtime=secs, outages=sum(1 for s, _ in down.get(d["id"], []) if s >= start) if up is not None else None,
-                 failed=round(100 - up, 3) if up is not None else None)
+                 failed=lj["loss"])
+        _note_kind(b, "failed", lj["true"] is True, lj["loss"])
         if keys & {"ping_min", "ping_median", "ping_p95", "ping_max", "rtt_sd"} or b.get("status") == "ping":
             pv = [v for _, v, _ in _pings(c, d, start, end)]
             import statistics
+            sd = lj["jitter"] if lj["true"] is True and lj["jitter"] is not None else (round(statistics.pstdev(pv), 2) if len(pv) > 1 else None)
+            _note_kind(b, "rtt_sd", lj["true"] is True and lj["jitter"] is not None, sd)
             r.update(ping_min=min(pv) if pv else None, ping_median=_median(pv), ping_p95=_quantile(pv, 0.95), ping_max=max(pv) if pv else None,
-                     rtt_sd=round(statistics.pstdev(pv), 2) if len(pv) > 1 else None)
+                     rtt_sd=sd)
         if keys & {"cpu_p95"} or b.get("status") == "load":
             r["cpu_p95"] = _quantile([v for _, v, _ in _metric(c, d, "cpu", start, end)], 0.95)
         if keys & {"mem_p95"} or b.get("status") == "load":
@@ -3924,6 +4343,33 @@ def _rows_device(c, b, devs, start, end, keys):
     return rows
 
 
+def _note_kind(b: Dict[str, Any], key: str, real: bool, value: Any) -> None:
+    """Remembers whether a packet loss or jitter cell is the true figure or its stand-in, so the
+    column is named for what it holds (see _render_table)."""
+    if value is None:
+        return
+    seen = b.setdefault("_kinds", {}).setdefault(key, set())
+    seen.add(bool(real))
+
+
+# Column names for packet loss and jitter: true figures, stand-ins only, or a mix of both.
+KIND_LABELS = {"failed": {True: "Packet loss", False: "Failed checks", None: "Packet loss or failed checks"},
+               "rtt_sd": {True: "Jitter", False: "RTT std dev", None: "Jitter or RTT std dev"}}
+LOSS_NOTE = "@loss"      # a table note filled in by _render_table from what the loss and jitter columns hold
+
+
+def _loss_note(kinds: Dict[str, set]) -> str:
+    seen = set().union(*kinds.values()) if kinds else set()
+    if seen == {True}:
+        return "Packet loss and jitter from three ping echoes per check."
+    if seen == {False}:
+        return "RTT std dev in place of jitter and failed checks in place of packet loss: these checks sent one ping each."
+    if seen:
+        return ("Packet loss and jitter from three ping echoes per check; failed checks and RTT std dev stand in "
+                "where there are no echo counts yet.")
+    return ""
+
+
 def _target_status(up: Optional[float], down_s: float, span: int, target: float) -> str:
     if up is None:
         return "No data"
@@ -3944,10 +4390,15 @@ def _rows_group(c, b, devs, start, end, keys):
         up = _uptime([h for d in members for h in hrs.get(d["id"], [])])
         secs = sum(_down_seconds(down.get(d["id"], []), start, end) for d in members) if up is not None else None
         pv = [v for d in members for _, v, _ in _pings(c, d, start, end)] if keys & {"ping_min", "ping_median", "ping_p95", "ping_max", "rtt_sd"} or b.get("status") == "ping" else []
+        lj = _loss_jitter(c, members, start, end)
+        real_j = lj["true"] is True and lj["jitter"] is not None
+        sd = lj["jitter"] if real_j else (round(statistics.pstdev(pv), 2) if len(pv) > 1 else None)
+        _note_kind(b, "failed", lj["true"] is True, lj["loss"])
+        _note_kind(b, "rtt_sd", real_j, sd)
         r = {"group": label, "devices": len(members), "availability": up, "downtime": secs,
              "outages": sum(1 for d in members for s, _ in down.get(d["id"], []) if s >= start) if up is not None else None,
              "ping_min": min(pv) if pv else None, "ping_median": _median(pv), "ping_p95": _quantile(pv, 0.95), "ping_max": max(pv) if pv else None,
-             "rtt_sd": round(statistics.pstdev(pv), 2) if len(pv) > 1 else None, "failed": round(100 - up, 3) if up is not None else None}
+             "rtt_sd": sd, "failed": lj["loss"]}
         if keys & {"util", "score", "rank"} or b.get("status") == "score":
             sc = _group_score(c, members, start, end)
             r.update(util=sc["util"], score=sc["score"])
@@ -4019,7 +4470,8 @@ def _rows_problem(c, b, devs, start, end, keys):
     return rows
 
 
-ADVICE = {"Disk": "Free space or add a larger disk", "Memory": "Add memory or move some work elsewhere", "Link": "Plan a faster link or move traffic"}
+ADVICE = {"Disk": "Free space or add a larger disk", "Memory": "Add memory or move some work elsewhere", "Link": "Plan a faster link or move traffic",
+          "Capacity reading": "Raise the limit or free some up"}
 
 
 def _rows_resource(c, b, devs, start, end, keys):
@@ -4051,11 +4503,13 @@ def _rows_event(c, b, devs, start, end, keys):
 
 
 TABLE_ROWS = {"device": _rows_device, "group": _rows_group, "interface": _rows_interface, "rule": _rows_rule,
-              "problem": _rows_problem, "resource": _rows_resource, "outage": _rows_outage, "event": _rows_event}
+              "problem": _rows_problem, "resource": _rows_resource, "outage": _rows_outage, "event": _rows_event,
+              "incident": _rows_incident, "action": _rows_action, "change": _rows_change}
 TABLE_EMPTY = {"device": "No devices to show.", "group": "No groups to show.", "interface": "No interface traffic was recorded.",
                "rule": "No problems opened in the period.", "problem": "No problems are open. Nothing to hand over here.",
                "resource": "No resource has a daily history yet.", "outage": "No device went down in the period.",
-               "event": "Nothing happened in the period."}
+               "event": "Nothing happened in the period.", "incident": "No incidents to show.",
+               "action": "No actions recorded for the incident.", "change": "No changes were recorded in the period."}
 
 
 # Written from the data ----------------------------------------------------------------------------------
@@ -4083,9 +4537,18 @@ def _auto_latency(c, devs, s, e, period):
     hrs = _hours(c, s, e)
     up = _uptime([h for d in devs for h in hrs.get(d["id"], [])])
     parts = [f"Half of all ping answers came within {_ms(med)} and 95% within {_ms(p95)} over {PERIOD_NAMES[period]}."]
-    if up is not None:
-        parts.append(f"Of all checks, {f'{100 - up:.3f}%' if 100 - up < 0.1 else _pct_text(100 - up)} got no answer.")
-        parts.append("The monitor sends one ping per check, so this counts failed checks, not packet loss; "
+    lj = _loss_jitter(c, devs, s, e)
+    small = lambda v: f"{v:.3f}%" if 0 < v < 0.1 else _pct_text(v)
+    if lj["true"] and lj["loss"] is not None:
+        parts.append(f"Packet loss was {small(lj['loss'])} of the echoes sent (three per check)"
+                     + (f" and jitter averaged {_ms(lj['jitter'])}." if lj["jitter"] is not None else "."))
+        if lj["true"] == "mixed":
+            parts.append("Some devices have no echo counts for the period yet; their failed checks stand in.")
+        elif lj["since"]:
+            parts.append(f"These figures start {_date(lj['since'], True)}, when the monitor began sending several echoes per check.")
+    elif up is not None:
+        parts.append(f"Of all checks, {small(100 - up)} got no answer.")
+        parts.append("These checks sent one ping each, so this counts failed checks, not packet loss; "
                      "the spread is shown as the standard deviation of the answers, not jitter.")
     return " ".join(parts)
 
@@ -4132,7 +4595,15 @@ def _auto_outage(c, devs, s, e, period):
     f = c.focus_info
     if not f:
         return f"No device went down over {PERIOD_NAMES[period]}, so there is no outage to review."
-    parts = [f"The device {f['device']} went down {_date(f['started'])} and " + (f"came back after {_minutes(f['seconds'])}." if f.get("ended") else f"is still down after {_minutes(f['seconds'])}.")]
+    inc = f.get("incident")
+    if inc and not f.get("id"):
+        parts = ([inc["summary"]] if inc.get("summary") else []) + [
+            f"{inc['ref']} ({inc['priority']}, {inc['status']}) started {_date(inc['started_at'])} and "
+            + (f"was resolved after {_minutes(f['seconds'])}." if inc.get("resolved_at") else f"is still open after {_minutes(f['seconds'])}.")]
+        if f.get("detected") is not None:
+            parts.append(f"The monitor raised a problem {_minutes(f['detected'])} after it started.")
+        return " ".join(parts)
+    parts = ([inc["summary"]] if inc and inc.get("summary") else []) + [f"The device {f['device']} went down {_date(f['started'])} and " + (f"came back after {_minutes(f['seconds'])}." if f.get("ended") else f"is still down after {_minutes(f['seconds'])}.")]
     others = _k_affected(c, devs, s, e, {})["v"] or 0
     if others > 1:
         parts.append(f"{_count(others, 'device')} went down in the window shown.")
@@ -4158,6 +4629,10 @@ def _auto_handover(c, devs, s, e, period):
     parts = [f"Of {_plural(len(devs), 'device')}, {sum(1 for d in devs if state.get(d['id'], ('',))[0] == 'Up')} {'is' if len(devs) == 1 else 'are'} up with nothing to report."]
     parts.append(f"Down right now: {_and(down[:5])}." if down else "Nothing is down.")
     parts.append(f"{_count(len(probs), 'problem')} {'is' if len(probs) == 1 else 'are'} open." if probs else "No problems are open.")
+    open_inc = _incidents_in(c, s, e, open_only=True)
+    if open_inc:
+        parts.append(f"Open incidents: {_and([i['ref'] + ' (' + i['priority'] + ')' for i in open_inc[:5]])}"
+                     + (" and more." if len(open_inc) > 5 else "."))
     return " ".join(parts)
 
 
@@ -4183,10 +4658,12 @@ def _auto_device(c, devs, s, e, period):
     return " ".join(parts)
 
 
-AUTO_TEXTS = {"device": ("The device in brief", _auto_device), "sla": ("Availability against the target", _auto_sla), "latency": ("Ping and failed checks", _auto_latency),
+AUTO_TEXTS = {"device": ("The device in brief", _auto_device), "sla": ("Availability against the target", _auto_sla), "latency": ("Ping, packet loss and jitter", _auto_latency),
               "capacity": ("What fills up", _auto_capacity), "method": ("How the forecast works", _auto_method),
               "alerts": ("What the monitor raised", _auto_alerts), "outage": ("The outage in brief", _auto_outage),
-              "groups": ("How the groups compare", _auto_groups), "handover": ("Where things stand", _auto_handover)}
+              "groups": ("How the groups compare", _auto_groups), "handover": ("Where things stand", _auto_handover),
+              "root_cause": ("The incident's root cause", _auto_incident_field("root_cause")),
+              "impact": ("The incident's impact", _auto_incident_field("impact"))}
 
 # Fields of the device details panel.
 KV_FIELDS = ["name", "model", "ip", "group", "tags", "location", "firmware", "snmp", "uptime", "interfaces", "last_seen"]
@@ -4269,21 +4746,24 @@ def _part_names(tid: str) -> Dict[str, str]:
 NEW_TEMPLATES: Dict[str, Dict[str, Any]] = {
     "handover": {
         "title": "Shift handover",
-        "description": "Everything the next person on duty needs on one page: what is up or down, the open problems, what to watch and notes.",
+        "description": "Everything the next person on duty needs on one page: what is up or down, the open incidents, today's changes, what to watch and notes.",
         "purpose": "Where things stand right now and what to keep an eye on, for whoever takes over.",
-        "sources": "ping and service checks, SNMP, the open problems and the map",
+        "sources": "ping and service checks, SNMP, the incidents, the open problems, the change log and the map",
         "period": True, "default_period": "24h", "all_devices": False,
         "blocks": [
-            _K(_tl("devices_up"), _tl("devices_warn"), _tl("devices_down"), _tl("open_problems"),
-               _tl("problems", label="Problems", compare="previous"), _tl("maintenance")),
+            _K(_tl("devices_up"), _tl("devices_warn"), _tl("devices_down"), _tl("open_incidents"),
+               _tl("problems", label="Problems", compare="previous"), _tl("changes_today")),
             _X("Summary", auto="handover"),
             _two(_C("status", "now", "grid", title="Every device now"), _C("topology", "map", "topology", title="Core of the network")),
-            _T("problem", "Open problems", note="Priority from the severity: critical and high P1, warning P2, the rest P3. Acknowledged counts as being looked at."),
+            _T("incident", "Open incidents", show="open", fallback="problem",
+               columns=["ref", "priority", "title", "started", "owner", "next_step", "status"],
+               sort={"column": "", "desc": False}, limit=0,
+               note="Sorted by priority, then the oldest first. With no open incident the open problems are listed instead."),
             _two(_C("cpu", "watch", "sparktable", title="Watch list (processor)"), _X("Handover notes", NOT_WRITTEN)),
         ]},
     "group_compare": {
         "title": "Group comparison",
-        "description": "Groups ranked on availability, ping, failed checks and link headroom, with peak traffic, before and after and how hard the links work.",
+        "description": "Groups ranked on availability, ping, packet loss and link headroom, with peak traffic, before and after and how hard the links work.",
         "purpose": "How the groups compare, to decide where an upgrade or a closer look pays off most.",
         "sources": "ping and service checks and SNMP interface counters",
         "period": True, "default_period": "30d", "all_devices": False,
@@ -4292,7 +4772,7 @@ NEW_TEMPLATES: Dict[str, Dict[str, Any]] = {
             _X("Summary", auto="groups"),
             _two(_C("traffic", "pair", "grouped", split="group", title="Peak traffic in and out"),
                  _C("ping", "previous", "dumbbell", split="auto", title="Ping, this period and the one before")),
-            _two(_C("ping", "distribution", "box", split="auto", title="Ping spread per group (in place of jitter)"),
+            _two(_C("ping", "stddev", "bar", split="auto"),
                  _C("traffic", "bands", "stack100", split="auto", title="How hard the interfaces work")),
             _T("group", "Group ranking", columns=["rank", "group", "devices", "availability", "ping_median", "failed", "util", "score", "status"],
                status="score", sort={"column": "score", "desc": True}, note=SCORE_TEXT),
@@ -4314,7 +4794,7 @@ NEW_TEMPLATES: Dict[str, Dict[str, Any]] = {
         ]},
     "outage": {
         "title": "Outage review",
-        "description": "One outage looked at closely: a timeline from the event log, devices answering, traffic against the usual, and room for the cause and impact.",
+        "description": "One outage or incident looked at closely: a timeline from the event log, incident notes and changes, devices answering, traffic against the usual, the cause, impact and actions.",
         "purpose": "What happened during an outage, how long it lasted and what it affected, with your notes on the cause.",
         "sources": "the checks, the event log and SNMP", "focus": "outage",
         "period": True, "default_period": "7d", "all_devices": False,
@@ -4323,26 +4803,26 @@ NEW_TEMPLATES: Dict[str, Dict[str, Any]] = {
             _X("Summary", auto="outage"),
             _C("timeline", "events", "timeline"),
             _two(_C("traffic", "baseline", "baseline"), _C("reachable", "time", "step")),
-            _two(_X("Root cause", NOT_WRITTEN), _X("Impact", NOT_WRITTEN)),
+            _two(_X("Root cause", NOT_WRITTEN, auto="root_cause"), _X("Impact", NOT_WRITTEN, auto="impact")),
             _T("outage", "Outages in the window", columns=["name", "group", "started", "ended", "duration", "status"]),
-            _X("Actions", NOT_WRITTEN),
+            _T("action", "Actions", columns=["n", "description", "owner", "due", "status"],
+               sort={"column": "", "desc": False}, limit=0, fallback="text"),
         ]},
     "latency_review": {
-        "title": "Latency and failed checks",
-        "description": "Ping quality per group against a 50 ms target: median and spread over time, box plots, distance from the target, failed checks and cumulative curves.",
+        "title": "Latency, packet loss and jitter",
+        "description": "Ping quality per group against a 50 ms target: median and spread over time, box plots, distance from the target, packet loss, jitter and cumulative curves.",
         "purpose": "How quick and steady the answers are per group, for a review of the network or a talk with the internet provider.",
         "sources": "ping and service checks",
         "period": True, "default_period": "7d", "all_devices": False,
         "blocks": [
             _K(_tl("ping", agg="median", label="Median ping"), _tl("ping", agg="p95", label="95th percentile"),
-               _tl("failed", compare="target", label="Failed checks"), _tl("rtt_sd", compare="none"), _tl("over_ping")),
+               _tl("failed", compare="target"), _tl("rtt_sd", compare="none"), _tl("over_ping")),
             _X("Summary", auto="latency"),
             _C("ping", "band", "band"),
             _two(_C("ping", "distribution", "box", split="auto"), _C("ping", "per", "diverging", split="auto")),
             _two(_C("failed", "per", "lollipop", split="auto"), _C("ping", "distribution", "cdf", split="auto", top=3)),
             _T("group", "Per group", columns=["group", "devices", "ping_min", "ping_median", "ping_p95", "ping_max", "rtt_sd", "failed", "status"],
-               status="ping", sort={"column": "ping_median", "desc": True},
-               note="RTT std dev in place of jitter and failed checks in place of packet loss: the monitor sends one ping per check."),
+               status="ping", sort={"column": "ping_median", "desc": True}, note=LOSS_NOTE),
         ]},
     "capacity": {
         "title": "Capacity planning forecast",
@@ -4635,6 +5115,9 @@ def _parse_block(raw: Any, all_devices: bool, depth: int = 0) -> Dict[str, Any]:
                  split=raw.get("split") if raw.get("split") in ("auto", "group", "device") else "auto",
                  scope=_parse_scope(raw.get("scope")), period=raw.get("period") if raw.get("period") in PERIODS else "",
                  threshold=_parse_threshold(raw.get("threshold")))
+        if raw["entity"] == "incident":
+            b["show"] = raw.get("show") if raw.get("show") in ("period", "open") else "period"
+        b["fallback"] = raw.get("fallback") if raw.get("fallback") in ent.get("fallbacks", ()) else ""
         return b
     if kind == "text":
         b["text"] = _text(raw.get("text"), MAX_TEXT, lines=True)
@@ -4710,7 +5193,7 @@ def parse_spec(raw: Any, all_devices: bool) -> Dict[str, Any]:
            "sort": {"column": column, "desc": desc}, "limit": limit, "title": title}
     if t.get("focus") == "outage":
         focus = raw.get("focus") if isinstance(raw.get("focus"), dict) else {}
-        out["focus"] = {"outage": _int(focus.get("outage"), 1, 2 ** 62) or 0}
+        out["focus"] = {"outage": _int(focus.get("outage"), 1, 2 ** 62) or 0, "incident": _int(focus.get("incident"), 1, 2 ** 62) or 0}
     return out
 
 
@@ -4720,6 +5203,8 @@ def _set_focus(c: Ctx, spec: Dict[str, Any]) -> None:
     """The outage review's window: the chosen outage (only among the covered devices) or the longest
     in the period, with some time before and after it."""
     ids = {d["id"]: d for d in c.all}
+    if _focus_incident(c, (spec.get("focus") or {}).get("incident") or 0):
+        return
     if not ids:
         return
     want = (spec.get("focus") or {}).get("outage") or 0
@@ -4743,6 +5228,7 @@ def _set_focus(c: Ctx, spec: Dict[str, Any]) -> None:
                   and str(e["message"]).startswith("Problem: ")), None)
     c.focus_info = {"id": row["id"], "device": ids[row["device_id"]]["name"], "started": a, "ended": row["ended"], "seconds": z - a,
                     "detected": max(0, first - a) if first is not None else None}
+    _match_incident(c)
 
 
 def outages(devices: List[Dict[str, Any]], now: Optional[int] = None, days: int = 90, limit: int = 40) -> List[Dict[str, Any]]:
@@ -4784,7 +5270,9 @@ def _render_table(c: Ctx, b: Dict[str, Any], main: Optional[Dict[str, Any]]) -> 
         b.update(columns=main["columns"], sort=main["sort"], limit=main["limit"] or b.get("limit") or 0)
     allcols = {k: (k, l, ty) for k, l, ty in _table_columns(b["entity"])}
     keys = [k for k in b["columns"] if k in allcols]
+    b["_kinds"] = {}
     rows = TABLE_ROWS[b["entity"]](c, b, devs, start, end, set(keys))
+    kinds = {k: v for k, v in b["_kinds"].items() if k in keys}
     col = b["sort"]["column"]
     if col:
         nulls = [r for r in rows if r.get(col) in (None, "")]
@@ -4803,8 +5291,14 @@ def _render_table(c: Ctx, b: Dict[str, Any], main: Optional[Dict[str, Any]]) -> 
             label = ent["sparks"].get(b.get("spark"), "Trend")
         elif k == "group" and b.get("_first_label"):
             label = b["_first_label"]
+        elif k in KIND_LABELS and kinds.get(k):
+            seen = kinds[k]
+            label = KIND_LABELS[k][True if seen == {True} else False if seen == {False} else None]
         columns.append({"key": key, "label": label, "type": ty})
-    return {"type": "table", "title": b.get("title") or ent["label"], "note": b.get("note") or "", "columns": columns,
+    note = b.get("note") or ""
+    if LOSS_NOTE in note:
+        note = note.replace(LOSS_NOTE, _loss_note(kinds)).strip()
+    return {"type": "table", "title": b.get("title") or ent["label"], "note": note, "columns": columns,
             "rows": [[r.get(k) for k in keys] for r in rows], "total": total, "count": len(rows), "empty": TABLE_EMPTY.get(b["entity"], "Nothing to show."),
             "main": main is not None, "_raw": rows}
 
@@ -4834,6 +5328,9 @@ def _render_part(c: Ctx, b: Dict[str, Any], spec: Dict[str, Any], is_main: bool)
         rows = (rows[:opts["limit"]] if opts["limit"] else rows)[:MAX_ROWS]
         by_key = {k: (k, l, ty) for k, l, ty in t["columns"]}
         cols = [{"key": k, "label": by_key[k][1], "type": by_key[k][2]} for k in opts["columns"] if k in by_key]
+        if got.get("main_columns") and list(opts["columns"]) == list(t["default"]):
+            # The rows are of another kind (the monthly summary's incidents): their own columns.
+            cols = [{"key": k, "label": l, "type": ty} for k, l, ty in got["main_columns"]]
         return {"type": "table", "title": b.get("title") or t.get("table_title", "Details"), "note": b.get("note") or "", "columns": cols,
                 "rows": [[r.get(x["key"]) for x in cols] for r in rows], "total": total, "count": len(rows), "empty": "Nothing to show for this choice.",
                 "main": is_main, "_raw": rows}
@@ -4893,6 +5390,13 @@ def _render(c: Ctx, b: Dict[str, Any], spec: Dict[str, Any], state: Dict[str, An
         if not state.get("main") and spec["template"] != "custom":
             main = spec
         out = _render_table(c, b, main)
+        if not out["rows"] and b.get("fallback") == "problem":
+            out = _render_table(c, dict(b, entity="problem", columns=list(TABLES["problem"]["default"]), sort={"column": "", "desc": False},
+                                        status="state", limit=0, title="Open problems",
+                                        note="No open incidents, so the open problems are listed. Priority from the severity: "
+                                             "critical and high P1, warning P2, the rest P3."), None)
+        elif not out["rows"] and b.get("fallback") == "text":
+            return {"type": "text", "title": b.get("title") or "", "text": NOT_WRITTEN, "box": True}
         if not state.get("main"):
             out["main"] = True
             state["main"] = out
@@ -4902,6 +5406,8 @@ def _render(c: Ctx, b: Dict[str, Any], spec: Dict[str, Any], state: Dict[str, An
             devs = c.all
             start, end, period = c.window(b)
             text = AUTO_TEXTS[b["auto"]][1](c, devs, start, end, period)
+            if text is None:          # nothing written from the data (no incident): the block's own words
+                text = b.get("text") or ""
         else:
             text = b.get("text") or ""
         return {"type": "text", "title": b.get("title") or "", "text": text, "box": True}
@@ -4931,6 +5437,7 @@ def run(spec: Dict[str, Any], devices: List[Dict[str, Any]], ctx: Optional[Dict[
         covers = f"Device {devices[0]['name']} (choose another under Covers)"
     c = Ctx(devices, spec["period"], now, ctx, bool(ctx.get("all_devices")))
     if t.get("focus") == "outage":
+        c.review = True               # the actions are the reviewed incident's only (incidents.py)
         _set_focus(c, spec)
     state: Dict[str, Any] = {}
     blocks = [r for r in (_render(c, b, spec, state) for b in (spec["blocks"] if custom else t["blocks"])) if r]
@@ -4951,7 +5458,11 @@ def run(spec: Dict[str, Any], devices: List[Dict[str, Any]], ctx: Optional[Dict[
     facts = [["Period", period_text + (f" ({PERIOD_NAMES[spec['period']]})" if t["period"] and not c.focus else "")],
              ["Covers", covers or "All devices"]]
     if c.focus_info:
-        facts.append(["Outage", f"{c.focus_info['device']}, {_minutes(c.focus_info['seconds'])}"])
+        if c.focus_info.get("id"):
+            facts.append(["Outage", f"{c.focus_info['device']}, {_minutes(c.focus_info['seconds'])}"])
+        if c.focus_info.get("incident"):
+            inc = c.focus_info["incident"]
+            facts.append(["Incident", f"{inc['ref']} {inc['title']} ({inc['priority']}, {inc['status']})"])
     if not single:
         facts.append(["Devices", str(len(devices))])
     audience = spec.get("audience") if custom else t.get("audience")
@@ -4975,6 +5486,8 @@ def run(spec: Dict[str, Any], devices: List[Dict[str, Any]], ctx: Optional[Dict[
     for b in tables:
         b.pop("_raw", None)
     title = spec.get("title") or t["title"]
+    if not spec.get("title") and c.focus_info.get("incident"):
+        title = f"{t['title']} {c.focus_info['incident']['ref']}"
     purpose = (spec.get("subtitle") or "A report put together on the Reports page.") if custom else t["purpose"]
     return {"title": title, "template": spec["template"], "subtitle": ". ".join(parts) + ".", "purpose": purpose,
             "audience": audience or "", "period": spec["period"] if t["period"] else "", "period_text": period_text,
