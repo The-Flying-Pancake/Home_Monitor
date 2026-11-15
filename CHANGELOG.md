@@ -15,6 +15,16 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 0.19.0: Release 43, Your own reports and many more templates (2026-11-15)
+
+- New custom report builds a report from scratch: key figures, charts, tables, your own text and device details, in the order you choose.
+- When you add a chart, pick a question such as Are we meeting our target? or the data you want. Only the charts that suit it are offered.
+- Start from this template copies any template into the builder so you can change it.
+- The templates are sorted into groups and eight new ones join them, among them Availability and SLA, Capacity planning forecast, Weekly alert and event summary, Device deep dive, Group comparison and Shift handover.
+- Reports gain many new kinds of chart, from gauges and calendars to outage timelines, forecasts with their range and box plots. They look the same in the PDF.
+- Where the monitor does not collect what a report would like, the report says so and shows the nearest thing.
+- In Add device, Hide already monitored leaves only the new hosts in the scan results.
+
 ### 0.18.0: Release 42, Reports that read like reports and a calmer map (2026-11-15)
 
 - Every report now reads like one: a header with what it covers, figures with how they changed since the period before, a short summary in plain words, a main chart, smaller charts two to a row and tables with coloured labels.

@@ -333,6 +333,15 @@ RELEASES: List[Dict[str, Any]] = [
         "Expand all shows every folded branch again. Folding and unfolding glide instead of jumping.",
         "After an update the green tick draws itself once. Before, it kept drawing itself again every couple of seconds.",
     ]},
+    {"id": 43, "date": "2026-11-15", "title": "Your own reports and many more templates", "items": [
+        "New custom report builds a report from scratch: key figures, charts, tables, your own text and device details, in the order you choose.",
+        "When you add a chart, pick a question such as Are we meeting our target? or the data you want. Only the charts that suit it are offered.",
+        "Start from this template copies any template into the builder so you can change it.",
+        "The templates are sorted into groups and eight new ones join them, among them Availability and SLA, Capacity planning forecast, Weekly alert and event summary, Device deep dive, Group comparison and Shift handover.",
+        "Reports gain many new kinds of chart, from gauges and calendars to outage timelines, forecasts with their range and box plots. They look the same in the PDF.",
+        "Where the monitor does not collect what a report would like, the report says so and shows the nearest thing.",
+        "In Add device, Hide already monitored leaves only the new hosts in the scan results.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 

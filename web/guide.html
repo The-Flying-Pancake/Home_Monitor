@@ -59,6 +59,7 @@ ssh-keygen -Y verify -f release-signers -I release@home-monitor -n home-monitor-
     <li><strong>Ping or SNMP</strong>: every address in the subnets is pinged and asked over SNMP what it is. For each host found, <em>Monitor as</em> offers Ping only or an SNMP template; hosts without SNMP start as Ping only.</li>
     <li><strong>Service</strong>: looks for open TCP ports. <em>Common services</em> tries about 80 well-known ports and takes seconds; <em>Choose ports</em> takes lists and ranges such as <code>22,80,8000-8100</code>; <em>All 65,535 ports</em> tries every port.</li>
   </ul>
+  <p>In the results, <em>Tick all new</em> ticks every host not monitored yet and <em>Hide already monitored</em> takes the monitored ones out of the list, so only the new ones are left to look at (your browser remembers the choice).</p>
   <p>A full scan takes a while: about a minute per host on a quiet network, longer for hosts with a firewall. It first finds which hosts are up, then scans only those. Open ports appear as they are found. The bar shows how far it is and roughly how long is left. <strong>Stop</strong> keeps everything found so far.</p>
   <p>Scans only accept private ranges (10.x, 172.16 to 31.x, 192.168.x), up to 1024 addresses at a time.</p>
 </section>
@@ -436,6 +437,22 @@ ssh-keygen -Y verify -f release-signers -I release@home-monitor -n home-monitor-
   <h2>Reports</h2>
   <p><strong>Reports</strong> in the menu turns what the monitor knows into a table with charts, to read on screen, download as a PDF or as a CSV file for a spreadsheet, or keep on a schedule.</p>
   <p>Every report reads the same way, on screen and in the PDF: a header saying what it covers and when it was made (for one device, its details), a row of figures with a coloured edge and how each changed since the period before, a short summary in plain words, the main chart, smaller charts two to a row (each with a note on how to read it), then the tables with coloured labels such as <em>Met</em>, <em>At risk</em> and <em>Breached</em>. Targets and limits are drawn on the charts as lines or bands. A footer says where the figures come from.</p>
+  <h3>The templates</h3>
+  <p>The templates are sorted into groups: <em>Overview</em> (Monthly health summary, Status now, Shift handover, Group comparison),
+  <em>Availability</em> (Availability and SLA, Availability, Outage review), <em>Performance and latency</em> (Latency and failed checks,
+  Latency, Device health), <em>Capacity</em> (Capacity planning forecast, Storage, Interface bandwidth), <em>Alerts and events</em>
+  (Weekly alert and event summary, Alerts and events summary, Problems, Events), <em>Devices</em> (Device deep dive, Single device,
+  Devices and SNMP settings) and <em>Network and integrations</em> (Wi-Fi, Proxmox, Pi-hole, New devices, Monitor updates). Each says
+  who it is for. <em>What do you want to know?</em> suggests templates and charts for a question such as "Are we meeting our target?".</p>
+  <p>Where the monitor does not collect what a report would like, it says so and shows the nearest thing: groups stand in for sites,
+  failed checks for packet loss (one ping per check) and the spread of the answers for jitter.</p>
+  <h3>Your own report</h3>
+  <p><strong>New custom report</strong> starts from an empty page; <strong>Start from this template</strong> copies a template so you can
+  change it. Add blocks and put them in order: key figures (each with its comparison to the period before or a target), charts (pick the
+  data or the question, then only the charts that suit it are offered), tables (devices, groups, interfaces, problems, outages, events and
+  more, with the columns, a status rule, a trend line, sorting and a limit), your own text, device details and two blocks side by side.
+  Each block can cover all devices, a group, a tag or chosen devices, and its own period. Save it like any report to run on a schedule,
+  keep its files or send it to Telegram.</p>
   <h3>Making one</h3>
   <ol>
     <li>Pick a template on the left: <em>Monthly health summary</em> (for whoever wants the short story), <em>Status now</em> (a one-page handover: what is up, down or has a problem), <em>Availability</em>, <em>Latency (ping)</em>, <em>Interface bandwidth</em> (the busiest links at the 95th percentile, the internet link in and out, when in the week it is busy), <em>Alerts and events summary</em>, <em>Single device</em>, <em>Device health</em>, <em>Storage and when it fills up</em>, <em>Problems</em>, <em>Events</em>, <em>Devices and SNMP settings</em> (which device uses v2c and which v3), <em>Wi-Fi devices</em>, <em>Proxmox guests</em>, <em>Pi-hole</em>, <em>New and changed devices</em> or <em>Monitor updates</em>.</li>

@@ -820,6 +820,26 @@ def t_map_fold(b):
     return "folded, Expand all, elbow lines and a Wi-Fi grid in Tidy, nudge springs back, saved layout untouched"
 
 
+@check("Add device, scan results: Hide already monitored leaves only the new ones and is remembered")
+def t_scan_hide_monitored(b):
+    goto(b, "#/devices")
+    run(b, "storeSet(SCAN_HIDE_STORE, '0'); addScan = {job: null, timer: null, service: false, results: ["
+           "{ip: '192.0.2.40', name: 'old-nas', ping: true, snmp: true, monitored: true}, "
+           "{ip: '192.0.2.41', name: 'new-cam', ping: true, snmp: false, monitored: false}]}; renderAddScan(); true")
+    rows = "document.querySelectorAll('#scan-results tbody tr').length"
+    assert b.eval(rows) == 2
+    run(b, "const c = document.querySelector('[data-scan-hide]'); c.checked = true; c.dispatchEvent(new Event('change', {bubbles: true})); true")
+    assert b.eval(rows) == 1
+    assert "new-cam" in b.eval("document.querySelector('#scan-results tbody').innerHTML")
+    assert "1 hidden" in b.eval("document.querySelector('.scan-hide').textContent")
+    run(b, "renderAddScan(); true")
+    assert b.eval(rows) == 1, "not remembered"
+    run(b, "addScan.results[1].monitored = true; renderAddScan(); true")
+    assert "monitored already" in b.eval("document.getElementById('scan-results').textContent")
+    run(b, "storeSet(SCAN_HIDE_STORE, '0'); addScan = {job: null, timer: null, results: [], service: false}; true")
+    return "monitored host hidden, count shown, choice kept"
+
+
 @check("Inventory: groups by where it connects that fold, sorting by name")
 def t_inventory_groups(b):
     import database
@@ -901,6 +921,73 @@ def t_reports(b):
     status = b.eval("(async () => (await fetch(document.querySelector('#rep-saved a[href$=\".pdf\"]').href)).status)()")
     assert status == 200, status
     return f"preview, customizer and a saved daily report with its PDF ({len(heads)} columns)"
+
+
+def _select(b, el_id, value):
+    run(b, f"const s = document.getElementById({json.dumps(el_id)}); s.value = {json.dumps(value)}; s.dispatchEvent(new Event('change', {{bubbles: true}})); true")
+
+
+@check("Reports builder: templates in groups, the question picker, a report from scratch with only suitable charts, saved, on a phone")
+def t_report_builder(b):
+    goto(b, "#/reports")
+    b.wait_for("!!document.getElementById('btn-rep-blank') && document.querySelectorAll('#rep-templates .rep-group').length >= 5")
+    groups = b.eval("[...document.querySelectorAll('#rep-templates .rep-group-title')].map(h => h.textContent)")
+    assert "Overview" in groups and "Capacity" in groups and "Alerts and events" in groups, groups
+    # What do you want to know? suggests templates and charts.
+    _select(b, "rep-question", "steady")
+    b.wait_for("!!document.querySelector('#rep-templates [data-rep-suggest]')")
+    assert b.eval("!!document.querySelector('.rep-suggest [data-rep-template=\"latency_review\"]')")
+    # From scratch: the builder replaces the column chooser.
+    run(b, "document.getElementById('btn-rep-blank').click(); true")
+    b.wait_for("!document.getElementById('rep-builder').classList.contains('hidden')")
+    assert b.eval("document.getElementById('rep-columns').closest('.form-group').classList.contains('hidden')")
+    run(b, "document.querySelector('[data-b-add=\"kpi_row\"]').click(); true")
+    run(b, "document.querySelector('[data-b-add=\"chart\"]').click(); true")
+    b.wait_for("document.querySelectorAll('#rep-builder .rep-b-list > .rep-b-card').length === 2 && !!document.getElementById('rb-1-source')")
+    # Ping, every answer: only the charts that suit a distribution are offered.
+    _select(b, "rb-1-source", "ping")
+    b.wait_for("document.getElementById('rb-1-source').value === 'ping'")
+    _select(b, "rb-1-view", "distribution")
+    b.wait_for("document.getElementById('rb-1-view').value === 'distribution'")
+    offered = b.eval("[...document.getElementById('rb-1-chart').options].map(o => o.value)")
+    assert sorted(offered) == ["box", "cdf", "histogram"], offered
+    _select(b, "rb-1-chart", "histogram")
+    run(b, "document.querySelector('[data-b-add=\"text\"]').click(); true")
+    b.wait_for("!!document.getElementById('rb-2-text')")
+    run(b, "const t = document.getElementById('rb-2-text'); t.value = 'Checked by the night shift.'; t.dispatchEvent(new Event('change', {bubbles: true})); true")
+    # Move the text to the top, then show the report.
+    run(b, "document.querySelector('[data-b-move=\"2|-1\"]').click(); true")
+    run(b, "document.querySelector('[data-b-move=\"1|-1\"]').click(); true")
+    b.wait_for("document.querySelector('#rep-builder .rep-b-list > .rep-b-card .rep-b-type').textContent === 'Text'")
+    run(b, "document.getElementById('rep-title').value = 'Builder check'; document.getElementById('btn-rep-run').click(); true")
+    b.wait_for("!!document.querySelector('#rep-preview .rep-head-title') && document.querySelector('#rep-preview .rep-head-title').textContent === 'Builder check'", timeout=20)
+    assert "night shift" in b.eval("document.querySelector('#rep-preview .rep-textbox').textContent")
+    assert b.eval("document.querySelectorAll('#rep-preview .rep-kpi').length") == 3
+    assert b.eval("!!document.querySelector('#rep-preview .rep-chart[data-kind=\"histogram\"]')")
+    order = b.eval("[...document.querySelectorAll('#rep-preview .rep-doc > section, #rep-preview .rep-doc > figure')].map(e => e.className.split(' ')[0])")
+    assert order[:3] == ["rep-textbox", "rep-kpis", "rep-chart"], order
+    # On a phone the builder and the preview fit the screen.
+    b.send("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": True})
+    try:
+        time.sleep(0.6)
+        run(b, "document.querySelector('[data-b-open=\"2\"]').click(); true")
+        b.wait_for("!!document.getElementById('rb-2-chart')")
+        fit = b.eval("({w: innerWidth, scroll: document.documentElement.scrollWidth})")
+        assert fit["scroll"] <= fit["w"] + 1, fit
+    finally:
+        b.send("Emulation.clearDeviceMetricsOverride")
+    # Save it: it is listed as a custom report and opens back into the builder.
+    run(b, "document.getElementById('btn-rep-save').click(); true")
+    b.wait_for("!!document.getElementById('rep-save-name')")
+    run(b, "document.querySelector('.rep-save button[type=submit]').click(); true")
+    b.wait_for("[...document.querySelectorAll('#rep-saved .rep-saved-item')].some(i => i.textContent.includes('Builder check') && i.textContent.includes('Custom report'))")
+    # Start from a template: its blocks come into the builder.
+    run(b, "document.querySelector('.rep-group [data-rep-template=\"sla\"]').click(); true")
+    b.wait_for("!document.getElementById('btn-rep-copy').classList.contains('hidden')")
+    run(b, "document.getElementById('btn-rep-copy').click(); true")
+    b.wait_for("!document.getElementById('rep-builder').classList.contains('hidden') && document.querySelectorAll('#rep-builder .rep-b-list > .rep-b-card').length >= 5")
+    assert "Availability and SLA" in b.eval("document.getElementById('rep-heading').textContent")
+    return f"{len(groups)} groups, picker, three blocks reordered, saved, a template copied"
 
 
 @check("Required after an update: the screen waits for What's changed, shows the step, lets the app go once done")
@@ -2322,7 +2409,7 @@ def main() -> int:
 
         print(f"Browser checks against {BASE} (isolated database {_env.TMP})")
         for test in shard_checks([t_login, t_dashboard, t_resize, t_move, t_columns, t_graph_tile, t_content_follows, t_map, t_sort, t_groups,
-                     t_ack, t_live, t_snmp_check, t_snmp_v3_fields, t_snmp_test_before_saving, t_reload_after_update, t_reports, t_alert_wifi, t_map_wifi_traffic, t_map_fold, t_inventory_groups, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_backup_passphrase_bar, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_guide_search, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
+                     t_ack, t_live, t_snmp_check, t_snmp_v3_fields, t_snmp_test_before_saving, t_reload_after_update, t_reports, t_report_builder, t_alert_wifi, t_map_wifi_traffic, t_map_fold, t_scan_hide_monitored, t_inventory_groups, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_backup_passphrase_bar, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_guide_search, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
             test(browser)
     finally:
         if browser:

@@ -1009,10 +1009,20 @@ def report_devices(user: Optional["rbac.User"], flt: Dict[str, Any]) -> Tuple[Li
                 protos += f" and {v3.get('priv_protocol') or 'AES'}"
             security = f"User {v3.get('user') or '?'}, {LEVEL_WORDS.get(v3.get('level'), 'signed')}, {protos}"
         answer = {"ok": "Answers", "no_response": "No answer"}.get(d.get("snmp_status") or "", "") if uses_snmp else ""
-        out.append({"id": d["id"], "name": d["hostname"], "ip": d["ip_address"], "group": groups.get(group, group),
+        # Model, location and software for a device's details panel: the administrator's corrections first.
+        inv, fixed = d.get("inventory"), d.get("overrides")
+        try:
+            inv = json.loads(inv) if isinstance(inv, str) and inv else inv
+            fixed = json.loads(fixed) if isinstance(fixed, str) and fixed else fixed
+        except ValueError:
+            inv, fixed = {}, {}
+        inv, fixed = (inv if isinstance(inv, dict) else {}), (fixed if isinstance(fixed, dict) else {})
+        out.append({"id": d["id"], "name": d["hostname"], "ip": d["ip_address"], "group": groups.get(group, group), "group_id": group or "",
                     "tags": tags, "kind": (profiles.get(d.get("profile_id")) or {}).get("name", d.get("profile_id") or ""),
                     "snmp": version, "snmp_security": security, "snmp_answer": answer,
-                    "status": str(d.get("status") or "").capitalize(), "last_seen": d.get("last_seen"), "ping_ms": d.get("last_ping_ms")})
+                    "status": str(d.get("status") or "").capitalize(), "last_seen": d.get("last_seen"), "ping_ms": d.get("last_ping_ms"),
+                    "model": str(fixed.get("model") or inv.get("model") or ""), "location": str(fixed.get("sys_location") or inv.get("sys_location") or ""),
+                    "firmware": str(inv.get("firmware") or "")})
     if flt.get("device"):
         parts.append(f"Device {out[0]['name']}" if out else "One device")
     if flt.get("group"):
@@ -1100,8 +1110,10 @@ def make_report_run(r: Dict[str, Any], trigger: str, now: Optional[int] = None) 
 
 def report_args(user: Optional["rbac.User"], spec: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     devices, filter_text, filtered = report_devices(user, spec["filter"])
-    # WAN links (device, interface index), looked up only by the reports that draw them.
+    # WAN links (device, interface index) and the map, looked up only by the reports that draw them.
+    # all_devices: network-wide blocks (the map) only for someone who sees every device.
     return devices, {"filter_text": filter_text, "filtered": filtered, "update_history": update_history,
+                     "all_devices": user is None or user.scope is None, "map": map_view,
                      "wan": lambda: {(w["device_id"], int(w["if_index"])) for w in wan_interfaces() if str(w.get("if_index")).isdigit()}}
 
 
@@ -3715,8 +3727,9 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
         saved = database.save_report(report_id, name, json.dumps(spec), json.dumps(sched) if sched["kind"] != "manual" else "",
                                      formats, telegram, before["owner"] if before else self.user.username)
         what = "changed" if before else "saved"
+        kind = "Custom report" if spec["template"] == "custom" else reports.TEMPLATES[spec["template"]]["title"]
         database.add_audit("report", f"Report {name} {what}",
-                           f"{reports.TEMPLATES[spec['template']]['title']}; {schedule.describe(sched) if sched['kind'] != 'manual' else 'by hand'}"
+                           f"{kind}; {schedule.describe(sched) if sched['kind'] != 'manual' else 'by hand'}"
                            + ("; sent to Telegram" if telegram else ""))
         return saved
 
@@ -4529,6 +4542,9 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
             devices, _, _ = report_devices(self.user, {})
             self._send_json(200, {
                 "templates": reports.template_list(self.user.scope is None),
+                "catalog": reports.catalog(self.user.scope is None),
+                # The outage review's choice: the longest outages of the user's own devices.
+                "outages": reports.outages(devices),
                 "saved": [report_view(r) for r in database.list_reports() if may_see_report(self.user, r)],
                 "groups": [{"id": g["id"], "name": g["name"]} for g in taxonomy.groups()],
                 "tags": [t["name"] for t in taxonomy.tags()],
@@ -5351,8 +5367,7 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
                 raise RequestError(400, str(exc))
             report = run_report(spec, self.user)
             if path == "/api/reports/run":
-                shown = dict(report, rows=report["rows"][:reports.PREVIEW_ROWS])
-                self._send_json(200, shown)
+                self._send_json(200, reports.preview(report))
                 return
             kind = payload.get("format")
             if kind not in ("csv", "pdf"):
@@ -7147,7 +7162,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "0.18.0"
+APP_VERSION = "0.19.0"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:

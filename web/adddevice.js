@@ -10,6 +10,9 @@
  */
 
 let addScan = { job: null, timer: null, results: [], service: false };
+// Hide already monitored: found hosts (or ports) that are monitored already leave the list. Remembered in this browser.
+const SCAN_HIDE_STORE = "monitor.scan.hide-monitored";
+const scanHidesMonitored = () => typeof storeGet === "function" && storeGet(SCAN_HIDE_STORE) === "1";
 let scanPortMode = "common";
 
 const addKind = () => document.getElementById("modal-add-device").dataset.kind || "device";
@@ -151,9 +154,12 @@ function monitorAsOptions(r) {
 
 function renderAddScan() {
   const box = document.getElementById("scan-results");
-  const rows = addScanRows();
+  const all = addScanRows();
+  const hide = scanHidesMonitored();
+  const rows = hide ? all.filter(x => !x.monitored) : all;
+  const hidden = all.length - rows.length;
   show(box);
-  if (!rows.length) {
+  if (!all.length) {
     box.innerHTML = `<div class="dim scan-empty">${addScan.service ? "No open ports found yet." : "No hosts found yet."}</div>`;
     updateAddScanButton();
     return;
@@ -169,7 +175,9 @@ function renderAddScan() {
       <button type="button" class="btn btn-small" data-scan-all="1">Tick all new</button>
       ${addScan.service ? "" : `<button type="button" class="btn btn-small" data-scan-all="snmp">Tick those with SNMP</button>`}
       <button type="button" class="btn btn-small" data-scan-all="0">Clear</button>
+      <label class="checkbox-label scan-hide"><input type="checkbox" data-scan-hide ${hide ? "checked" : ""}> Hide already monitored${hidden ? ` <span class="dim">(${Number(hidden)} hidden)</span>` : ""}</label>
     </div>
+    ${!rows.length ? `<div class="dim scan-empty">Everything found so far is monitored already.</div>` : ""}
     <table class="scan-table"><thead><tr><th></th><th>Address</th>${addScan.service ? "<th>Port</th>" : "<th>Monitor as</th>"}<th>Name</th><th>Found</th></tr></thead><tbody>
     ${rows.map(x => {
       const p = prev[x.key];
@@ -257,7 +265,14 @@ function initAddDeviceScan() {
     if (!addScan.job) return;
     try { await api(`/api/devices/scan/${addScan.job}`, { method: "DELETE" }); } catch (err) { showToast(err.message, "error"); }
   });
-  document.getElementById("scan-results").addEventListener("change", updateAddScanButton);
+  document.getElementById("scan-results").addEventListener("change", ev => {
+    if (ev.target.matches("[data-scan-hide]")) {
+      storeSet(SCAN_HIDE_STORE, ev.target.checked ? "1" : "0");
+      renderAddScan();
+      return;
+    }
+    updateAddScanButton();
+  });
   document.getElementById("scan-results").addEventListener("click", ev => {
     const all = ev.target.closest("[data-scan-all]");
     if (!all) return;

@@ -18,6 +18,11 @@ import rbac
 import reports
 import server
 
+# Every chart kind the page (reports.js) and the PDF (pdfdoc.py) draw.
+PAGE_KINDS = ("line", "mirror", "bar", "columns", "donut", "strips", "heatmap", "grid", "gauge", "headline", "sparktable", "bullet",
+              "lollipop", "diverging", "dumbbell", "butterfly", "stack100", "treemap", "waterfall", "pareto", "histogram", "box", "cdf",
+              "band", "baseline", "step", "multiples", "forecast", "calendar", "gantt", "clock", "timeline", "scatter", "radar", "topology")
+
 V3 = {"user": "reporter", "level": "authPriv", "auth_protocol": "SHA", "auth_password": "auth-secret-123",
       "priv_protocol": "AES", "priv_password": "priv-secret-456"}
 
@@ -34,7 +39,12 @@ class ReportTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         start_api_server()
-        cls.v2 = add_device("rep-v2", "192.0.2.150", community="public")
+        # The class can be set up twice in one run (its tests are spread over shards): reuse the devices.
+        have = {d["ip_address"]: d["id"] for d in database.list_devices()}
+        cls.v2 = have.get("192.0.2.150") or add_device("rep-v2", "192.0.2.150", community="public")
+        if "192.0.2.151" in have:
+            cls.v3 = have["192.0.2.151"]
+            return
         status, body, _ = request("POST", "/api/devices", {"hostname": "rep-v3", "ip_address": "192.0.2.151",
                                                            "profile_id": "generic_device", "snmp_version": "v3", "snmp_v3": V3,
                                                            "tags": ["report-tag"]})
@@ -84,14 +94,19 @@ class ReportTests(unittest.TestCase):
                 self.assertTrue(all(len(row) == len(r["columns"]) for row in r["rows"]), tid)
                 # The report layout: header, key figures, a summary in words and a footer.
                 self.assertTrue(r["purpose"] and r["facts"] and r["footer"], tid)
-                self.assertTrue(3 <= len(r["kpis"]) <= 6, tid)
+                # Key figures, except where the spec's layout has none (the device deep dive).
+                self.assertTrue(3 <= len(r["kpis"]) <= 6 or not any(b["type"] == "kpi_row" for b in reports.TEMPLATES[tid]["blocks"]), tid)
                 self.assertTrue(all(k["tone"] in ("good", "warn", "bad", "info", "none") for k in r["kpis"]), tid)
                 self.assertTrue(r["summary"][:1].isupper(), (tid, r["summary"]))
                 self.assertNotIn(", and ", r["summary"], tid)
                 self.assertIn("Times are local", r["footer"])
                 for c in ([r["main"]] if r["main"] else []) + r["charts"]:
-                    self.assertIn(c["kind"], ("line", "mirror", "bar", "columns", "donut", "strips", "heatmap", "grid"), tid)
+                    self.assertIn(c["kind"], PAGE_KINDS, tid)
                     self.assertTrue(c["title"], tid)
+                # The one block model: every report is a list of blocks drawn by the same code.
+                self.assertTrue(r["blocks"], tid)
+                for b in r["blocks"]:
+                    self.assertIn(b["type"], ("kpi_row", "chart", "table", "text", "key_value", "two_column"), tid)
         self.assertEqual(request("POST", "/api/reports/run", {"spec": {"template": "nope"}})[0], 400)
 
     def test_every_template_makes_a_pdf_and_csv(self):
@@ -283,6 +298,285 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(reports.format_cell("duration", 3700), "1 h 1 min")
         self.assertEqual(reports.format_cell("pct", 99.99), "99.99%")
         self.assertEqual(reports.format_cell("text", None), "")
+
+
+def custom(*blocks, **extra):
+    return dict({"template": "custom", "title": "Mine", "period": "7d", "blocks": list(blocks)}, **extra)
+
+
+def chart(source, view, kind, **kw):
+    return dict({"type": "chart", "source": source, "view": view, "chart": kind}, **kw)
+
+
+class BlockModelTests(unittest.TestCase):
+    """Checking a custom report's blocks: only known names survive, sizes are bounded, network-wide
+    blocks need every device. Nothing from the browser reaches a query unchecked."""
+
+    def parse(self, spec, all_devices=True):
+        return reports.parse_spec(spec, all_devices)
+
+    def test_a_good_definition_is_read_into_a_fresh_structure(self):
+        spec = self.parse(custom(
+            {"type": "kpi_row", "tiles": [{"metric": "availability", "compare": "target", "target": 99.5, "sql": "DROP TABLE"}]},
+            chart("ping", "per", "lollipop", split="group", top=500, agg="nonsense", threshold={"mode": "override", "target": 30, "warn": "x"}),
+            {"type": "two_column", "left": {"type": "text", "title": "Root cause", "text": "Line one\r\nLine two\n\n\n\nEnd"},
+             "right": chart("status", "now", "donut")},
+            {"type": "table", "entity": "device", "columns": ["name", "nope", "availability", "name"], "limit": 9999},
+            {"type": "key_value", "fields": ["model", "secret"], "scope": {"kind": "devices", "devices": [3, "4", True, -1, 3]}},
+            subtitle="x" * 500, evil={"path": "../../etc"}))
+        self.assertNotIn("evil", spec)
+        self.assertEqual(len(spec["subtitle"]), 200)
+        tiles = spec["blocks"][0]["tiles"]
+        self.assertEqual(tiles, [{"metric": "availability", "label": "", "compare": "target", "better": "up", "target": 99.5}])
+        b = spec["blocks"][1]
+        self.assertEqual((b["agg"], b["split"], b["top"]), ("median", "group", 10))     # unknown or too big: the default
+        self.assertEqual(b["threshold"], {"mode": "override", "target": 30.0})
+        self.assertEqual(spec["blocks"][2]["left"]["text"], "Line one\nLine two\n\nEnd")
+        self.assertEqual(spec["blocks"][3]["columns"], ["name", "availability"])
+        self.assertEqual(spec["blocks"][3]["limit"], 0)
+        self.assertEqual(spec["blocks"][4]["fields"], ["model"])
+        self.assertEqual(spec["blocks"][4]["scope"], {"kind": "devices", "devices": [3]})
+
+    def test_bad_definitions_are_refused_in_words(self):
+        bad = [
+            custom({"type": "script"}),
+            custom(chart("passwords", "per", "bar")),
+            custom(chart("ping", "upside_down", "bar")),
+            custom(chart("availability", "time", "radar")),                      # a chart that does not suit the data
+            custom({"type": "kpi_row", "tiles": [{"metric": "availability"}] * 7}),
+            custom({"type": "kpi_row", "tiles": [{"metric": "root_password"}]}),
+            custom({"type": "table", "entity": "users"}),
+            custom({"type": "part", "template": "devices", "part": "chart.9"}),
+            custom({"type": "two_column", "left": {"type": "two_column", "left": {"type": "text", "title": "a"}}}),
+            custom({"type": "two_column", "left": {"type": "table", "entity": "device"}}),
+            custom({"type": "text"}),
+            custom(),
+            custom(*([{"type": "text", "title": "t"}] * (reports.MAX_BLOCKS + 1))),
+            custom(blocks="not a list"),
+        ]
+        for spec in bad:
+            with self.assertRaises(reports.ReportError, msg=str(spec)[:120]) as cm:
+                self.parse(spec)
+            self.assertTrue(str(cm.exception)[:1].isupper(), str(cm.exception))
+
+    def test_network_wide_blocks_need_every_device(self):
+        with self.assertRaises(reports.ReportError):
+            self.parse(custom(chart("topology", "map", "topology")), all_devices=False)
+        with self.assertRaises(reports.ReportError):
+            self.parse(custom({"type": "part", "template": "proxmox", "part": "kpis"}), all_devices=False)
+        self.assertEqual(self.parse(custom(chart("topology", "map", "topology")))["blocks"][0]["source"], "topology")
+        names = {s["id"] for s in reports.catalog(False)["sources"]}
+        self.assertNotIn("topology", names)
+        self.assertIn("topology", {s["id"] for s in reports.catalog(True)["sources"]})
+
+    def test_the_catalog_only_offers_what_exists(self):
+        cat = reports.catalog(True)
+        for s in cat["sources"]:
+            for v in s["views"]:
+                for c in v["charts"]:
+                    self.assertIn(c, reports.CHARTS, (s["id"], v["id"]))
+                    self.assertEqual(cat["charts"][c]["shape"], reports.CHART_SHAPES[c])
+        for q in cat["questions"]:
+            self.assertTrue(q["text"].endswith("?"))
+            for ch in q["charts"]:
+                self.assertIn(ch["chart"], reports.SOURCES[ch["source"]]["views"][ch["view"]]["charts"], q["id"])
+            for tid in q["templates"]:
+                self.assertIn(tid, reports.TEMPLATES)
+        grouped = [tid for g in reports.TEMPLATE_GROUPS for tid in g["templates"]]
+        self.assertEqual(sorted(grouped), sorted(reports.TEMPLATES))                 # every template sits in one group
+        for t in reports.template_list(True):
+            self.assertTrue(t["audience"] and t["group"] and t["blocks"], t["id"])
+            # Start from this template: the template's own blocks are a valid custom definition.
+            self.parse(custom(*t["blocks"]))
+        # The spec's chart numbers (section 8) used by the builder.
+        used = {c for s in reports.SOURCES.values() for v in s["views"].values() for c in v["charts"]}
+        self.assertGreaterEqual(len(used), 38)
+
+
+class CustomReportTests(unittest.TestCase):
+    """The builder: a custom report runs, saves, runs on schedule and keeps its files, as its owner."""
+
+    @classmethod
+    def setUpClass(cls):
+        start_api_server()
+        cls.a = add_device("blk-a", "192.0.2.160")
+        cls.b = add_device("blk-b", "192.0.2.161")
+        now = int(time.time())
+        with database.get_connection() as conn:
+            for back in range(1, 8 * 24):
+                hour = now - now % 3600 - back * 3600
+                for dev, ups in ((cls.a, 60), (cls.b, 58 if back % 20 == 0 else 60)):
+                    conn.execute("INSERT OR REPLACE INTO avail_hourly (device_id, hour, checks, ups, ms_sum, ms_count, ms_max) "
+                                 "VALUES (?, ?, 60, ?, ?, 60, 9);", (dev, hour, ups, 60 * 3.0))
+            conn.execute("INSERT INTO avail_incidents (device_id, started, ended) VALUES (?, ?, ?);", (cls.b, now - 50 * 3600, now - 50 * 3600 + 900))
+            conn.commit()
+        for i in range(0, 3 * 24 * 12):
+            t = now - 3 * 86400 + i * 300
+            database.record_metrics(cls.a, {"icmp_ping_ms": 1.5 + (i % 7), "cpu_usage_pct": 30.0 + i % 40, "mem_used_pct": 50.0}, timestamp=t)
+            database.record_metrics(cls.b, {"icmp_ping_ms": 9.0 + (i % 11), "cpu_usage_pct": 70.0 + i % 25, "mem_used_pct": 85.0}, timestamp=t)
+        database.add_event(cls.b, "warning", "problem", "Problem: CPU at 91% (above 90%)", timestamp=now - 7200)
+        database.add_event(cls.b, "info", "problem", "Resolved: CPU at 91% (above 90%) (lasted 3m)", timestamp=now - 7000)
+
+    def run_spec(self, spec, code=200):
+        status, body, _ = request("POST", "/api/reports/run", {"spec": spec})
+        self.assertEqual(status, code, body)
+        return body
+
+    def test_every_source_view_and_chart_runs_on_the_page_and_in_the_pdf(self):
+        blocks = []
+        for sid, s in reports.SOURCES.items():
+            for vid, v in s["views"].items():
+                for kind in v["charts"]:
+                    blocks.append(chart(sid, vid, kind, scope={"kind": "devices", "devices": [self.a, self.b]}))
+        kinds = set()
+        for i in range(0, len(blocks), 25):
+            r = self.run_spec(custom(*blocks[i:i + 25]))
+            self.assertEqual(len(r["blocks"]), len(blocks[i:i + 25]))
+            for b in r["blocks"]:
+                self.assertEqual(b["type"], "chart")
+                self.assertIn(b["chart"]["kind"], PAGE_KINDS)
+                kinds.add(b["chart"]["kind"])
+            spec = reports.parse_spec(custom(*blocks[i:i + 25]), True)
+            pdf = reports.to_pdf(server.run_report(spec, None))
+            self.assertTrue(pdf.startswith(b"%PDF-1.4"))
+        self.assertEqual(kinds, set(PAGE_KINDS))                                   # every primitive is reachable
+
+    def test_charts_draw_their_data(self):
+        r = self.run_spec(custom(chart("ping", "distribution", "box", split="device", scope={"kind": "devices", "devices": [self.a, self.b]}),
+                                 chart("ping", "band", "band", scope={"kind": "devices", "devices": [self.a, self.b]}),
+                                 chart("cpu", "time", "threshold", agg="max", scope={"kind": "devices", "devices": [self.b]}),
+                                 chart("cpu_mem", "scatter", "scatter", scope={"kind": "devices", "devices": [self.a, self.b]}),
+                                 chart("availability", "budget", "waterfall", scope={"kind": "devices", "devices": [self.a, self.b]}),
+                                 chart("problems", "per", "pareto", split="rule", period="24h", scope={"kind": "devices", "devices": [self.b]})))
+        box, band, cpu, scatter, water, pareto = [b["chart"] for b in r["blocks"]]
+        self.assertEqual([x["label"] for x in box["rows"]], ["blk-b", "blk-a"])            # slowest median first
+        self.assertTrue(all(x["q1"] <= x["med"] <= x["q3"] for x in box["rows"]))
+        self.assertTrue(any(p[3] is not None for p in band["points"]))                      # percentiles from raw samples
+        self.assertEqual([b["tone"] for b in cpu["bands"]], ["warn", "bad"])
+        self.assertTrue(cpu["dots"])                                                         # readings in the red are marked
+        self.assertEqual(next(p for p in scatter["points"] if p[0] == "blk-b")[3], "bad")     # processor and memory both over 80%
+        self.assertEqual(next(p for p in scatter["points"] if p[0] == "blk-a")[3], "info")
+        steps = water["steps"]
+        self.assertEqual((steps[0][2], steps[-1][2]), ("start", "end"))
+        self.assertAlmostEqual(steps[-1][1], round(steps[0][1] - sum(s[1] for s in steps[1:-1]), 1), places=0)
+        self.assertEqual(pareto["bars"][0][1], 1)
+        self.assertEqual(pareto["cumulative"][-1], 100.0)
+        self.assertIn("Covers the last 24 hours", pareto["note"])
+
+    def test_scope_is_respected(self):
+        # A block narrowed to one device only reads that device.
+        r = self.run_spec(custom({"type": "table", "entity": "device", "columns": ["name", "availability"],
+                                  "scope": {"kind": "devices", "devices": [self.a]}}))
+        self.assertEqual([row[0] for row in r["blocks"][0]["rows"]], ["blk-a"])
+        # A user limited to no devices sees nothing, whatever ids the definition names.
+        scoped = rbac.User({"username": "nobody-sees", "role": "viewer", "device_scope": json.dumps({"all": False, "profiles": [], "devices": []})})
+        scoped.bind_devices(database.device_profiles())
+        spec = reports.parse_spec(custom({"type": "table", "entity": "device", "scope": {"kind": "devices", "devices": [self.a, self.b]}},
+                                         chart("ping", "per", "bar", scope={"kind": "devices", "devices": [self.a]})), False)
+        out = server.run_report(spec, scoped)
+        self.assertEqual(out["blocks"][0]["rows"], [])
+        self.assertEqual(out["blocks"][1]["chart"]["bars"], [])
+        # Network-wide blocks of a template are left out for someone who does not see every device.
+        devices, ctx = server.report_args(scoped, reports.parse_spec({"template": "handover"}, False))
+        handover = reports.run(reports.parse_spec({"template": "handover"}, False), devices, ctx)
+        kinds = [x["chart"]["kind"] for b in handover["blocks"] for x in ([b["left"], b["right"]] if b["type"] == "two_column" else [b]) if x["type"] == "chart"]
+        self.assertNotIn("topology", kinds)
+
+    def test_saving_and_running_a_custom_report(self):
+        spec = custom({"type": "kpi_row", "tiles": [{"metric": "availability", "compare": "target"}, {"metric": "ping", "agg": "p95"}]},
+                      {"type": "text", "title": "Handover notes", "text": "Check blk-b.\nIgnore the printer."},
+                      {"type": "two_column", "left": chart("ping", "per", "diverging", split="device"), "right": {"type": "key_value"}},
+                      {"type": "table", "entity": "device", "columns": ["name", "ping_median", "status", "trend"], "status": "ping", "spark": "ping"},
+                      subtitle="What I look at every morning", audience="Me")
+        status, res, _ = request("POST", "/api/reports", {"name": "Morning look", "spec": spec, "schedule": {"kind": "daily", "time": "06:15"}, "formats": "both"})
+        self.assertEqual(status, 201, res)
+        rid = res["id"]
+        self.addCleanup(database.delete_report, rid)
+        saved = next(r for r in request("GET", "/api/reports")[1]["saved"] if r["id"] == rid)
+        self.assertEqual(saved["spec"]["template"], "custom")
+        self.assertEqual(saved["spec"]["blocks"][1]["text"], "Check blk-b.\nIgnore the printer.")      # the words stay with it
+        result = server.make_report_run(database.get_report(rid), "by hand")
+        self.assertEqual(result["error"], "")
+        run = database.list_report_runs(rid)[0]
+        self.assertTrue(run["has_pdf"] and run["has_csv"])
+        status, text, _ = request("GET", f"/api/reports/runs/{run['id']}.csv")
+        self.assertEqual(status, 200)
+        self.assertTrue(text.lstrip("﻿").startswith("Device,Median ping,Against the ping target"))   # the first table
+        pdf, _ = download("/api/reports/download", {"spec": spec, "format": "pdf"})
+        body = b"".join(zlib.decompress(m) for m in re.findall(rb"stream\n(.*?)\nendstream", pdf, re.S))
+        for want in (b"(Mine) Tj", b"(Handover notes) Tj", b"(Ignore the printer.) Tj", b"(What I look at every morning) Tj"):
+            self.assertIn(want, body)
+        # The preview: header from the builder, the blocks in order.
+        r = self.run_spec(spec)
+        self.assertEqual(r["purpose"], "What I look at every morning")
+        self.assertIn(["Audience", "Me"], r["facts"])
+        self.assertEqual([b["type"] for b in r["blocks"]], ["kpi_row", "text", "two_column", "table"])
+        self.assertEqual(r["blocks"][2]["right"]["type"], "key_value")
+        # Changing it keeps it custom; a bad block is refused with a message.
+        self.assertEqual(request("PUT", f"/api/reports/{rid}", {"name": "Morning look", "spec": dict(spec, blocks=spec["blocks"][:1])})[0], 200)
+        status, body, _ = request("PUT", f"/api/reports/{rid}", {"name": "Morning look", "spec": dict(spec, blocks=[{"type": "nope"}])})
+        self.assertEqual(status, 400)
+        self.assertIn("block", body["error"])
+
+    def test_start_from_a_template_copies_its_blocks(self):
+        t = next(x for x in request("GET", "/api/reports")[1]["templates"] if x["id"] == "availability")
+        r = self.run_spec(custom(*t["blocks"], based_on="availability", period="7d"))
+        same = self.run_spec({"template": "availability", "period": "7d"})
+        self.assertEqual([b["type"] for b in r["blocks"]], [b["type"] for b in same["blocks"]])
+        self.assertEqual(r["columns"], same["columns"])
+
+    def test_every_new_template_page_and_pdf(self):
+        for tid in reports.NEW_TEMPLATES:
+            for period in ("24h", "90d"):
+                r = self.run_spec({"template": tid, "period": period})
+                self.assertTrue(r["blocks"], tid)
+                self.assertTrue(r["audience"], tid)
+                for b in r["blocks"]:
+                    for x in ([b["left"], b["right"]] if b["type"] == "two_column" else [b]):
+                        if x["type"] == "text":
+                            self.assertNotIn(", and ", x["text"], tid)
+                            self.assertTrue(not x["text"] or x["text"][:1].isupper(), (tid, x["text"]))
+                spec = reports.parse_spec({"template": tid, "period": period}, True)
+                report = server.run_report(spec, None)
+                pdf = reports.to_pdf(report)
+                text = b"".join(zlib.decompress(m) for m in re.findall(rb"stream\n(.*?)\nendstream", pdf, re.S))
+                self.assertIn(b"(" + reports.TEMPLATES[tid]["title"].encode("cp1252") + b") Tj", text, tid)
+                self.assertNotIn(b"No data for this period", text)
+                self.assertTrue(reports.to_csv(report).startswith("﻿".encode()), tid)
+
+    def test_the_outage_review_picks_an_outage_of_your_own(self):
+        r = self.run_spec({"template": "outage", "period": "7d"})
+        self.assertIn("Outage", [f[0] for f in r["facts"]])
+        self.assertTrue(r["summary"].startswith("The device blk-b went down") or r["summary"].startswith("The device"), r["summary"])
+        listed = request("GET", "/api/reports")[1]["outages"]
+        self.assertTrue(any(o["device"] == "blk-b" for o in listed))
+        mine = next(o for o in listed if o["device"] == "blk-b")
+        r = self.run_spec({"template": "outage", "period": "7d", "focus": {"outage": mine["id"]}})
+        self.assertIn("blk-b", dict(r["facts"])["Outage"])
+        # An outage id outside the devices the report covers is not used.
+        r = self.run_spec({"template": "outage", "period": "7d", "filter": {"device": self.a}, "focus": {"outage": mine["id"]}})
+        self.assertNotIn("Outage", [f[0] for f in r["facts"]])
+
+    def test_calculations(self):
+        self.assertEqual(reports._lasted_seconds("Resolved: CPU high (lasted 1h 5m)"), 3900)
+        self.assertEqual(reports._lasted_seconds("Resolved: CPU high (lasted 2d 3h)"), 2 * 86400 + 3 * 3600)
+        self.assertIsNone(reports._lasted_seconds("Resolved: CPU high"))
+        fit = reports._fit_line([(d * 86400, 10 + 0.5 * d) for d in range(30)])
+        self.assertAlmostEqual(fit["slope"], 0.5)
+        self.assertAlmostEqual(fit["se"], 0.0)
+        row = reports._forecast_row({"name": "nas", "id": 1}, "Disk 1", "Disk", [(d * 86400, 10 + 0.5 * d) for d in range(30)], 24.5, 90.0, 29 * 86400)
+        self.assertAlmostEqual(row["days"], 131, places=0)                                  # (90 - 10) / 0.5 - 29
+        self.assertEqual((reports._priority(row), row["growth"]), ("P3", 15.0))
+        short = reports._forecast_row({"name": "nas", "id": 1}, "Disk 1", "Disk", [(0, 50.0)], 50.0, 90.0, 0)
+        self.assertEqual(reports._days_text(short), f"Needs {reports.FORECAST_MIN_DAYS} days of history")
+        self.assertEqual(reports._target_status(99.95, 0, 7 * 86400, 99.9), "Met")
+        self.assertEqual(reports._target_status(99.5, 3000, 7 * 86400, 99.9), "Breached")
+        hint, state = reports._hint({"count": 6, "quick": 5, "durations": [60, 90, 120], "open": False, "ids": {1, 2}})
+        self.assertEqual(state, "Plan")
+        self.assertIn("wait longer", hint)
+        self.assertEqual(reports._hint({"count": 2, "quick": 0, "durations": [], "open": True, "ids": {1}})[1], "Open")
+        tm = reports._treemap("T", "", [("a", 6, None), ("b", 3, None), ("c", 1, None)], "")
+        self.assertAlmostEqual(sum(i["w"] * i["h"] for i in tm["items"]), 1.0, places=3)
 
 
 if __name__ == "__main__":

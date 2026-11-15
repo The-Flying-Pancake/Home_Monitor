@@ -303,6 +303,92 @@ class ReportBlocks(unittest.TestCase):
         self.assertEqual(str(pdfdoc.Pill("Met", "good")).strip(), "Met")
         self.assertIn(pdfdoc._rgb(pdfdoc.PALETTE[0], "RG") + " 0.8 w", text)       # the trend line, broken at the gap
 
+    def test_every_new_chart_kind_draws(self):
+        """The kinds added with the report blocks: each draws its data (no "No data" box) with its marks."""
+        now = 1_800_000_000
+        series = [(now + i * 3600, 10 + i % 9) for i in range(48)]
+        specs = [
+            {"kind": "gauge", "title": "Gauges", "gauges": [{"label": "CPU", "value": 72, "text": "72%", "max": 100, "warn": 80, "bad": 90},
+                                                           {"label": "Temp", "value": None, "text": "Not read"}]},
+            {"kind": "headline", "title": "Headline", "items": [{"label": "Ping", "value_text": "4 ms", "values": [3, 4, None, 6, 2], "better": "down"}]},
+            {"kind": "sparktable", "title": "Watch", "header": ["Device", "CPU", "Now", ""], "rows": [{"name": "nas", "values": [1, 5, 3], "now": "93%", "tone": "bad"}]},
+            {"kind": "bullet", "title": "Bullet", "min": 99, "max": 100, "target": 99.9, "target_label": "Target 99.9%", "bands": [99, 99.5, 99.9],
+             "rows": [["web", 99.95, "99.95%"]], "unit": "%"},
+            {"kind": "lollipop", "title": "Lollipop", "unit": "%", "items": [["a", 0.2, "good"], ["b", 1.4, "bad"]], "thresholds": [{"value": 1, "tone": "bad"}]},
+            {"kind": "diverging", "title": "Diverging", "unit": "ms", "rows": [["a", 12, "12 ms over"], ["b", -8, "8 ms under"]]},
+            {"kind": "dumbbell", "title": "Dumbbell", "unit": "ms", "rows": [["a", 10, 6], ["b", None, 4]], "before_label": "Before", "after_label": "After"},
+            {"kind": "butterfly", "title": "Butterfly", "unit": "bps", "rows": [["eth0", 5e6, 1e6]], "left_label": "In", "right_label": "Out"},
+            {"kind": "stack100", "title": "Bands", "rows": [{"label": "Lab", "values": [3, 1, 0, 0, 1]}],
+             "parts": [{"name": "Low", "tone": None}, {"name": "Mid", "tone": None}, {"name": "High", "tone": None}, {"name": "Busy", "tone": "warn"}, {"name": "Full", "tone": "bad"}]},
+            {"kind": "treemap", "title": "Treemap", "items": [{"label": "a", "text": "6", "x": 0, "y": 0, "w": 0.6, "h": 1, "tone": None},
+                                                              {"label": "b", "text": "4", "x": 0.6, "y": 0, "w": 0.4, "h": 1, "tone": "warn"}]},
+            {"kind": "waterfall", "title": "Budget", "unit": "min", "steps": [["Budget", 43.2, "start"], ["nas 3 Nov", 50, "minus"], ["Left", -6.8, "end"]]},
+            {"kind": "pareto", "title": "Pareto", "bars": [["CPU high", 8], ["Disk", 2]], "cumulative": [80.0, 100.0]},
+            {"kind": "histogram", "title": "Histogram", "unit": "ms", "bins": [[0, 1, 5], [1, 2, 9], [2, 3, 1]],
+             "marks": [{"value": 1.4, "label": "Median 1.4 ms", "tone": "s5"}, {"value": 2.5, "label": "99th 2.5 ms", "tone": "bad"}]},
+            {"kind": "box", "title": "Box", "unit": "ms", "target": 50, "rows": [{"label": "Lab", "lo": 1, "q1": 2, "med": 3, "q3": 5, "hi": 9, "n": 40, "outliers": [20, 31]}]},
+            {"kind": "cdf", "title": "CDF", "unit": "ms", "mark": 0.95, "series": [{"name": "Lab", "points": [[1, 0.2], [3, 0.8], [9, 1.0]]}]},
+            {"kind": "band", "title": "Band", "unit": "ms", "start": now, "end": now + 47 * 3600,
+             "points": [[t, v - 3, v - 1, v, v + 2, v + 6] if i != 5 else [t, None, None, None, None, None] for i, (t, v) in enumerate(series)]},
+            {"kind": "baseline", "title": "Usual", "unit": "%", "start": now, "end": now + 47 * 3600, "points": series,
+             "band": [[t, 5, 15] for t, _ in series], "anomalies": [[series[8][0], 18]]},
+            {"kind": "step", "title": "Answering", "start": now, "end": now + 7200, "points": [[now, 5], [now + 1800, 4], [now + 3600, 5]], "expected": 5},
+            {"kind": "multiples", "title": "Each", "unit": "%", "start": now, "end": now + 47 * 3600, "y_max": 100,
+             "panels": [{"name": "a", "points": series, "bad": False}, {"name": "b", "points": series[:9], "bad": True}], "threshold": {"value": 80}},
+            {"kind": "forecast", "title": "Forecast", "unit": "%", "start": now, "end": now + 60 * 86400, "observed": [[now + d * 86400, 50 + d] for d in range(20)],
+             "projection": [[now + d * 86400, 50 + d] for d in range(19, 60, 5)], "cone": [[now + d * 86400, 45 + d, 55 + d] for d in range(19, 60, 5)],
+             "limit": 90, "limit_label": "Limit 90%", "full_at": now + 40 * 86400, "full_text": "Limit around 3 Mar"},
+            {"kind": "calendar", "title": "Calendar", "cells": [[0, d, 100, "good", False, "x"] for d in range(7)] + [[1, 0, 99.95, "good", True, "y"], [1, 1, None, "none", False, "z"]],
+             "months": [[0, "Nov"]], "legend": [["100%", "good", False]]},
+            {"kind": "gantt", "title": "Gantt", "start": now, "end": now + 7 * 86400, "marks": [[now + d * 86400, f"Day {d}"] for d in range(7)],
+             "rows": [{"name": "nas", "spans": [[now + 3600, now + 7200, "bad", "down"], [now + 86400, now + 90000, "maint", "planned"]]}]},
+            {"kind": "clock", "title": "Clock", "values": [0] * 6 + [5, 9] + [1] * 16, "warn": 4, "bad": 8},
+            {"kind": "timeline", "title": "Timeline", "start": now, "end": now + 3600, "impact": [now + 600, now + 1800, "Down (20 minutes)"],
+             "events": [[now + 600, "Problem: unreachable", "bad"], [now + 1800, "Resolved", "good"]]},
+            {"kind": "scatter", "title": "Scatter", "max": 100, "x_line": 80, "y_line": 80, "x_label": "CPU", "y_label": "Memory",
+             "points": [["nas", 85, 90, "bad", True], ["pc", 20, 30, "info", False]]},
+            {"kind": "radar", "title": "Radar", "axes": ["A", "B", "C", "D"], "series": [{"name": "Now", "values": [90, 80, None, 70]}, {"name": "Before", "values": [85, 85, 60, 75]}]},
+            {"kind": "topology", "title": "Map", "nodes": [{"key": "a", "label": "router", "tone": "good", "x": 0.5, "y": 0.2, "core": True},
+                                                          {"key": "b", "label": "nas", "tone": "bad", "x": 0.5, "y": 0.8}],
+             "links": [{"a": "a", "b": "b", "tone": "bad", "dashed": True}]},
+            {"kind": "textbox", "title": "Notes", "text": "First paragraph.\nSecond one."},
+            {"kind": "keyvalue", "title": "Details", "pairs": [["Model", "Demo NAS"], ["Address", "192.0.2.21"]]},
+            {"kind": "columns", "title": "Grouped", "grouped": True, "stacked": False, "labels": ["a", "b"], "unit": "bps",
+             "series": [{"name": "In", "values": [5e6, 2e6]}, {"name": "Out", "values": [1e6, 3e6]}]},
+            {"kind": "grid", "title": "Grid", "tiles": [{"label": "nas", "tone": "good", "sub": "Up"}], "counts": [["Up", "good", 1], ["Down", "bad", 0]]},
+            {"kind": "line", "title": "Dots", "unit": "%", "series": [{"name": "CPU", "points": series}], "dots": [[series[3][0], 92]]},
+        ]
+        doc = pdfdoc.Document()
+        doc.chart_grid(specs, columns=2)
+        text = self.stream(doc)
+        self.assertNotIn("(No data) Tj", text)
+        for spec in specs:
+            self.assertIn(f"({spec['title']}) Tj", text, spec["kind"])
+        for want in ("(72%) Tj", "(Target 99.9%) Tj", "(80%) Tj", "(Down \\(20 minutes\\)) Tj", "(00h) Tj", "(Limit around 3 Mar) Tj",
+                     "(95% of answers) Tj", "(Up 1) Tj", "(Second one.) Tj", "(Demo NAS) Tj", "(< Better) Tj"):
+            self.assertIn(want, text)
+        self.assertIn(pdfdoc._rgb(pdfdoc.TONES["bad"], "rg"), text)                     # status colours where they mean status
+
+    def test_empty_states_say_why(self):
+        doc = pdfdoc.Document()
+        doc.chart_grid([{"kind": "forecast", "title": "F", "observed": [], "empty_text": "A forecast needs 14 days of history."},
+                        {"kind": "gauge", "title": "G", "gauges": []}])
+        # A small multiple without data keeps its panel and says so (it is not left out).
+        doc.chart({"kind": "multiples", "title": "M", "start": 0, "end": 10, "panels": [{"name": "quiet-one", "points": []}]})
+        text = self.stream(doc)
+        self.assertIn("(quiet-one) Tj", text)
+        self.assertIn("(A forecast needs 14 days of history.) Tj", text)
+        self.assertIn("(No data) Tj", text)
+
+    def test_text_box(self):
+        doc = pdfdoc.Document()
+        doc.text_box("Root cause", "The switch lost power.\nThe spare took over.")
+        doc.text_box("Long", "word " * 4000)                                             # longer than a page: flows on without the box
+        text = self.stream(doc)
+        self.assertIn("(Root cause) Tj", text)
+        self.assertIn("(The spare took over.) Tj", text)
+        self.assertGreaterEqual(page_count(doc.render()), 2)
+
     def test_format_value(self):
         self.assertEqual(pdfdoc.format_value(47_400_000, "bps"), "47.4 Mbps")
         self.assertEqual(pdfdoc.format_value(1536, "B"), "1.5 KB")

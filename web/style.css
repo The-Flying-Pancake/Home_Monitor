@@ -1375,7 +1375,8 @@ a.cell-link:hover .meter-val { color: var(--blue); }
 .scan-mode .single-field { display: none !important; }
 .scan-progress { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 10px; }
 .scan-progress .setup-progress div { transition: width 0.3s ease; }
-.scan-bar-actions { display: flex; gap: 6px; margin-bottom: 6px; }
+.scan-bar-actions { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; align-items: center; }
+.scan-bar-actions .scan-hide { margin-left: auto; font-size: 12px; }
 .scan-table { width: 100%; font-size: 12px; }
 .scan-table td, .scan-table th { padding: 5px 8px; }
 .scan-table input[type="text"], .scan-table select { width: 100%; }

@@ -31,7 +31,7 @@ GREY: Color = (0.4, 0.4, 0.4)
 # green, amber and red only for status; grey for unknown or no data.
 PALETTE: list[Color] = [
     (0.18, 0.51, 0.97), (0.10, 0.62, 0.62), (0.64, 0.44, 0.97),
-    (0.35, 0.45, 0.60), (0.55, 0.34, 0.29), (0.45, 0.62, 0.95),
+    (0.97, 0.55, 0.25), (0.54, 0.60, 0.68), (0.45, 0.62, 0.95),
 ]
 TONES: dict[str, Color] = {"good": (0.18, 0.63, 0.26), "warn": (0.82, 0.60, 0.13), "bad": (0.85, 0.21, 0.20),
                            "info": (0.18, 0.51, 0.97), "none": (0.55, 0.58, 0.62)}
@@ -258,7 +258,833 @@ class Spark:
         return "M" * 9
 
 
-class Document:
+NAVY: Color = (0.106, 0.165, 0.255)
+ORANGE: Color = (0.969, 0.549, 0.251)
+SOFT_GREY: Color = (0.54, 0.60, 0.68)
+
+
+def _tone_colour(tone: str | None, index: int = 0) -> Color:
+    """A status tone, a series ("s3" is the fourth series colour) or the series colour of the index."""
+    if tone in TONES:
+        return TONES[tone]
+    if isinstance(tone, str) and tone.startswith("s") and tone[1:].isdigit():
+        return PALETTE[int(tone[1:]) % len(PALETTE)] if tone != "s5" else NAVY
+    return PALETTE[index % len(PALETTE)]
+
+
+class _Charts:
+    """The chart kinds the report blocks added (spec section 8): each draws into a box (x, y is the
+    bottom left corner) and returns False when there is nothing to draw, so the box says "No data"."""
+
+    # Small shapes -------------------------------------------------------------------------------
+
+    def _circle(self, cx: float, cy: float, r: float, fill: Color | None = None, stroke: Color | None = None, width: float = 0.6) -> None:
+        k = 0.5523 * r
+        p = (f"{_n(cx + r)} {_n(cy)} m {_n(cx + r)} {_n(cy + k)} {_n(cx + k)} {_n(cy + r)} {_n(cx)} {_n(cy + r)} c "
+             f"{_n(cx - k)} {_n(cy + r)} {_n(cx - r)} {_n(cy + k)} {_n(cx - r)} {_n(cy)} c "
+             f"{_n(cx - r)} {_n(cy - k)} {_n(cx - k)} {_n(cy - r)} {_n(cx)} {_n(cy - r)} c "
+             f"{_n(cx + k)} {_n(cy - r)} {_n(cx + r)} {_n(cy - k)} {_n(cx + r)} {_n(cy)} c h")
+        paint = "B" if fill and stroke else "f" if fill else "S"
+        colours = (_rgb(fill, "rg") + " " if fill else "") + (f"{_rgb(stroke, 'RG')} {_n(width)} w " if stroke else "")
+        self._op(colours + p + " " + paint)
+
+    def _dashed(self, points: Sequence[tuple[float, float]], color: Color, width: float = 1.0, dash: str = "3 2") -> None:
+        if len(points) > 1:
+            path = " ".join(f"{_n(px)} {_n(py)} {'m' if i == 0 else 'l'}" for i, (px, py) in enumerate(points))
+            self._op(f"[{dash}] 0 d {_rgb(color, 'RG')} {_n(width)} w {path} S [] 0 d")
+
+    def _hatch(self, x: float, y: float, w: float, h: float) -> None:
+        """White with grey diagonal lines: planned maintenance."""
+        self._rect(x, y, w, h, WHITE)
+        self._clip(x, y, w, h)
+        step = 3.0
+        k = -h
+        while k < w:
+            self._line(x + k, y, x + k + h, y + h, SOFT_GREY, 0.5)
+            k += step
+        self._op("Q")
+        self._op(f"{_rgb(SOFT_GREY, 'RG')} 0.5 w {_n(x)} {_n(y)} {_n(w)} {_n(h)} re S")
+
+    def _xy_frame(self, x: float, y: float, w: float, h: float, low: float, high: float, unit: str, legend: bool = False,
+                  whole: bool = False) -> tuple[float, float, float, float, list[float]]:
+        """A value axis with grid lines; returns the plot box (px1, py1, px2, py2) and the ticks."""
+        py1, py2 = y + 14 + (12 if legend else 0), y + h
+        ticks, px1 = self._y_axis(low, high, unit, x, py1, py2, x + w, whole=whole)
+        return px1, py1, x + w - 4, py2, ticks
+
+    # Text cells ---------------------------------------------------------------------------------
+
+    def _text_lines(self, text: str, width: float, size: float = 8.5) -> list[str]:
+        out: list[str] = []
+        for para in str(text or "").split("\n"):
+            out += wrap(para, width, size) if para.strip() else [""]
+        return out
+
+    def _draw_textbox(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        lines = self._text_lines(spec.get("text") or "", w - 16)
+        self._round_rect(x, y, w, h, 5, fill=BAND)
+        yy = y + h - 12
+        for line in lines:
+            self._draw_text(x + 8, yy, line, 8.5, color=INK)
+            yy -= 11
+        return True
+
+    def _draw_keyvalue(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        pairs = spec.get("pairs") or []
+        if not pairs:
+            return False
+        label_w = min(max(text_width(str(k), 8) for k, _ in pairs) + 12, w * 0.4)
+        yy = y + h - 10
+        for k, v in pairs:
+            self._draw_text(x, yy, fit(k, label_w - 6, 8), 8, color=GREY)
+            self._draw_text(x + label_w, yy, fit(v, w - label_w, 8.5, True), 8.5, True, INK)
+            self._line(x, yy - 3.5, x + w, yy - 3.5, GRID, 0.3)
+            yy -= 12
+        return True
+
+    # At a glance --------------------------------------------------------------------------------
+
+    def _arc(self, cx: float, cy: float, r1: float, r2: float, a1: float, a2: float, color: Color) -> None:
+        steps = max(2, int(abs(a2 - a1) / 0.06))
+        outer = [(cx + r2 * math.cos(a1 + (a2 - a1) * k / steps), cy + r2 * math.sin(a1 + (a2 - a1) * k / steps)) for k in range(steps + 1)]
+        inner = [(cx + r1 * math.cos(a1 + (a2 - a1) * k / steps), cy + r1 * math.sin(a1 + (a2 - a1) * k / steps)) for k in range(steps, -1, -1)]
+        self._polygon(outer + inner, color)
+
+    def _draw_gauge(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        gauges = spec.get("gauges") or []
+        if not gauges:
+            return False
+        cell = w / len(gauges)
+        for i, g in enumerate(gauges):
+            cx = x + cell * (i + 0.5)
+            r = min(cell * 0.4, h * 0.55)
+            cy = y + 26
+            top = float(g.get("max") or 100) or 100.0
+            value = g.get("value")
+            ang = lambda v: math.pi * (1 - max(0.0, min(1.0, v / top)))
+            if value is None:
+                self._arc(cx, cy, r * 0.7, r, 0, math.pi, TRACK)
+            else:
+                warn, bad = float(g.get("warn") or top), float(g.get("bad") or top)
+                self._arc(cx, cy, r * 0.7, r, ang(warn), math.pi, mix(TONES["good"], WHITE, 0.25))
+                self._arc(cx, cy, r * 0.7, r, ang(bad), ang(warn), mix(TONES["warn"], WHITE, 0.25))
+                self._arc(cx, cy, r * 0.7, r, 0, ang(bad), mix(TONES["bad"], WHITE, 0.25))
+                a = ang(float(value))
+                self._line(cx, cy, cx + r * 0.92 * math.cos(a), cy + r * 0.92 * math.sin(a), NAVY, 1.6)
+                self._circle(cx, cy, 2.2, NAVY)
+            self._draw_text(cx, cy - 12, g.get("text") or ("No data" if value is None else format_number(value)), 11, True, INK, align="c")
+            self._draw_text(cx, cy - 22, fit(g.get("label") or "", cell - 6, 7.5), 7.5, color=GREY, align="c")
+        return True
+
+    def _draw_headline(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        items = spec.get("items") or []
+        if not items:
+            return False
+        yy = y + h
+        for it in items:
+            yy -= 30
+            self._draw_text(x, yy + 12, fit(it.get("value_text") or "-", w * 0.35, 14, True), 14, True, INK)
+            self._draw_text(x, yy + 3, fit(it.get("label") or "", w * 0.35, 7), 7, color=GREY)
+            vals = [v for v in it.get("values") or []]
+            known = [(i, v) for i, v in enumerate(vals) if v is not None]
+            sx, sw = x + w * 0.4, w * 0.58
+            if len(known) < 2:
+                self._line(sx, yy + 10, sx + sw, yy + 10, TRACK, 1)
+                continue
+            lo, hi = min(v for _, v in known), max(v for _, v in known)
+            px = lambda i: sx + i / max(len(vals) - 1, 1) * sw
+            py = lambda v: yy + 3 + (v - lo) / ((hi - lo) or 1) * 18
+            for run in _runs([(i, v) for i, v in enumerate(vals)]):
+                self._polyline([(px(i), py(v)) for i, v in run], PALETTE[0], 0.9)
+            good_low = (it.get("better") or "down") == "down"
+            i_min = min(known, key=lambda p: p[1])[0]
+            i_max = max(known, key=lambda p: p[1])[0]
+            self._circle(px(i_min), py(vals[i_min]), 1.6, TONES["good" if good_low else "bad"])
+            self._circle(px(i_max), py(vals[i_max]), 1.6, TONES["bad" if good_low else "good"])
+            self._circle(px(known[-1][0]), py(known[-1][1]), 1.6, NAVY)
+        return True
+
+    def _draw_bullet(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        rows = spec.get("rows") or []
+        if not rows:
+            return False
+        lo, hi = float(spec.get("min") or 0), float(spec.get("max") or 100)
+        bands = spec.get("bands") or [lo, lo, hi]
+        label_w = min(max(text_width(str(r[0]), 7.5) for r in rows) + 8, w * 0.32)
+        value_w = max(text_width(str(r[2]), 7.5) for r in rows) + 8
+        x0, x1 = x + label_w, x + w - value_w
+        sx = lambda v: x0 + (max(lo, min(hi, float(v))) - lo) / ((hi - lo) or 1) * (x1 - x0)
+        yy = y + h
+        shades = [(0.80, 0.82, 0.85), (0.88, 0.89, 0.91), (0.95, 0.95, 0.96)]
+        for label, value, text in rows:
+            yy -= 16
+            self._draw_text(x0 - 6, yy + 4, fit(label, label_w - 8, 7.5), 7.5, align="r")
+            edges = [lo, bands[1] if len(bands) > 1 else lo, bands[2] if len(bands) > 2 else hi, hi]
+            for k in range(3):
+                self._rect(sx(edges[k]), yy, max(0.0, sx(edges[k + 1]) - sx(edges[k])), 12, shades[k])
+            if value is not None:
+                self._rect(x0, yy + 4, max(0.6, sx(value) - x0), 4, INK)
+            if spec.get("target") is not None:
+                tx = sx(spec["target"])
+                self._line(tx, yy - 1, tx, yy + 13, TONES["bad"], 1.4)
+            self._draw_text(x1 + 4, yy + 4, text, 7.5, color=GREY)
+        self._draw_text(x0, yy - 9, format_value(lo, spec.get("unit") or ""), 6.5, color=GREY)
+        self._draw_text(x1, yy - 9, format_value(hi, spec.get("unit") or ""), 6.5, color=GREY, align="r")
+        if spec.get("target_label"):
+            self._draw_text(sx(spec["target"]), yy - 9, spec["target_label"], 6.5, color=TONE_INK["bad"], align="c")
+        return True
+
+    # Comparison ---------------------------------------------------------------------------------
+
+    def _draw_lollipop(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        items = [it for it in spec.get("items") or [] if it[1] is not None]
+        if not items:
+            return False
+        unit = spec.get("unit") or ""
+        marks = [m for m in spec.get("thresholds") or [] if m.get("value") is not None]
+        high = spec.get("max") or max([float(v) for _, v, _ in items] + [m["value"] for m in marks] + [0.0]) or 1.0
+        px1, py1, px2, py2, ticks = self._xy_frame(x, y, w, h, 0, high, unit)
+        top = ticks[-1]
+        sy = lambda v: py1 + max(0.0, min(top, v)) / (top or 1) * (py2 - py1)
+        for m in marks:
+            self._line(px1, sy(m["value"]), px2, sy(m["value"]), TONES.get(m.get("tone"), GREY), 0.8, "2 1.5")
+        slot = (px2 - px1) / len(items)
+        for i, (label, value, tone) in enumerate(items):
+            cx = px1 + slot * (i + 0.5)
+            colour = TONES[tone] if tone in TONES else PALETTE[0]
+            self._line(cx, py1, cx, sy(float(value)), colour, 1.2)
+            self._circle(cx, sy(float(value)), 2.6, colour)
+            self._draw_text(cx, py1 - 9, fit(label, max(slot - 2, 14), 6.5), 6.5, color=GREY, align="c")
+        self._line(px1, py1, px2, py1, AXIS)
+        return True
+
+    def _draw_diverging(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        rows = [r for r in spec.get("rows") or [] if r[1] is not None]
+        if not rows:
+            return False
+        label_w = min(max(text_width(str(r[0]), 7.5) for r in rows) + 8, w * 0.3)
+        x0, x1 = x + label_w, x + w - 4
+        mid = (x0 + x1) / 2
+        span = max(abs(float(r[1])) for r in rows) or 1.0
+        yy = y + h
+        for label, delta, text in rows:
+            yy -= 13
+            self._draw_text(x0 - 6, yy + 3, fit(label, label_w - 8, 7.5), 7.5, align="r")
+            length = abs(float(delta)) / span * ((x1 - x0) / 2 - 50)
+            worse = float(delta) > 0
+            colour = TONES["bad" if worse else "good"]
+            if worse:
+                self._rect(mid, yy + 1.5, max(length, 0.6), 8, colour)
+                self._draw_text(mid + length + 3, yy + 3, fit(text, 60, 6.5), 6.5, color=GREY)
+            else:
+                self._rect(mid - length, yy + 1.5, max(length, 0.6), 8, colour)
+                self._draw_text(mid - length - 3, yy + 3, fit(text, 60, 6.5), 6.5, color=GREY, align="r")
+        self._line(mid, yy - 1, mid, y + h, INK, 0.8)
+        self._draw_text(x0, yy - 10, "< " + (spec.get("left_text") or "Better"), 6.5, color=TONE_INK["good"])
+        self._draw_text(x1, yy - 10, (spec.get("right_text") or "Worse") + " >", 6.5, color=TONE_INK["bad"], align="r")
+        return True
+
+    def _draw_dumbbell(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        rows = [r for r in spec.get("rows") or [] if r[1] is not None or r[2] is not None]
+        if not rows:
+            return False
+        unit = spec.get("unit") or ""
+        vals = [float(v) for r in rows for v in r[1:3] if v is not None]
+        lo, hi = min(vals), max(vals)
+        pad = (hi - lo) * 0.1 or abs(hi) * 0.05 or 1
+        ticks = nice_ticks(max(0.0, lo - pad) if lo >= 0 else lo - pad, hi + pad, 4)
+        label_w = min(max(text_width(str(r[0]), 7.5) for r in rows) + 8, w * 0.32)
+        x0, x1 = x + label_w, x + w - 6
+        sx = lambda v: x0 + (v - ticks[0]) / ((ticks[-1] - ticks[0]) or 1) * (x1 - x0)
+        top = y + h - 12
+        for t in ticks:
+            self._line(sx(t), y + 12, sx(t), top, GRID, 0.4)
+            self._draw_text(sx(t), y + 3, format_value(t, unit), 6.5, color=GREY, align="c")
+        yy = top
+        for label, before, after in rows:
+            yy -= 14
+            self._draw_text(x0 - 6, yy + 2, fit(label, label_w - 8, 7.5), 7.5, align="r")
+            if before is not None and after is not None:
+                self._line(sx(float(before)), yy + 4.5, sx(float(after)), yy + 4.5, mix(PALETTE[0], WHITE, 0.6), 3)
+            if before is not None:
+                self._circle(sx(float(before)), yy + 4.5, 2.8, SOFT_GREY)
+            if after is not None:
+                self._circle(sx(float(after)), yy + 4.5, 2.8, PALETTE[0])
+        self._legend([(spec.get("before_label") or "Before", SOFT_GREY, False), (spec.get("after_label") or "After", PALETTE[0], False)],
+                     x0, y + h - 9, x + w)
+        return True
+
+    def _draw_butterfly(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        rows = spec.get("rows") or []
+        if not rows:
+            return False
+        unit = spec.get("unit") or ""
+        label_w = min(max(text_width(str(r[0]), 7.5) for r in rows) + 8, w * 0.28)
+        x0, x1 = x + label_w, x + w - 2
+        mid = (x0 + x1) / 2
+        top = max([float(r[1] or 0) for r in rows] + [float(r[2] or 0) for r in rows]) or 1.0
+        half = (x1 - mid) - 36
+        yy = y + h - 12
+        self._draw_text(mid - 4, yy + 2, "< " + (spec.get("left_label") or "In"), 7, True, PALETTE[0], align="r")
+        self._draw_text(mid + 4, yy + 2, (spec.get("right_label") or "Out") + " >", 7, True, PALETTE[1])
+        for label, left, right in rows:
+            yy -= 13
+            self._draw_text(x0 - 6, yy + 3, fit(label, label_w - 8, 7.5), 7.5, align="r")
+            lw, rw = float(left or 0) / top * half, float(right or 0) / top * half
+            self._rect(mid - lw, yy + 1.5, max(lw, 0.5), 8, PALETTE[0])
+            self._rect(mid, yy + 1.5, max(rw, 0.5), 8, PALETTE[1])
+            self._draw_text(mid - lw - 3, yy + 3, format_value(left, unit), 6.5, color=GREY, align="r")
+            self._draw_text(mid + rw + 3, yy + 3, format_value(right, unit), 6.5, color=GREY)
+        self._line(mid, yy, mid, y + h - 12, INK, 0.6)
+        return True
+
+    def _draw_stack100(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        rows = [r for r in spec.get("rows") or [] if sum(r.get("values") or []) > 0]
+        parts = spec.get("parts") or []
+        if not rows or not parts:
+            return False
+        blues = [mix(PALETTE[0], WHITE, 0.75), mix(PALETTE[0], WHITE, 0.5), PALETTE[0]]
+        colours = []
+        for i, p in enumerate(parts):
+            colours.append(TONES[p["tone"]] if p.get("tone") in TONES else blues[min(i, len(blues) - 1)])
+        self._legend([(p["name"], colours[i], False) for i, p in enumerate(parts)], x, y + h - 9, x + w)
+        label_w = min(max(text_width(str(r["label"]), 7.5) for r in rows) + 8, w * 0.3)
+        x0, x1 = x + label_w, x + w - 2
+        yy = y + h - 16
+        for r in rows:
+            yy -= 14
+            self._draw_text(x0 - 6, yy + 3, fit(r["label"], label_w - 8, 7.5), 7.5, align="r")
+            total = float(sum(r["values"]))
+            px = x0
+            for i, v in enumerate(r["values"]):
+                seg = float(v) / total * (x1 - x0)
+                if seg > 0:
+                    self._rect(px, yy + 1, seg, 10, colours[i])
+                    if seg > 18:
+                        self._draw_text(px + seg / 2, yy + 3.5, f"{round(100 * v / total)}%", 6, color=WHITE if i >= 2 else INK, align="c")
+                px += seg
+        for k in (0, 50, 100):
+            self._draw_text(x0 + k / 100 * (x1 - x0), yy - 9, f"{k}%", 6.5, color=GREY, align="c")
+        return True
+
+    def _draw_treemap(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        items = spec.get("items") or []
+        if not items:
+            return False
+        for i, it in enumerate(items):
+            tx, tw, th = x + it["x"] * w, it["w"] * w, it["h"] * h
+            ty = y + h - (it["y"] + it["h"]) * h
+            tone = it.get("tone")
+            fill = TONE_TINT[tone] if tone in TONE_TINT else mix(PALETTE[i % 3], WHITE, 0.55 + 0.1 * (i // 3 % 3))
+            self._rect(tx + 0.5, ty + 0.5, max(0.5, tw - 1), max(0.5, th - 1), fill)
+            if tw > 30 and th > 16:
+                self._draw_text(tx + 3, ty + th - 9, fit(it["label"], tw - 6, 7, True), 7, True, INK)
+                if th > 24:
+                    self._draw_text(tx + 3, ty + th - 18, fit(it.get("text") or "", tw - 6, 6.5), 6.5, color=GREY)
+        return True
+
+    # Composition --------------------------------------------------------------------------------
+
+    def _draw_waterfall(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        steps = spec.get("steps") or []
+        if not steps:
+            return False
+        unit = spec.get("unit") or ""
+        run, spans = 0.0, []
+        for label, value, kind in steps:
+            v = float(value)
+            if kind == "start":
+                spans.append((label, 0.0, v, NAVY, v))
+                run = v
+            elif kind == "minus":
+                spans.append((label, run - v, run, TONES["bad"], v))
+                run -= v
+            else:
+                spans.append((label, min(0.0, v), max(0.0, v), TONES["good"] if v >= 0 else TONES["bad"], v))
+        low = min(0.0, min(a for _, a, _, _, _ in spans))
+        high = max(b for _, _, b, _, _ in spans) or 1.0
+        px1, py1, px2, py2, ticks = self._xy_frame(x, y, w, h, low, high, unit)
+        lo, hi = ticks[0], ticks[-1]
+        sy = lambda v: py1 + (v - lo) / ((hi - lo) or 1) * (py2 - py1)
+        slot = (px2 - px1) / len(spans)
+        for i, (label, a, b, colour, v) in enumerate(spans):
+            bx = px1 + i * slot + slot * 0.15
+            self._rect(bx, sy(a), slot * 0.7, max(0.6, sy(b) - sy(a)), colour)
+            self._draw_text(bx + slot * 0.35, sy(b) + 2, format_value(v, unit), 6.5, color=GREY, align="c")
+            self._draw_text(bx + slot * 0.35, py1 - 9, fit(label, slot - 2, 6.5), 6.5, color=GREY, align="c")
+        self._line(px1, sy(0), px2, sy(0), AXIS)
+        return True
+
+    def _draw_pareto(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        bars = spec.get("bars") or []
+        if not bars:
+            return False
+        cum = spec.get("cumulative") or []
+        px1, py1, px2, py2, ticks = self._xy_frame(x, y, w - 24, h, 0, max(float(b[1]) for b in bars) or 1, "", legend=True, whole=True)
+        px2 = x + w - 26
+        top = ticks[-1]
+        sy = lambda v: py1 + v / (top or 1) * (py2 - py1)
+        pc = lambda v: py1 + v / 100 * (py2 - py1)
+        slot = (px2 - px1) / len(bars)
+        for i, (label, n) in enumerate(bars):
+            bx = px1 + i * slot + slot * 0.15
+            self._rect(bx, py1, slot * 0.7, max(0.5, sy(float(n)) - py1), PALETTE[0])
+            self._draw_text(bx + slot * 0.35, py1 - 9, fit(label, slot - 2, 6.5), 6.5, color=GREY, align="c")
+        for k in (0, 50, 100):
+            self._draw_text(px2 + 4, pc(k) - 2.5, f"{k}%", 6.5, color=GREY)
+        self._line(px1, pc(80), px2, pc(80), SOFT_GREY, 0.6, "1 2")
+        self._polyline([(px1 + slot * (i + 0.5), pc(v)) for i, v in enumerate(cum)], ORANGE, 1.2)
+        for i, v in enumerate(cum):
+            self._circle(px1 + slot * (i + 0.5), pc(v), 1.6, ORANGE)
+        self._line(px1, py1, px2, py1, AXIS)
+        self._legend([("Count", PALETTE[0], False), ("Running total (right axis)", ORANGE, False), ("80%", SOFT_GREY, True)], px1, y + 1, x + w)
+        return True
+
+    # Distribution -------------------------------------------------------------------------------
+
+    def _draw_histogram(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        bins = spec.get("bins") or []
+        if not bins:
+            return False
+        unit = spec.get("unit") or ""
+        px1, py1, px2, py2, ticks = self._xy_frame(x, y, w, h - 22, 0, max(b[2] for b in bins) or 1, "", whole=True)
+        top = ticks[-1]
+        lo, hi = bins[0][0], bins[-1][1]
+        sx = lambda v: px1 + (v - lo) / ((hi - lo) or 1) * (px2 - px1)
+        for a, b, n in bins:
+            if n:
+                self._rect(sx(a) + 0.3, py1, max(0.4, sx(b) - sx(a) - 0.6), n / (top or 1) * (py2 - py1), mix(PALETTE[0], WHITE, 0.3))
+        self._line(px1, py1, px2, py1, AXIS)
+        for t in nice_ticks(lo, hi, 5):
+            if lo <= t <= hi:
+                self._draw_text(sx(t), py1 - 9, format_value(t, unit), 6.5, color=GREY, align="c")
+        for k, m in enumerate(spec.get("marks") or []):
+            if m.get("value") is None:
+                continue
+            mx = sx(max(lo, min(hi, m["value"])))
+            colour = _tone_colour(m.get("tone"))
+            self._line(mx, py1, mx, y + h - 4 - k * 7, colour, 0.9, "3 2")
+            self._draw_text(mx + 2, y + h - 8 - k * 7, m.get("label") or "", 6.5, color=colour)
+        return True
+
+    def _draw_box(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        rows = spec.get("rows") or []
+        if not rows:
+            return False
+        unit = spec.get("unit") or ""
+        high = max([r["hi"] for r in rows] + [max(r.get("outliers") or [0]) for r in rows] + [spec.get("target") or 0])
+        ticks = nice_ticks(0, high or 1, 5)
+        label_w = min(max(text_width(str(r["label"]), 7.5) for r in rows) + 8, w * 0.3)
+        x0, x1 = x + label_w, x + w - 6
+        sx = lambda v: x0 + v / (ticks[-1] or 1) * (x1 - x0)
+        for t in ticks:
+            self._line(sx(t), y + 12, sx(t), y + h, GRID, 0.4)
+            self._draw_text(sx(t), y + 3, format_value(t, unit), 6.5, color=GREY, align="c")
+        if spec.get("target") is not None:
+            self._line(sx(spec["target"]), y + 12, sx(spec["target"]), y + h, TONES["warn"], 0.9, "3 2")
+        yy = y + h
+        for r in rows:
+            yy -= 15
+            self._draw_text(x0 - 6, yy + 3, fit(r["label"], label_w - 8, 7.5), 7.5, align="r")
+            mid = yy + 5
+            self._line(sx(r["lo"]), mid, sx(r["hi"]), mid, AXIS, 0.7)
+            self._line(sx(r["lo"]), mid - 3, sx(r["lo"]), mid + 3, AXIS, 0.7)
+            self._line(sx(r["hi"]), mid - 3, sx(r["hi"]), mid + 3, AXIS, 0.7)
+            self._op(f"{_rgb(mix(PALETTE[0], WHITE, 0.65), 'rg')} {_rgb(PALETTE[0], 'RG')} 0.6 w {_n(sx(r['q1']))} {_n(mid - 4.5)} "
+                     f"{_n(max(0.8, sx(r['q3']) - sx(r['q1'])))} 9 re B")
+            self._line(sx(r["med"]), mid - 4.5, sx(r["med"]), mid + 4.5, NAVY, 1.4)
+            for o in r.get("outliers") or []:
+                self._circle(sx(o), mid, 1.1, SOFT_GREY)
+        return True
+
+    def _draw_cdf(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        series = [s for s in spec.get("series") or [] if s.get("points")]
+        if not series:
+            return False
+        unit = spec.get("unit") or ""
+        top = max(p[0] for s in series for p in s["points"]) or 1
+        xt = nice_ticks(0, top, 5)
+        py1, py2 = y + 26, y + h
+        px1, px2 = x + 26, x + w - 4
+        sx = lambda v: px1 + v / (xt[-1] or 1) * (px2 - px1)
+        sy = lambda f: py1 + f * (py2 - py1)
+        for k in (0, 0.25, 0.5, 0.75, 1.0):
+            self._line(px1, sy(k), px2, sy(k), GRID, 0.4)
+            self._draw_text(px1 - 4, sy(k) - 2.5, f"{int(k * 100)}%", 6.5, color=GREY, align="r")
+        for t in xt:
+            self._line(sx(t), py1, sx(t), py2, GRID, 0.4)
+            self._draw_text(sx(t), py1 - 9, format_value(t, unit), 6.5, color=GREY, align="c")
+        mark = spec.get("mark") or 0.95
+        self._line(px1, sy(mark), px2, sy(mark), SOFT_GREY, 0.7, "1 2")
+        self._draw_text(px2 - 2, sy(mark) - 8, f"{int(mark * 100)}% of answers", 6.5, color=GREY, align="r")
+        for i, s in enumerate(series):
+            self._polyline([(sx(a), sy(b)) for a, b in s["points"]], PALETTE[i % len(PALETTE)], 1.1)
+        self._legend([(s["name"], PALETTE[i % len(PALETTE)], False) for i, s in enumerate(series)], px1, y + 1, x + w)
+        return True
+
+    # Over time ----------------------------------------------------------------------------------
+
+    def _time_box(self, spec: dict, x: float, y: float, w: float, h: float, low: float, high: float, legend: bool):
+        unit = spec.get("unit") or ""
+        py1, py2 = y + 14 + (12 if legend else 0), y + h
+        ticks, px1 = self._y_axis(low, high, unit, x, py1, py2, x + w)
+        px2 = x + w - 4
+        t0, t1 = spec.get("start"), spec.get("end")
+        lo, hi = ticks[0], ticks[-1]
+        sx = lambda t: px1 + (t - t0) / ((t1 - t0) or 1) * (px2 - px1)
+        sy = lambda v: py1 + (max(lo, min(hi, v)) - lo) / ((hi - lo) or 1) * (py2 - py1)
+        self._line(px1, py1, px2, py1, AXIS)
+        self._time_axis(t0, t1, px1, px2, py1)
+        return px1, py1, px2, py2, sx, sy
+
+    def _band_runs(self, rows: Sequence[Sequence], lo_i: int, hi_i: int) -> list[list[tuple[float, float, float]]]:
+        runs: list[list[tuple[float, float, float]]] = [[]]
+        for r in rows:
+            if r[lo_i] is None or r[hi_i] is None:
+                if runs[-1]:
+                    runs.append([])
+            else:
+                runs[-1].append((r[0], float(r[lo_i]), float(r[hi_i])))
+        return [run for run in runs if run]
+
+    def _draw_band(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        pts = spec.get("points") or []
+        vals = [v for p in pts for v in p[1:] if v is not None]
+        if not vals:
+            return False
+        marks = [m for m in spec.get("thresholds") or [] if m.get("value") is not None and m["value"] <= max(vals) * 2]
+        spec = dict(spec, start=spec.get("start") or pts[0][0], end=spec.get("end") or pts[-1][0])
+        px1, py1, px2, py2, sx, sy = self._time_box(spec, x, y, w, h, 0, max(vals + [m["value"] for m in marks]), True)
+        self._clip(px1, py1, px2 - px1, py2 - py1)
+        for lo_i, hi_i, amount in ((1, 5, 0.82), (2, 4, 0.55)):
+            for run in self._band_runs(pts, lo_i, hi_i):
+                poly = [(sx(t), sy(a)) for t, a, _ in run] + [(sx(t), sy(b)) for t, _, b in reversed(run)]
+                self._polygon(poly, mix(PALETTE[0], WHITE, amount))
+        for run in _runs([(p[0], p[3]) for p in pts]):
+            self._polyline([(sx(t), sy(v)) for t, v in run], NAVY, 1.1)
+        for m in marks:
+            self._line(px1, sy(m["value"]), px2, sy(m["value"]), TONES.get(m.get("tone"), GREY), 0.8, "3 2")
+        self._op("Q")
+        self._legend([("5th to 95th", mix(PALETTE[0], WHITE, 0.82), False), ("25th to 75th", mix(PALETTE[0], WHITE, 0.55), False),
+                      ("Median", NAVY, False)] + [(m.get("label") or "", TONES.get(m.get("tone"), GREY), True) for m in marks if m.get("label")],
+                     px1, y + 1, x + w)
+        return True
+
+    def _draw_baseline(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        pts = spec.get("points") or []
+        band = spec.get("band") or []
+        vals = [v for _, v in pts if v is not None] + [v for b in band for v in b[1:] if v is not None]
+        if not vals:
+            return False
+        px1, py1, px2, py2, sx, sy = self._time_box(spec, x, y, w, h, 0, max(vals), True)
+        self._clip(px1, py1, px2 - px1, py2 - py1)
+        for run in self._band_runs(band, 1, 2):
+            self._polygon([(sx(t), sy(a)) for t, a, _ in run] + [(sx(t), sy(b)) for t, _, b in reversed(run)], (0.88, 0.89, 0.91))
+        for run in _runs(pts):
+            self._polyline([(sx(t), sy(v)) for t, v in run], PALETTE[0], 1.1)
+        for t, v in spec.get("anomalies") or []:
+            self._circle(sx(t), sy(v), 1.8, TONES["bad"])
+        self._op("Q")
+        self._legend([("Usual range", (0.88, 0.89, 0.91), False), ("Actual", PALETTE[0], False), ("Out of the usual", TONES["bad"], False)],
+                     px1, y + 1, x + w)
+        return True
+
+    def _draw_step(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        pts = sorted(spec.get("points") or [], key=lambda p: p[0])
+        if not pts:
+            return False
+        expected = spec.get("expected")
+        high = max([p[1] for p in pts] + [expected or 0]) + 1
+        unit = spec.get("unit") or ""
+        py1, py2 = y + 14 + 12, y + h
+        ticks, px1 = self._y_axis(0, high, unit, x, py1, py2, x + w, whole=True)
+        px2 = x + w - 4
+        t0, t1 = spec.get("start") or pts[0][0], spec.get("end") or pts[-1][0]
+        sx = lambda t: px1 + (t - t0) / ((t1 - t0) or 1) * (px2 - px1)
+        sy = lambda v: py1 + v / (ticks[-1] or 1) * (py2 - py1)
+        line = []
+        for i, (t, v) in enumerate(pts):
+            if i:
+                line.append((sx(t), sy(pts[i - 1][1])))
+            line.append((sx(t), sy(v)))
+        self._polygon([(line[0][0], py1)] + line + [(line[-1][0], py1)], mix(PALETTE[0], WHITE, 0.85))
+        self._polyline(line, PALETTE[0], 1.2)
+        if expected is not None:
+            self._line(px1, sy(expected), px2, sy(expected), SOFT_GREY, 0.8, "1 2")
+        self._line(px1, py1, px2, py1, AXIS)
+        self._time_axis(t0, t1, px1, px2, py1)
+        self._legend([("Answering", PALETTE[0], False)] + ([(spec.get("expected_label") or "Expected", SOFT_GREY, True)] if expected is not None else []),
+                     px1, y + 1, x + w)
+        return True
+
+    def _draw_multiples(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        panels = spec.get("panels") or []
+        if not panels:
+            return False
+        cols = 3
+        gap = 8.0
+        pw = (w - gap * (cols - 1)) / cols
+        ph = 52.0
+        top = float(spec.get("y_max") or 100) or 1.0
+        t0, t1 = spec.get("start"), spec.get("end")
+        th = (spec.get("threshold") or {}).get("value")
+        for i, p in enumerate(panels):
+            px = x + (i % cols) * (pw + gap)
+            py = y + h - (i // cols + 1) * (ph + 6)
+            self._draw_text(px, py + ph - 7, fit(p["name"], pw, 7, True), 7, True, INK)
+            bx1, by1, bx2, by2 = px + (16 if i % cols == 0 else 0), py + 2, px + pw, py + ph - 11
+            self._rect(bx1, by1, bx2 - bx1, by2 - by1, (0.975, 0.978, 0.983))
+            if i % cols == 0:
+                self._draw_text(bx1 - 2, by2 - 5, format_value(top, spec.get("unit") or ""), 5.5, color=GREY, align="r")
+                self._draw_text(bx1 - 2, by1, "0", 5.5, color=GREY, align="r")
+            pts = [(t, v) for t, v in p.get("points") or []]
+            if not any(v is not None for _, v in pts):
+                self._draw_text((bx1 + bx2) / 2, (by1 + by2) / 2 - 2, "No data", 6.5, color=GREY, align="c")
+                continue
+            sx = lambda t: bx1 + (t - t0) / ((t1 - t0) or 1) * (bx2 - bx1)
+            sy = lambda v: by1 + max(0.0, min(top, v)) / top * (by2 - by1)
+            if th is not None:
+                self._line(bx1, sy(th), bx2, sy(th), SOFT_GREY, 0.5, "1 1.5")
+            for run in _runs(pts):
+                self._polyline([(sx(t), sy(v)) for t, v in run], TONES["bad"] if p.get("bad") else PALETTE[0], 0.8)
+        return True
+
+    def _draw_forecast(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        obs = spec.get("observed") or []
+        if not obs:
+            return False
+        proj, cone = spec.get("projection") or [], spec.get("cone") or []
+        limit = spec.get("limit")
+        vals = [v for _, v in obs] + [v for _, v in proj] + [c[2] for c in cone]
+        high = max(vals + [limit or 0, 100 if spec.get("unit") == "%" else 0])
+        spec = dict(spec, start=spec.get("start") or obs[0][0], end=spec.get("end") or obs[-1][0])
+        px1, py1, px2, py2, sx, sy = self._time_box(spec, x, y, w, h, 0, min(high, 100) if spec.get("unit") == "%" else high, True)
+        self._clip(px1, py1, px2 - px1, py2 - py1)
+        if cone:
+            self._polygon([(sx(t), sy(a)) for t, a, _ in cone] + [(sx(t), sy(b)) for t, _, b in reversed(cone)], mix(PALETTE[0], WHITE, 0.85))
+        self._polyline([(sx(t), sy(v)) for t, v in obs], PALETTE[0], 1.2)
+        if proj:
+            self._dashed([(sx(t), sy(v)) for t, v in proj], PALETTE[0], 1.1)
+        if limit is not None:
+            self._line(px1, sy(limit), px2, sy(limit), TONES["bad"], 0.9, "3 2")
+        if spec.get("full_at"):
+            fx = sx(spec["full_at"])
+            self._line(fx, py1, fx, py2, INK, 0.6, "1 2")
+            self._draw_text(fx - 2, py2 - 8, spec.get("full_text") or "", 6.5, color=INK, align="r")
+        self._op("Q")
+        self._legend([("Daily peak", PALETTE[0], False), ("Trend", PALETTE[0], True), ("About 90% confidence", mix(PALETTE[0], WHITE, 0.85), False)]
+                     + ([(spec.get("limit_label") or "Limit", TONES["bad"], True)] if limit is not None else []), px1, y + 1, x + w)
+        return True
+
+    # Time patterns ------------------------------------------------------------------------------
+
+    def _draw_calendar(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        cells = spec.get("cells") or []
+        if not cells:
+            return False
+        weeks = max(c[0] for c in cells) + 1
+        size = max(4.0, min(11.0, (w - 14) / weeks - 1))
+        top = y + h - 12
+        for wk, label in spec.get("months") or []:
+            self._draw_text(x + 14 + wk * (size + 1), top + 3, label, 6.5, color=GREY)
+        for k, name in enumerate("MTWTFSS"):
+            if k % 2 == 0:
+                self._draw_text(x, top - (k + 1) * (size + 1) + 1.5, name, 6, color=GREY)
+        for wk, day, value, tone, soft, _ in cells:
+            colour = TRACK if tone not in TONES or tone == "none" else TONES[tone]
+            if soft:
+                colour = mix(colour, WHITE, 0.55)
+            self._rect(x + 14 + wk * (size + 1), top - (day + 1) * (size + 1), size, size, colour)
+        lx = x + 14
+        ly = top - 8 * (size + 1) - 4
+        for label, tone, soft in spec.get("legend") or []:
+            colour = TRACK if tone == "none" else mix(TONES[tone], WHITE, 0.55) if soft else TONES[tone]
+            self._rect(lx, ly, 6, 6, colour)
+            self._draw_text(lx + 8, ly + 0.5, label, 6.5, color=GREY)
+            lx += 14 + text_width(label, 6.5)
+        return True
+
+    def _draw_gantt(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        rows = spec.get("rows") or []
+        t0, t1 = spec.get("start"), spec.get("end")
+        if not rows or not t0 or not t1:
+            return False
+        label_w = min(max(text_width(r["name"], 7.5) for r in rows) + 8, w * 0.28)
+        x0, x1 = x + label_w, x + w - 2
+        sx = lambda t: x0 + (t - t0) / ((t1 - t0) or 1) * (x1 - x0)
+        yy = y + h
+        for r in rows:
+            yy -= 13
+            self._draw_text(x0 - 6, yy + 3, fit(r["name"], label_w - 8, 7.5), 7.5, align="r")
+            self._rect(x0, yy + 1, x1 - x0, 9, TRACK)
+            for a, b, tone, _ in r["spans"]:
+                bx, bw = sx(a), max(1.5, sx(b) - sx(a))
+                if tone == "maint":
+                    self._hatch(bx, yy + 1, bw, 9)
+                else:
+                    self._rect(bx, yy + 1, bw, 9, TONES.get(tone, TONES["bad"]))
+        marks = spec.get("marks") or []
+        every = max(1, math.ceil(len(marks) / max(1, (x1 - x0) / 40)))
+        for i, (t, label) in enumerate(marks):
+            if t0 <= t <= t1:
+                self._line(sx(t), yy, sx(t), y + h, GRID, 0.4)
+                if i % every == 0:
+                    self._draw_text(sx(t) + 1, yy - 8, label, 6, color=GREY)
+        self._legend([("Down", TONES["bad"], False), ("Maintenance", SOFT_GREY, False)], x0, yy - 20, x + w)
+        return True
+
+    def _draw_clock(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        vals = spec.get("values") or []
+        known = [v for v in vals if v is not None]
+        if not known or not any(known):
+            return False
+        top = max(known) or 1.0
+        cx, cy = x + w / 2, y + h / 2 + 2
+        R = min(w, h) / 2 - 12
+        r0 = R * 0.25
+        warn, bad = spec.get("warn"), spec.get("bad")
+        self._circle(cx, cy, R, None, GRID, 0.5)
+        self._circle(cx, cy, r0, None, GRID, 0.5)
+        for hour, v in enumerate(vals):
+            if not v:
+                continue
+            a1 = math.pi / 2 - (hour / 24) * 2 * math.pi - 0.11
+            a2 = a1 + 0.22
+            length = r0 + (R - r0) * v / top
+            tone = "bad" if bad is not None and v >= bad else "warn" if warn is not None and v >= warn else None
+            self._arc(cx, cy, r0, length, a1, a2, TONES[tone] if tone else PALETTE[0])
+        for hour, label in ((0, "00h"), (6, "06h"), (12, "12h"), (18, "18h")):
+            a = math.pi / 2 - hour / 24 * 2 * math.pi
+            self._draw_text(cx + (R + 8) * math.cos(a), cy + (R + 8) * math.sin(a) - 2.5, label, 6.5, color=GREY, align="c")
+        return True
+
+    def _draw_timeline(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        events = spec.get("events") or []
+        t0, t1 = spec.get("start"), spec.get("end")
+        if not t0 or not t1 or (not events and not spec.get("impact")):
+            return False
+        mid = y + h / 2
+        sx = lambda t: x + 4 + (t - t0) / ((t1 - t0) or 1) * (w - 8)
+        if spec.get("impact"):
+            a, b, label = spec["impact"]
+            self._rect(sx(a), y + 14, max(1.0, sx(b) - sx(a)), h - 18, TONE_TINT["bad"])
+            self._draw_text(sx(a) + 2, y + h - 8, fit(label, max(40, sx(b) - sx(a)), 6.5), 6.5, color=TONE_INK["bad"])
+        self._line(x + 4, mid, x + w - 4, mid, INK, 0.8)
+        self._time_axis(t0, t1, x + 4, x + w - 4, y + 12)
+        lane = 0
+        for i, (t, label, tone) in enumerate(events):
+            ex = sx(t)
+            colour = TONES.get(tone, PALETTE[0])
+            up = i % 2 == 0
+            lane = (i // 2) % 3
+            ly = mid + (1 if up else -1) * (12 + lane * 11)
+            self._line(ex, mid, ex, ly, SOFT_GREY, 0.4)
+            self._circle(ex, mid, 2.4, colour)
+            text = fit(label, 110, 6)
+            tw = text_width(text, 6) + 6
+            bx = max(x, min(ex - tw / 2, x + w - tw))
+            self._round_rect(bx, ly - 3.5, tw, 9, 3, fill=WHITE, stroke=colour, width=0.5)
+            self._draw_text(bx + 3, ly - 1, text, 6, color=INK)
+        return True
+
+    # Relationship -------------------------------------------------------------------------------
+
+    def _draw_scatter(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        pts = spec.get("points") or []
+        if not pts:
+            return False
+        top = float(spec.get("max") or 100)
+        size = min(w - 30, h - 24)
+        px1, py1 = x + 26, y + 20
+        px2, py2 = x + w - 4, py1 + size
+        sx = lambda v: px1 + max(0.0, min(top, v)) / top * (px2 - px1)
+        sy = lambda v: py1 + max(0.0, min(top, v)) / top * (py2 - py1)
+        for k in nice_ticks(0, top, 4):
+            self._line(sx(k), py1, sx(k), py2, GRID, 0.4)
+            self._line(px1, sy(k), px2, sy(k), GRID, 0.4)
+            self._draw_text(sx(k), py1 - 9, format_number(k), 6.5, color=GREY, align="c")
+            self._draw_text(px1 - 4, sy(k) - 2.5, format_number(k), 6.5, color=GREY, align="r")
+        if spec.get("x_line") is not None:
+            self._line(sx(spec["x_line"]), py1, sx(spec["x_line"]), py2, SOFT_GREY, 0.7, "1 2")
+        if spec.get("y_line") is not None:
+            self._line(px1, sy(spec["y_line"]), px2, sy(spec["y_line"]), SOFT_GREY, 0.7, "1 2")
+        for label, vx, vy, tone, named in pts:
+            self._circle(sx(vx), sy(vy), 2.4, TONES.get(tone, PALETTE[0]))
+            if named:
+                self._draw_text(sx(vx) + 3.5, sy(vy) + 2, fit(label, 70, 6.5), 6.5, color=INK)
+        self._draw_text((px1 + px2) / 2, y + 1, spec.get("x_label") or "", 6.5, color=GREY, align="c")
+        self._draw_text(px1 + 4, py2 - 8, spec.get("y_label") or "", 6.5, color=GREY)
+        return True
+
+    def _draw_radar(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        axes = spec.get("axes") or []
+        series = [s for s in spec.get("series") or [] if any(v is not None for v in s.get("values") or [])]
+        if len(axes) < 3 or not series:
+            return False
+        cx, cy = x + w / 2, y + h / 2 + 4
+        R = min(w / 2 - 40, h / 2 - 18)
+        n = len(axes)
+        ang = lambda i: math.pi / 2 - i * 2 * math.pi / n
+        for ring in (25, 50, 75, 100):
+            self._polyline([(cx + R * ring / 100 * math.cos(ang(i)), cy + R * ring / 100 * math.sin(ang(i))) for i in range(n + 1)], GRID, 0.5)
+        for i, name in enumerate(axes):
+            self._line(cx, cy, cx + R * math.cos(ang(i)), cy + R * math.sin(ang(i)), GRID, 0.5)
+            lx, ly = cx + (R + 8) * math.cos(ang(i)), cy + (R + 8) * math.sin(ang(i))
+            self._draw_text(lx, ly - 2.5, fit(name, 70, 6.5), 6.5, color=GREY, align="c" if abs(math.cos(ang(i))) < 0.3 else "l" if math.cos(ang(i)) > 0 else "r")
+        colours = [PALETTE[0], SOFT_GREY]
+        for k, s in enumerate(series):
+            pts = [(cx + R * v / 100 * math.cos(ang(i)), cy + R * v / 100 * math.sin(ang(i))) for i, v in enumerate(s["values"]) if v is not None]
+            if len(pts) > 2:
+                self._polygon(pts, mix(colours[k % 2], WHITE, 0.82))
+            self._polyline(pts + pts[:1], colours[k % 2], 1.1)
+        self._legend([(s["name"], colours[k % 2], False) for k, s in enumerate(series)], x, y + 1, x + w)
+        return True
+
+    def _draw_topology(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        nodes = spec.get("nodes") or []
+        if not nodes:
+            return False
+        pos = {n["key"]: (x + 20 + n["x"] * (w - 40), y + h - 6 - n["y"] * (h - 20)) for n in nodes}
+        for l in spec.get("links") or []:
+            if l["a"] in pos and l["b"] in pos:
+                (ax, ay), (bx, by) = pos[l["a"]], pos[l["b"]]
+                colour = TONES[l["tone"]] if l.get("tone") in ("warn", "bad") else SOFT_GREY
+                self._line(ax, ay, bx, by, colour, 1.4 if l.get("tone") in ("warn", "bad") else 0.9, "2 2" if l.get("dashed") else "")
+        for n in nodes:
+            nx, ny = pos[n["key"]]
+            self._circle(nx, ny, 6 if n.get("core") else 4.5, TONES.get(n.get("tone"), TONES["none"]), WHITE, 1)
+            self._draw_text(nx, ny + 9 if n.get("alt") else ny - 13, fit(n["label"], 70, 6.5), 6.5, color=INK, align="c")
+        return True
+
+    def _draw_sparktable(self, spec: dict, x: float, y: float, w: float, h: float) -> bool:
+        rows = spec.get("rows") or []
+        if not rows:
+            return False
+        head = spec.get("header") or ["", "", "", ""]
+        name_w, spark_w = w * 0.42, w * 0.34
+        yy = y + h - 9
+        for col, tx in ((0, x), (1, x + name_w), (2, x + name_w + spark_w + 4)):
+            self._draw_text(tx, yy, fit(head[col] if col < len(head) else "", (spark_w if col == 1 else name_w) - 4, 6.5, True), 6.5, True, GREY)
+        for r in rows:
+            yy -= 14
+            self._line(x, yy + 10.5, x + w, yy + 10.5, GRID, 0.3)
+            tone = r.get("tone") if r.get("tone") in TONES else "none"
+            self._draw_text(x, yy + 1, fit(r["name"], name_w - 6, 7.5), 7.5, color=INK)
+            vals = r.get("values") or []
+            known = [v for v in vals if v is not None]
+            if len(known) > 1:
+                lo, hi = min(known), max(known)
+                sx0, sw = x + name_w, spark_w - 8
+                for run in _runs([(i, v) for i, v in enumerate(vals)]):
+                    self._polyline([(sx0 + i / max(len(vals) - 1, 1) * sw, yy - 1 + (v - lo) / ((hi - lo) or 1) * 9) for i, v in run],
+                                   TONES[tone] if tone in ("warn", "bad") else PALETTE[0], 0.8)
+            self._draw_text(x + name_w + spark_w + 4, yy + 1, fit(r.get("now") or "", w * 0.16, 7.5, True), 7.5, True,
+                            TONE_INK[tone] if tone in ("warn", "bad") else INK)
+            self._circle(x + w - 4, yy + 3.5, 2.6, TONES[tone])
+        return True
+
+
+class Document(_Charts):
     """A report being built page by page. Call render() at the end to get the PDF bytes."""
 
     def __init__(self, title: str = "Report", landscape: bool = False, footer: str = "Home Monitor") -> None:
@@ -370,6 +1196,32 @@ class Document:
             self._draw_text(self.left, self._y - size, line, size, bold, color)
             self._y -= size * 1.3
 
+    def text_box(self, title: str, text: str, size: float = 9) -> None:
+        """A light rounded box with a bold title and the words inside (the spec's text box); a line
+        break starts a new paragraph. Text longer than a page flows on without the box."""
+        inner = self.content_width - 20
+        lines: list[str] = []
+        for para in str(text or "").split("\n"):
+            lines += wrap(para, inner, size) if para.strip() else [""]
+        height = 12 + (16 if title else 0) + len(lines) * size * 1.35 + 4
+        if height > self.height - 2 * MARGIN - 40:
+            self.section(title)
+            for para in str(text or "").split("\n"):
+                self.text(para, size=size)
+            self.space(8)
+            return
+        self._ensure(height + 8)
+        top = self._y
+        self._round_rect(self.left, top - height, self.content_width, height, 6, fill=BAND, stroke=RULE)
+        y = top - 8
+        if title:
+            self._draw_text(self.left + 10, y - 10, fit(title, inner, 10, True), 10, True, INK)
+            y -= 16
+        for line in lines:
+            y -= size * 1.35
+            self._draw_text(self.left + 10, y + 2, line, size, color=INK)
+        self._y = top - height - 10
+
     def section(self, title: str, note: str = "") -> None:
         """A small bold heading for a part of the report, with an optional grey line under it."""
         self._ensure(40)
@@ -432,7 +1284,8 @@ class Document:
         gap = 8.0
         w = (self.content_width - gap * (len(tiles) - 1)) / len(tiles)
         notes = [wrap(t.get("note") or "", w - 16, 7)[:2] if t.get("note") else [] for t in tiles]
-        height = 50 + (9 if any(t.get("sub") for t in tiles) else 0) + 8.5 * max(len(n) for n in notes)
+        subs = [wrap(t.get("sub") or "", w - 16, 7)[:2] if t.get("sub") else [] for t in tiles]
+        height = 50 + 9 * max(len(x) for x in subs) + 8.5 * max(len(n) for n in notes)
         self._ensure(height + 10)
         top = self._y
         for i, (tile, lines) in enumerate(zip(tiles, notes)):
@@ -441,11 +1294,12 @@ class Document:
             self._round_rect(x, top - height, w, height, 5, fill=WHITE, stroke=RULE)
             self._rect(x + 0.6, top - height + 3, 3, height - 6, TONES[tone])
             self._draw_text(x + 10, top - 13, fit(tile.get("label", ""), w - 16, 7.5), 7.5, color=GREY)
-            self._draw_text(x + 10, top - 33, fit(tile.get("value", ""), w - 16, 16, True), 16, True, INK)
+            size = 16 if len(tiles) < 6 else 13
+            self._draw_text(x + 10, top - 33, fit(tile.get("value", ""), w - 16, size, True), size, True, INK)
             y = top - 33
-            if tile.get("sub"):
-                y -= 10
-                self._draw_text(x + 10, y, fit(tile["sub"], w - 16, 7), 7, color=GREY)
+            for k, line in enumerate(subs[i]):
+                y -= 10 if k == 0 else 8.5
+                self._draw_text(x + 10, y, line, 7, color=GREY)
             colour = {"good": TONE_INK["good"], "bad": TONE_INK["bad"]}.get(tile.get("trend") or "", GREY)
             for line in lines:
                 y -= 9
@@ -487,7 +1341,7 @@ class Document:
             self._y = top - height - 10
 
     def _chart_head_lines(self, spec: dict, w: float) -> list[str]:
-        return wrap(spec["note"], w, 7.5)[:2] if spec.get("note") else []
+        return wrap(spec["note"], w, 7.5)[:3] if spec.get("note") else []
 
     def _chart_height(self, spec: dict, w: float, full: bool) -> float:
         kind = spec.get("kind")
@@ -501,19 +1355,41 @@ class Document:
             return 7 * 13 + 26
         if kind == "grid":
             per_row = max(1, int((w + 6) // 96))
-            return max(1, -(-len(spec.get("tiles") or []) // per_row)) * 32
+            return max(1, -(-len(spec.get("tiles") or []) // per_row)) * 32 + (14 if spec.get("counts") else 0)
+
+        def rows(key: str, each: float, extra: float) -> float:
+            return max(len(spec.get(key) or []), 1) * each + extra
+        sized = {"textbox": lambda: len(self._text_lines(spec.get("text") or "", w - 16)) * 11 + 12,
+                 "keyvalue": lambda: rows("pairs", 12, 6), "gauge": lambda: 92.0, "headline": lambda: rows("items", 30, 4),
+                 "bullet": lambda: rows("rows", 16, 16), "diverging": lambda: rows("rows", 13, 16), "dumbbell": lambda: rows("rows", 14, 30),
+                 "butterfly": lambda: rows("rows", 13, 16), "stack100": lambda: rows("rows", 14, 30), "box": lambda: rows("rows", 15, 16),
+                 "gantt": lambda: rows("rows", 13, 34), "sparktable": lambda: rows("rows", 14, 16),
+                 "calendar": lambda: 8 * 11 + 26.0, "multiples": lambda: max(1, -(-len(spec.get("panels") or []) // 3)) * 58 + 4.0,
+                 "clock": lambda: 160.0, "radar": lambda: 175.0, "topology": lambda: 185.0, "timeline": lambda: 130.0,
+                 "scatter": lambda: 190.0 if full else 165.0, "treemap": lambda: 150.0}
+        if kind in sized:
+            return float(sized[kind]())
         return 170 if full else 140
 
     def _draw_chart(self, spec: dict, x: float, y: float, w: float, h: float) -> None:
         draw = {"line": self._draw_line, "mirror": self._draw_mirror, "bar": self._draw_bars,
                 "columns": self._draw_columns, "donut": self._draw_donut, "strips": self._draw_strips,
-                "heatmap": self._draw_heatmap, "grid": self._draw_grid}.get(spec.get("kind"))
+                "heatmap": self._draw_heatmap, "grid": self._draw_grid, "textbox": self._draw_textbox,
+                "keyvalue": self._draw_keyvalue, "gauge": self._draw_gauge, "headline": self._draw_headline,
+                "bullet": self._draw_bullet, "lollipop": self._draw_lollipop, "diverging": self._draw_diverging,
+                "dumbbell": self._draw_dumbbell, "butterfly": self._draw_butterfly, "stack100": self._draw_stack100,
+                "treemap": self._draw_treemap, "waterfall": self._draw_waterfall, "pareto": self._draw_pareto,
+                "histogram": self._draw_histogram, "box": self._draw_box, "cdf": self._draw_cdf, "band": self._draw_band,
+                "baseline": self._draw_baseline, "step": self._draw_step, "multiples": self._draw_multiples,
+                "forecast": self._draw_forecast, "calendar": self._draw_calendar, "gantt": self._draw_gantt,
+                "clock": self._draw_clock, "timeline": self._draw_timeline, "scatter": self._draw_scatter,
+                "radar": self._draw_radar, "topology": self._draw_topology, "sparktable": self._draw_sparktable}.get(spec.get("kind"))
         if draw is None or not draw(spec, x, y, w, h):
-            self._no_data(x, y, x + w, y + h)
+            self._no_data(x, y, x + w, y + h, spec.get("empty_text") or "No data")
 
-    def _no_data(self, x1: float, y1: float, x2: float, y2: float) -> None:
+    def _no_data(self, x1: float, y1: float, x2: float, y2: float, text: str = "No data") -> None:
         self._op(f"{_rgb((0.8, 0.8, 0.8), 'RG')} 0.5 w {_n(x1)} {_n(y1)} {_n(x2 - x1)} {_n(y2 - y1)} re S")
-        self._draw_text((x1 + x2) / 2, (y1 + y2) / 2 - 3, "No data", 9, color=GREY, align="c")
+        self._draw_text((x1 + x2) / 2, (y1 + y2) / 2 - 3, fit(text, x2 - x1 - 8, 9), 9, color=GREY, align="c")
 
     def _legend(self, items: Sequence[tuple[str, Color, bool]], x: float, y: float, right: float) -> None:
         """Small keys in a row: (name, colour, dashed line instead of a square)."""
@@ -605,6 +1481,8 @@ class Document:
             color = self._series_colour(index, tone)
             for run in _runs(pts):
                 self._polyline([(sx(t), sy(v)) for t, v in run], color)
+        for t, v in spec.get("dots") or []:
+            self._circle(sx(t), sy(v), 1.7, TONES["bad"])
         self._op("Q")
         if legend:
             self._legend(legend, px1, y + 1, x + w)
@@ -718,6 +1596,7 @@ class Document:
 
         slot = (px2 - px1) / len(labels)
         bar_w = max(1.0, slot * 0.72)
+        grouped = bool(spec.get("grouped")) and not stacked
         tones = spec.get("bar_tones") or []
         for i in range(len(labels)):
             bx = px1 + i * slot + (slot - bar_w) / 2
@@ -725,6 +1604,11 @@ class Document:
             for si, s in enumerate(series):
                 value = s["values"][i]
                 if value is None:
+                    continue
+                if grouped:
+                    each = bar_w / len(series)
+                    self._rect(bx + si * each, sy(low), max(0.6, each - 0.6), max(0.0, sy(float(value)) - sy(low)),
+                               self._series_colour(si, s.get("tone")))
                     continue
                 tone = tones[i] if len(series) == 1 and i < len(tones) and tones[i] else s.get("tone")
                 colour = self._series_colour(si, tone)
@@ -834,6 +1718,15 @@ class Document:
             return False
         per_row = max(1, int((w + 6) // 96))
         tw = (w - 6 * (per_row - 1)) / per_row
+        if spec.get("counts"):
+            lx = x
+            for label, tone, count in spec["counts"]:
+                text = f"{label} {count}"
+                self._rect(lx, y + 1, 7, 7, TONES.get(tone, TONES["none"]))
+                self._draw_text(lx + 10, y + 1.5, text, 7, color=INK)
+                lx += 18 + text_width(text, 7)
+            y += 14
+            h -= 14
         for i, tile in enumerate(tiles):
             tx = x + (i % per_row) * (tw + 6)
             ty = y + h - (i // per_row + 1) * 32 + 4
