@@ -410,6 +410,35 @@ class UserApiTests(unittest.TestCase):
         finally:
             os.remove(result)
 
+    def test_update_available_message_once_per_version(self):
+        """A new version found by the daily check or Check for updates sends one Telegram message with
+        what is new, once per version, and none for a version the person skipped (task 257)."""
+        def status(latest, ok=True, newer=True):
+            return {"check": {"ok": ok, "newer": newer, "latest": latest, "changes": [
+                {"version": latest, "name": "Update alerts", "notes": "## New\n- A message when a **new** version is out\n- Faster pages\nPlain text"},
+                {"version": "0.20.5", "name": "0.20.5", "notes": "* Fixes"}]}}
+        database.set_internal_setting(server.ALERT_SEEN_AVAILABLE, "")
+        try:
+            with mock.patch.object(server.NOTIFIER, "event") as ev:
+                self.assertFalse(server.alert_update_available(status("9.0.0", newer=False)))
+                self.assertFalse(server.alert_update_available(status("9.0.0", ok=False)))
+                self.assertTrue(server.alert_update_available(status("9.0.0")))
+                kind, values = ev.call_args[0][:2]
+                self.assertEqual((kind, values["latest"], values["current"]), ("update_available", "9.0.0", server.APP_VERSION))
+                self.assertEqual(values["summary"], "• 9.0.0: Update alerts\n   A message when a new version is out\n   Faster pages\n• 0.20.5\n   Fixes")
+                self.assertFalse(server.alert_update_available(status("9.0.0")))
+                database.set_internal_setting(server.UPDATE_SKIP_KEY, "9.1.0")
+                self.assertFalse(server.alert_update_available(status("9.1.0")))
+                self.assertTrue(server.alert_update_available(status("9.2.0")))
+                self.assertEqual(ev.call_count, 2)
+            import notify
+            self.assertIs(notify.EVENTS["update_available"][1], True)
+            text = notify.render(notify.EVENTS["update_available"][2], {"latest": "9.0.0", "current": "1.0.0", "summary": "• x"})
+            self.assertIn("Settings, System, Updates", text)
+        finally:
+            database.set_internal_setting(server.UPDATE_SKIP_KEY, "")
+            database.set_internal_setting(server.ALERT_SEEN_AVAILABLE, "")
+
     def test_update_cut_short_by_a_restart_unlocks_the_page(self):
         """A progress file from another boot (or silent for hours) means the update was cut short: the
         page shows that and the buttons are not locked for ever."""

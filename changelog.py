@@ -350,6 +350,10 @@ RELEASES: List[Dict[str, Any]] = [
         "Switches that speak LLDP tell the map exactly which port connects to which. Their neighbours show on the device's Ports tab.",
         "A custom SNMP value can be a capacity reading with a limit, such as DHCP leases or firewall sessions. It joins the capacity bars and forecasts.",
     ]},
+    {"id": 45, "date": "2026-11-22", "title": "A message when a new version is out", "items": [
+        "When the daily check or Check for updates finds a new version, Telegram tells you once, with what is new and where to update.",
+        "A version you chose to skip sends no message. Switch the message off or change its words in Settings, Notifications.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 

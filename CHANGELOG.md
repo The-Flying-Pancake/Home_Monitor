@@ -15,6 +15,11 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 0.21.0: Release 45, A message when a new version is out (2026-11-22)
+
+- When the daily check or Check for updates finds a new version, Telegram tells you once, with what is new and where to update.
+- A version you chose to skip sends no message. Switch the message off or change its words in Settings, Notifications.
+
 ### 0.20.0: Release 44, Incidents, changes and truer reports (2026-11-15)
 
 - Incidents: open one from scratch or straight from a problem, then keep its owner, priority, status, notes and actions with due dates in one place.

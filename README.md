@@ -30,7 +30,7 @@ installs with one file and backs itself up.
 | 📈 **Monitoring** | Ping, SNMP v2c and v3 (CPU, memory, disks, interfaces, temperatures, UPS, printers, NAS), port and web checks. Templates for common homelab gear, with custom OIDs for anything else. |
 | 🟢 **Availability** | Status pages and uptime history for every device. |
 | 🚨 **Alerts** | Rules with thresholds, durations and severities. Problems group sensibly (a switch going down does not page you for everything behind it). Quiet hours, maintenance windows and acknowledgements. |
-| 📱 **Telegram** | Alerts with your own message texts, plus a read-only bot you can ask for status. |
+| 📱 **Telegram** | Alerts with your own message texts, a note when a new version is out, plus a read-only bot you can ask for status. |
 | 🤖 **Automation** | A visual workflow builder: SSH commands on your hosts, waits, conditions and schedules, or a trigger when something happens. Ready-made host actions for common Linux chores. |
 | 🗺️ **Map and dashboards** | A network map that understands upstream links and can show your Wi-Fi devices and live traffic flowing all the way up to the internet. Fold away the branches you do not need and let it tidy itself. Plus several dashboards built from tiles. |
 | 📄 **Reports** | Ready-made reports you can adjust (a monthly health summary, availability, latency, bandwidth, a single device, storage, Wi-Fi, Pi-hole and more), each with headline figures, a short summary in plain words and clear charts, downloaded as a PDF or a CSV file. Save one to run every day, week or month and have it sent to Telegram. |
@@ -143,7 +143,8 @@ checks the signature by itself before every update.
 ## 🔄 Updating
 
 - **From the app:** the monitor looks for a new version once a day and shows a red number on
-  Settings when one is ready. Settings, System, Updates shows what is new in it, and *Update now* does the
+  Settings when one is ready. With Telegram set up, a message lets you know too, once for each new
+  version. Settings, System, Updates shows what is new in it, and *Update now* does the
   rest while you watch. An update is installed only if its signature matches the release key built
   into your copy. It backs up first and puts the old version back by itself if the new one does not
   start. For two days you can still go back, and the update history keeps the log of every update.

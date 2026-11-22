@@ -42,7 +42,7 @@ class GroupTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         start_api_server()
-        cls.aps = [add_device(f"grp-ap{i}", f"192.0.2.{150 + i}") for i in range(4)]
+        cls.aps = [add_device(f"grp-ap{i}", f"203.0.113.{160 + i}") for i in range(4)]
 
     def setUp(self):
         notify._outbox()

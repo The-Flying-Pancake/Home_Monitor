@@ -1984,7 +1984,50 @@ def _auto_update_loop() -> None:
             auto_update_check()
         except Exception:  # noqa: BLE001 (a failed check must never stop the loop)
             log.exception("Daily update check")
-        time.sleep(3600)
+        try:
+            alert_update_available()
+        except Exception:  # noqa: BLE001
+            log.exception("Update available message")
+        # Every minute, so a message follows soon after Check for updates; the daily check itself
+        # only asks root once a day (auto_update_check looks at when it last asked).
+        time.sleep(60)
+
+
+ALERT_SEEN_AVAILABLE = "alert_seen_update_available"   # internal setting: the version already announced
+
+
+def update_summary(changes: List[Dict[str, Any]], limit: int = 1200) -> str:
+    """What is new, for the message: each version's name and the first points of its notes."""
+    lines: List[str] = []
+    for c in changes[:5]:
+        name = str(c.get("name") or "").strip()
+        version = str(c.get("version") or "").strip()
+        lines.append(f"• {version}: {name}" if name and name != version else f"• {version}")
+        points = [re.sub(r"[*_`]", "", ln.strip()[2:]).strip() for ln in str(c.get("notes") or "").splitlines()
+                  if ln.strip()[:2] in ("- ", "* ")]
+        lines += [f"   {pt[:160]}" for pt in points[:3] if pt]
+    if len(changes) > 5:
+        lines.append(f"• and {len(changes) - 5} older versions")
+    text = "\n".join(lines)
+    return text if len(text) <= limit else text[:limit].rsplit("\n", 1)[0] + "\n   ..."
+
+
+def alert_update_available(status: Optional[Dict[str, Any]] = None) -> bool:
+    """One Telegram message per new version, after the daily check or Check for updates finds it.
+    Not for a version the person chose to skip. Returns whether one was queued."""
+    status = update_status() if status is None else status
+    check = status.get("check") or {}
+    latest = str(check.get("latest") or "")
+    if not (check.get("ok") and check.get("newer") and latest):
+        return False
+    s = database.get_all_settings()
+    if latest == (s.get(ALERT_SEEN_AVAILABLE) or "") or latest == (s.get(UPDATE_SKIP_KEY) or ""):
+        return False
+    database.set_internal_setting(ALERT_SEEN_AVAILABLE, latest)
+    changes = check.get("changes") or [{"version": latest, "name": check.get("name"), "notes": check.get("notes")}]
+    NOTIFIER.event("update_available", {"latest": latest, "current": APP_VERSION,
+                                        "summary": update_summary(changes), "severity": "info"})
+    return True
 
 
 ALERT_SEEN_RESTORE = "alert_seen_restore"
@@ -7425,7 +7468,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "0.20.0"
+APP_VERSION = "0.21.0"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:

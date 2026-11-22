@@ -58,6 +58,9 @@ EVENTS = {
     "certificate": ("HTTPS certificate expiring", True, "The monitor's HTTPS certificate expires on {date} ({days} days). Upload a new one in Settings, System, HTTPS."),
     # Changes to users, credentials and host keys, lockouts, HTTPS, updates and restores (SECURITY_TEXTS).
     "security": ("Security alerts", True, "Security: {what}\n{if who}By {who}{end}{if source} from {source}{end}"),
+    # A new version of the monitor is out (the daily check or Check for updates). Once per version.
+    "update_available": ("New version available", True,
+                         "Home Monitor {latest} is available (you have {current}).\n{summary}\nTo update: Settings, System, Updates."),
     # Not an event of its own: several messages that came at once, sent as one (Notifier.drain, notify_group).
     "grouped": ("Several at once, grouped", None, "📣 {count} changes at {time}\n{if offline_count > 0}\n🔴 Offline ({offline_count}): {offline_list}\n{end}\n{if online_count > 0}\n🟢 Back online ({online_count}): {online_list}\n{end}\n{if proxmox_count > 0}\n🖥️ Proxmox ({proxmox_count}):\n{proxmox_list}\n{end}\n{other_list}"),
 }
@@ -82,6 +85,8 @@ PLACEHOLDERS = {
     "count": "How many messages were grouped", "offline_count": "Devices that went offline",
     "offline_list": "Their names, comma separated; devices unreachable behind one follow it in brackets", "online_count": "Devices back online", "online_list": "Their names",
     "other_list": "Every other message, one per line", "window": "Seconds the monitor waited to group them",
+    "latest": "The new version", "current": "The version running now",
+    "summary": "What is new, from the release notes of every version since yours",
     "proxmox_count": "Proxmox messages (guests, nodes, storage)", "proxmox_list": "Those messages, one per line",
 }
 # Which placeholders mean something in each event (the template editor lists these).
@@ -95,6 +100,7 @@ EVENT_PLACEHOLDERS = {
     "workflow": ["workflow", "status", "failed_step", "trigger", "time"],
     "workflow_start": ["workflow", "trigger", "time"],
     "security": ["what", "who", "source", "time"],
+    "update_available": ["latest", "current", "summary", "time"],
     "incident_opened": ["incident", "title", "priority", "status", "owner", "device", "time"],
     "incident_resolved": ["incident", "title", "priority", "status", "owner", "device", "duration", "time"],
     "grouped": ["count", "time", "window", "offline_count", "offline_list", "online_count", "online_list",
@@ -108,7 +114,8 @@ SAMPLE = {"device": "nas-01", "ip": "192.168.1.99", "template": "qnap_nas", "tim
           "online_count": 0, "online_list": "", "other_list": "• warning: nas-01: CPU usage 97% (threshold 90%)\n• Resolved on pve: memory 91%",
           "proxmox_count": 1, "proxmox_list": "• warning: pve: Guest media-server (200) is stopped, although it starts at boot",
           "window": 30, "what": "New user added: alex (Viewer)", "who": "admin", "source": "192.168.1.20",
-          "incident": "INC-0007", "title": "NAS offline after a power cut", "priority": "P1", "owner": "alex"}
+          "incident": "INC-0007", "title": "NAS offline after a power cut", "priority": "P1", "owner": "alex",
+          "latest": "0.21.0", "current": "0.20.0", "summary": "• 0.21.0: Update alerts\n   A message when a new version is out"}
 # Ready-made texts offered in the template editor, per event. Short on purpose.
 PRESETS = {
     "device_offline": ["🔴 {device} ({ip}) is offline. {problem}", "🔴 DOWN {device} ({ip}) at {time}",
@@ -122,6 +129,8 @@ PRESETS = {
     "workflow_start": ["▶️ Workflow {workflow} started ({trigger})", "⏱️ {time}: running {workflow}"],
     "incident_opened": ["🚨 {incident} opened, {priority}: {title}", "🚨 {priority} {incident}: {title}{if owner} ({owner}){end}"],
     "incident_resolved": ["✅ {incident} resolved after {duration}: {title}"],
+    "update_available": ["📦 Home Monitor {latest} is available (you have {current}).\n{summary}\nTo update: Settings, System, Updates.",
+                         "📦 {latest} is out. Update in Settings, System, Updates."],
     "security": ["🔒 Security: {what}\n{if who}By {who}{end}{if source} from {source}{end}", "🚨 {what} ({time})"],
     "grouped": ["📣 {count} changes at {time}\n{if offline_count > 0}\n🔴 Offline ({offline_count}): {offline_list}\n{end}\n{if online_count > 0}\n🟢 Back online ({online_count}): {online_list}\n{end}\n{if proxmox_count > 0}\n🖥️ Proxmox ({proxmox_count}):\n{proxmox_list}\n{end}\n{other_list}",
                 "📣 {count} at once: {if offline_count > 0}{offline_count} down{end}{if online_count > 0} {online_count} up{end}\n{offline_list|before:\"Down: \"}\n{online_list|before:\"Up: \"}\n{other_list|first:5}"],
