@@ -184,7 +184,8 @@ python3 tests/browser_checks.py      # browser checks (needs Chrome or Edge)
 ## 💛 About this project
 
 Home Monitor is a hobby project, built for a homelab and shared in case it is useful for yours.
-It is maintained in spare time, and new versions arrive as features are ready. It is not meant for
+It is maintained in spare time, and new versions arrive as features are ready. Version 1.0 is a
+happy milestone: everything it set out to do is now in place. It is not meant for
 mission-critical systems, and it comes as is, under the MIT licence.
 
 **Built with [Claude Code](https://claude.com/claude-code).** Most of the code, the tests and this

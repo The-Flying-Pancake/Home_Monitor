@@ -397,7 +397,7 @@ class SecurityAlertTests(unittest.TestCase):
             request("DELETE", f"/api/credentials/{body['id']}")
             fired("cred_deleted", name="sec-cred")
         with self.subTest("host keys"):
-            dev = add_device("sec-hk", "203.0.113.244", profile="linux_host")
+            dev = add_device("sec-hk", "203.0.113.245", profile="linux_host")   # an address no other test uses
             try:
                 presented = {"key_type": "ssh-ed25519", "key_b64": "FFFF", "fingerprint": "SHA256:sec"}
                 with mock.patch.object(server.ssh_runner, "fetch_host_key", return_value=presented):

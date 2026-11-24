@@ -483,7 +483,9 @@ tagged_cts() {  # the IDs of containers carrying the tag
     [[ -e "$f" ]] || continue
     id="$(basename "$f" .conf)"
     [[ "$id" =~ ^[0-9]+$ ]] || continue
-    ct_conf "$id" tags | tr ';, ' '\n\n\n' | grep -qx "$HM_TAG" && echo "$id"
+    # An if, not "&& echo": a container without the tag must not leave the loop's status a failure, which with
+    # set -e and pipefail ended the whole install silently whenever the host's last container was not a monitor.
+    if ct_conf "$id" tags | tr ';, ' '\n\n\n' | grep -qx "$HM_TAG"; then echo "$id"; fi
   done | sort -n
 }
 

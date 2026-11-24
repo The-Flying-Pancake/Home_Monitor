@@ -40,7 +40,7 @@ ssh-keygen -Y verify -f release-signers -I release@home-monitor -n home-monitor-
     <li>After an upgrade, your next login shows what changed. <em>What's changed</em> on this Guide page shows the whole list again.</li>
   </ul>
   <h3>Version numbers</h3>
-  <p>Settings, System shows the version the monitor runs (for example 0.4.0). The installer and every backup record it too. The middle number goes up for new features or a change to the database; an upgrade then brings your data up to date. The last number goes up for fixes and small changes to what is already there.</p>
+  <p>Settings, System shows the version the monitor runs (for example 1.0.0). The installer and every backup record it too. The middle number goes up for new features or a change to the database; an upgrade then brings your data up to date. The last number goes up for fixes and small changes to what is already there.</p>
 </section>
 
 <section id="adding" data-title="Adding things to monitor">
@@ -530,7 +530,7 @@ ssh-keygen -Y verify -f release-signers -I release@home-monitor -n home-monitor-
 <section id="backups" data-title="Backups, restore and upgrades">
   <h2>Backups, restore and upgrades</h2>
   <h3>Backups</h3>
-  <p>A backup is made every day by itself. <em>Back up now</em> (Settings, Data and backups) makes one at once. Each backup records the version that made it. Without Syncthing they stay in the container (the newest 7); with Syncthing they are written to the synced folder, so your NAS holds them. A backup has everything a rebuild needs. The key that unlocks the stored passwords goes with it sealed with your backup passphrase; without a passphrase it stays only in backups kept inside the container.</p>
+  <p>A backup is made every day by itself. <em>Back up now</em> (Settings, Data and backups) makes one at once. Each backup records the version that made it. Without Syncthing they stay in the container (the newest 7); with Syncthing they are written to the synced folder, so your NAS holds them. A backup has everything a rebuild needs. The key that unlocks the stored passwords goes with it sealed with your backup passphrase; without a passphrase it stays only in backups kept inside the container. The backup folder must be a real folder: if it is a link to somewhere else, the backup stops before anything is written and says so. To keep backups on your NAS, use Syncthing.</p>
   <h3>The backup passphrase</h3>
   <p>After an update that brings a step like this, an administrator sees a screen <em>One thing to do before you carry on</em> once What's changed is closed. The app opens again as soon as the step is done; the monitor keeps watching your network meanwhile. Other users carry on and are told an administrator needs to finish it.</p>
   <p>Set one as soon as you can. The easiest way is Settings, Data and backups, <strong>Set backup passphrase</strong>: confirm your password (and your code, with 2FA), type a passphrase of 12 characters or more twice and keep it in your password manager, apart from the backups. The container saves it and makes a sealed backup straight away. Telegram sends a security alert and the audit log records who did it. The same button changes it later; backups made before a change still need the old passphrase. You can also do it in a root shell in the container with <code>/root/backup-passphrase.sh</code> (or <code>/root/update.sh</code>, option 7). On a new install you can also set <code>BACKUP_PASSPHRASE</code> at the top of <code>home_monitor.sh</code>.</p>
@@ -570,7 +570,7 @@ ssh-keygen -Y verify -f release-signers -I release@home-monitor -n home-monitor-
     <li>Waits for the new version to answer. If it does not, it puts the old version and data back by itself.</li>
   </ol>
   <p><code>bash home_monitor.sh --check</code> runs only the check, if you want to look without upgrading.</p>
-  <p>Settings, System shows the version now running. A new middle number (0.3 to 0.4) brings new features and may update the database; a new last number (0.3.0 to 0.3.1) brings fixes. Your next login after an upgrade lists what changed.</p>
+  <p>Settings, System shows the version now running. A new middle number (1.0 to 1.1) brings new features and may update the database; a new last number (1.0.0 to 1.0.1) brings fixes. Your next login after an upgrade lists what changed.</p>
   <h3>Restoring a backup into the same container</h3>
   <p>When the monitor misbehaves and you want to start again from a backup without a new container: <em>Restore a backup</em> in the menu, or <code>bash home_monitor.sh --restore</code> (<code>sudo bash home_monitor.sh --local --restore</code> on a VM). It finds the container by its tag and lists every backup the container can see: its own backup folder (daily ones and those made before an upgrade or restore), the Syncthing folder, any mounted share and <code>/root</code>. Each line shows when it was made, the version that made it and its size, newest first. Pick one by its number, then type <em>RESTORE</em>. It then:</p>
   <ol>
@@ -597,6 +597,8 @@ ssh-keygen -Y verify -f release-signers -I release@home-monitor -n home-monitor-
     <dd>The token has no permission of its own. Add the API Token Permission (see <a href="#/guide/proxmox">Proxmox</a>); <em>Test connection</em> names what is missing.</dd>
     <dt>"SNMP agent not responding (host answers ping)"</dt>
     <dd>The community is wrong, SNMP is off or a firewall blocks UDP 161. If the device has no SNMP at all, set its template to <em>Ping only</em> in Edit device. With SNMPv3, <strong>SNMP check</strong> on the device's page says what is wrong and what to change (see <a href="#/guide/snmpv3">Setting up SNMPv3 on a device</a>).</dd>
+    <dt>"Port 443 not answering (the host answers ping)"</dt>
+    <dd>A port check: the machine is up but the service on that port stopped or a firewall now refuses it. Start the service again, or check the port number in Edit device. The rule is <em>Service port not answering</em> in Alert rules (group Reachability).</dd>
     <dt>"SNMP agent only exposes basic system information"</dt>
     <dd>The host's snmpd allows only the system group. On Linux hosts use <a href="#/guide/device">Fix SNMP</a>.</dd>
     <dt>Fix SNMP: "could not log in over SSH"</dt>

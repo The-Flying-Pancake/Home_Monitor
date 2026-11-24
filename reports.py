@@ -3297,10 +3297,12 @@ def _v_health(c, b, devs, start, end, period):
     span = end - start
     now_s = _health_scores(c, devs, start, end)
     before = _health_scores(c, devs, max(start - 4 * span, c.now - 360 * 86400), start)
-    axes = [k for k in now_s if now_s[k] is not None or before[k] is not None]
+    # The two periods may score different figures (packet loss only where three-ping checks have run): each is
+    # read with get, so a figure one period lacks is left out of that period instead of failing the report.
+    axes = [k for k in dict.fromkeys([*now_s, *before]) if now_s.get(k) is not None or before.get(k) is not None]
     return {"kind": "radar", "title": "Health profile", "axes": axes,
-            "series": [{"name": "This period", "values": [now_s[a] for a in axes]},
-                       {"name": "The four periods before", "values": [before[a] for a in axes]}],
+            "series": [{"name": "This period", "values": [now_s.get(a) for a in axes]},
+                       {"name": "The four periods before", "values": [before.get(a) for a in axes]}],
             "note": SCORE_NOTE + " Figures without data are left out rather than drawn as zero."}
 
 
@@ -3368,18 +3370,24 @@ def _v_timeline(c, b, devs, start, end, period):
                 else "good" if msg.startswith("Resolved: ") or "back online" in msg.lower() or "recovered" in msg.lower()
                 else "info" if msg.startswith("Acknowledged: ") else "warn" if _sev(e["severity"]) == "Warning" else "bad" if _sev(e["severity"]) in ("Critical", "High") else "info")
         events.append([e["timestamp"], f"{names.get(e['device_id'], '')}: {msg}", tone])
-    events += _incident_events(c, devs, start, end)
     events.sort(key=lambda x: x[0])
+    # The incident's own markers (opened, notes, changes, resolved) are always shown; the other events fill the
+    # rest of the 16 places, every nth one when there are many. Sampled together, a busy network could push an
+    # incident's notes and changes out of its own review.
+    marks = sorted(_incident_events(c, devs, start, end), key=lambda x: x[0])[:16]
+    room = 16 - len(marks)
+    step = max(1, -(-len(events) // room)) if room else len(events) + 1
+    shown = sorted(marks + (events[::step][:room] if room else []), key=lambda x: x[0])
     down = _outages(c, start, end)
     spans = [(max(s, start), min(e or end, end)) for d in ids for s, e in down.get(d, [])]
     impact = None
     if spans:
         a, z = min(s for s, _ in spans), max(e for _, e in spans)
         impact = [a, z, f"Devices down ({_minutes(z - a)})"]
-    step = max(1, len(events) // 14)
-    return {"kind": "timeline", "title": "Timeline", "start": start, "end": end, "impact": impact, "events": events[::step][:16],
+    total = len(events) + len(marks)
+    return {"kind": "timeline", "title": "Timeline", "start": start, "end": end, "impact": impact, "events": shown,
             "note": f"Times are local ({_tz()}). Red is a failure, amber an alert, blue an action (incident notes and changes too), green a recovery; the shaded band is when devices were down."
-                    + (f" Every {step}th event of {len(events)} is shown." if step > 1 else "")}
+                    + (f" {len(shown)} of {total} events are shown; the incident's own are always among them." if len(shown) < total else "")}
 
 
 def _v_baseline(c, b, devs, start, end, period, key="cpu"):

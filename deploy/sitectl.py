@@ -405,6 +405,11 @@ def backup(args) -> None:
                 args.dest = folder
             except sitecheck.SiteError as exc:
                 print(f"Note: {exc}. Backing up to {args.dest} instead.", file=sys.stderr)
+    # Backups are written without following links (the folder sits in one the monitor's own user owns, so a link
+    # there could send root's file anywhere). A link is refused here in plain words, not part way through.
+    if os.path.islink(args.dest.rstrip("/") or args.dest):
+        fail(f"The backup folder {args.dest} is a link, so nothing was written. Back up to a real folder, "
+             "and use Syncthing to keep copies on your NAS")
     safe = _safe_dir(args)
     if safe and _inside(args.dest, safe):
         os.makedirs(safe, mode=0o700, exist_ok=True)

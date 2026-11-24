@@ -434,7 +434,8 @@ class PasswordCredentialTests(unittest.TestCase):
         self.assertTrue(database.get_host_keys(self.dev))                   # same address: kept
         self.assertEqual(request("PUT", f"/api/devices/{self.dev}", dict(body, ip_address="203.0.113.244"))[0], 200)
         self.assertFalse(database.get_host_keys(self.dev))
-        audit = [a["message"] for a in database.list_audit_logs(limit=20)]
+        # Far enough back that other tests' rows (all tests run in one process on Linux) do not push it out.
+        audit = [a["message"] for a in database.list_audit_logs(limit=500)]
         self.assertTrue(any("Forgot the SSH host key of pwc-host" in m for m in audit))
         request("PUT", f"/api/devices/{self.dev}", body)
         database.approve_host_key(self.dev, "ssh-ed25519", "AAAA", "SHA256:x")

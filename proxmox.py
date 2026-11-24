@@ -465,9 +465,14 @@ def refresh(devices: List[Dict[str, Any]], arp_rows: List[Dict[str, Any]], now: 
             continue
         conf = guest_config(client, g, now)
         ips = list(g.get("ips") or []) + [ip_of_mac[m] for m in conf["macs"] if ip_of_mac.get(m)]
-        device_id = g.get("device_id") or next((by_ip[ip] for ip in ips if ip in by_ip), None)
         key = f"{g['node']}/{g['vmid']}"
         prev = old_guests.get((g["node"], g["vmid"]))
+        device_id = g.get("device_id") or next((by_ip[ip] for ip in ips if ip in by_ip), None)
+        # A guest that is stopped or still starting has no address yet: it keeps the device it was linked to, so a
+        # snapshot or its name in the audit log does not go missing for a round (task 285). A device since deleted
+        # is not kept.
+        if device_id is None and not ips and prev and prev.get("device_id") in {d for d in by_ip.values()}:
+            device_id = prev["device_id"]
         # Uptime went down while running: it restarted (a stop and start in between counts too).
         if prev and g["status"] == "running" and isinstance(g.get("uptime"), (int, float)) and isinstance(prev.get("uptime"), (int, float)) \
                 and g["uptime"] < prev["uptime"] and g["uptime"] < 3600:

@@ -321,6 +321,19 @@ esac
         self.assertNotRegex(calls, r"pct exec[^\n]*public")
         self.assertNotIn("restore.sh --latest", calls)
 
+    def test_fake_install_beside_another_container(self):
+        """A host whose last container (by ID) is not a monitor: the install runs to its last screen. It used to stop
+        silently after the banner, as the tag search ended on that container's failed match (task 284, check 2.15)."""
+        bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("bash not available")
+        env, calls, script = self.fake_host()
+        self.tag_ct(950, tags="web;media")
+        r = subprocess.run([bash, script], input=b"a long root pw\na long root pw\n", capture_output=True, env=env, timeout=180)
+        out = r.stdout.decode(errors="replace") + r.stderr.decode(errors="replace")
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("Your monitor is up and running", out)
+
     def test_fake_install_with_demo_data(self):
         """DEMO="yes": the seed runs as the monitor's own user after the web interface answers; a
         restore wins over demo data; anything but yes or no is refused."""
@@ -1711,15 +1724,23 @@ class BackupAuthTests(unittest.TestCase):
         self.assertEqual(result["key"], "withheld")
         self.assertIn("the key was left out of this backup", result["output"])
 
-    def test_offbox_through_a_link_counts_as_off_the_box(self):
+    def test_a_backup_folder_that_is_a_link_is_refused_in_plain_words(self):
+        """The backups folder sits in one the monitor's own user owns: a link there could send root's file
+        anywhere, so it is refused before anything is written, with a message instead of a traceback (seen on
+        Linux, where this test runs; Windows needs extra rights for links)."""
         outside = os.path.join(self.tmp, "outside")
         os.makedirs(outside)
         try:
             os.symlink(outside, os.path.join(self.data, "backups"), target_is_directory=True)
         except (OSError, NotImplementedError):
             self.skipTest("symbolic links need extra rights on this system")
-        names, manifest = self.contents(self.backup(os.path.join(self.data, "backups"), passphrase=False))
-        self.assertNotIn("vault.key", names)
+        r = sitectl("backup", "--data", self.data, "--key", self.key, "--dest", os.path.join(self.data, "backups"),
+                    "--passphrase-file", self.none)
+        err = r.stderr.decode(errors="replace")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("is a link, so nothing was written", err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(os.listdir(outside), [])
 
     def test_local_backup_without_passphrase_keeps_the_key(self):
         names, manifest = self.contents(self.backup(os.path.join(self.data, "backups"), passphrase=False))

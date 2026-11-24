@@ -573,6 +573,12 @@ class NotificationAndEventTests(unittest.TestCase):
         self.assertEqual(after["unread"], sum(1 for e in after["items"] if e["timestamp"] > after["read_at"] and not e.get("fixed")))
 
     def test_action_error_becomes_event_and_notification(self):
+        # The bell lists the newest 30: with everything read first, one new event is one more unread however many
+        # other tests left behind (all tests run in one process on Linux).
+        items = request("GET", "/api/notifications")[1]["items"]
+        if items:
+            request("POST", "/api/notifications/read", {"upto": max(e["timestamp"] for e in items)})
+        time.sleep(1.1)                                       # the new event comes after what was marked read
         before = request("GET", "/api/notifications")[1]
         self.assertTrue(issubclass(server.ActionError, server.RequestError))
         database.add_event(None, "warning", "action", "Could not run workflow Test: no SSH credential", actor=TEST_USER)

@@ -96,6 +96,23 @@ class StatusTests(unittest.TestCase):
         msgs = [p["message"] for p in server.device_problems(d, {}, {})]
         self.assertEqual(msgs, ["Unreachable: no ping reply and port 443 not answering"])
 
+    def test_problem_pass_reads_the_port_readings(self):
+        """The whole problem pass, with the readings as the ping job stores them: a port that refuses while the
+        host answers ping opens "Service port not answering". It never did: the pass did not load service_up
+        (task 280, lab check 9.17)."""
+        dev = database.add_device("svc-pass", "192.0.2.231", "service_check", service_port=2222)
+        try:
+            database.update_device_status(dev, "degraded", 1.0)
+            database.record_metrics(dev, {"service_up": 0.0, "icmp_ping_ms": 1.0})
+            keys = {p["key"] for p in server.evaluate_problems() if p["device_id"] == dev}
+            self.assertIn("service_down", keys)
+            database.update_device_status(dev, "online", 1.0)
+            database.record_metrics(dev, {"service_up": 1.0, "tcp_connect_ms": 9000.0})
+            keys = {p["key"] for p in server.evaluate_problems() if p["device_id"] == dev}
+            self.assertEqual(keys & {"service_down", "service_slow"}, {"service_slow"})
+        finally:
+            database.delete_device(dev)
+
 
 class ApiTests(unittest.TestCase):
     @classmethod

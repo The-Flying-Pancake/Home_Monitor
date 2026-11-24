@@ -309,6 +309,24 @@ class IncidentReportTests(unittest.TestCase):
         self.assertIn("Changes today", tiles)
         self.assertGreaterEqual(int(tiles["Changes today"]["value"]), 1)
 
+    def test_the_timeline_keeps_the_incident_among_many_events(self):
+        """A busy network: 80 other events in the incident's hours. The timeline still shows the incident's own
+        note and change (it used to show every nth event, which could leave them out)."""
+        other = add_device("inc-busy", "203.0.113.236")
+        try:
+            now = int(time.time())
+            for i in range(80):
+                database.add_event(other, "warning", "snmp", f"Busy event {i}", timestamp=now - 3 * 3600 + 60 * i)
+            rep = self.run_report({"template": "outage", "period": "7d", "focus": {"incident": self.inc["id"]}})
+            timeline = next(b["chart"] for b in rep["blocks"] if b["type"] == "chart" and b["chart"]["kind"] == "timeline")
+            labels = [e[1] for e in timeline["events"]]
+            self.assertLessEqual(len(labels), 16)
+            self.assertTrue(any("Power is back" in l for l in labels), labels)
+            self.assertTrue(any("New power strip" in l for l in labels), labels)
+            self.assertTrue(any("Busy event" in l for l in labels), labels)
+        finally:
+            database.delete_device(other)
+
     def test_outage_review_from_an_incident(self):
         rep = self.run_report({"template": "outage", "period": "7d", "focus": {"incident": self.inc["id"]}})
         self.assertTrue(rep["title"].endswith(incidents.ref(self.inc["id"])))

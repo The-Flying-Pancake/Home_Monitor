@@ -1574,7 +1574,9 @@ SUMMARY_KEYS = ["uptime_seconds", "cpu_usage_pct", "cpu_idle_pct", "cpu_load_1m"
                 "mem_avail_kb", "mem_buffer_kb", "mem_cached_kb", "mem_total_mb", "mem_free_mb",
                 "clients_total", "clients_2g", "clients_5g", "radio_2g_util_pct", "radio_5g_util_pct",
                 "radio_2g_channel", "radio_5g_channel", "wan_status", "system_temp_c",
-                "tls_days_left", "dns.ok", "dns.ms", "pihole.blocking", "pihole.gravity_days", "pihole.paused"]
+                "tls_days_left", "dns.ok", "dns.ms", "pihole.blocking", "pihole.gravity_days", "pihole.paused",
+                # Port checks: the problem pass judges these (a port that refuses, or answers slowly).
+                "service_up", "tcp_connect_ms", "http_status"]
 
 # Snapshot tables the trigger set reads for each device.
 PROBLEM_TABLES = ("interfaces", "storage", "radios", "disks", "volumes", "sensors", "processes", "services", "health", "wifi_clients")
@@ -7082,6 +7084,13 @@ class PollScheduler:
         def run() -> None:
             try:
                 fn(*args)
+            except sqlite3.OperationalError as exc:
+                # A restart or a backup can hold the database a little longer than the wait: the next round reads
+                # again, so one line is enough (a traceback looked like a fault).
+                if "locked" in str(exc):
+                    log.warning("%s job (id %s): the database was busy; the next round tries again", kind, key_id)
+                else:
+                    log.exception("%s job failed (id %s)", kind, key_id)
             except Exception:
                 log.exception("%s job failed (id %s)", kind, key_id)
             finally:
@@ -7468,7 +7477,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "0.21.0"
+APP_VERSION = "1.0.0"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:

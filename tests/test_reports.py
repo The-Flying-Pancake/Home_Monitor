@@ -250,6 +250,19 @@ class ReportTests(unittest.TestCase):
         self.assertIn("no longer exists", database.list_report_runs(rid)[0]["error"])
 
 
+class HealthProfileTests(unittest.TestCase):
+    def test_periods_that_score_different_figures(self):
+        """The health profile when this period has three-ping packet loss and the periods before only failed checks:
+        it drew both, where it failed the whole report with a KeyError (task 281, lab check 7.19)."""
+        now = {"Availability": 100.0, "Packet loss": 90.0, "Problems": 100.0}
+        before = {"Availability": 99.0, "Failed checks": 80.0, "Problems": None}
+        with mock.patch.object(reports, "_health_scores", side_effect=[now, before]):
+            out = reports._v_health(mock.Mock(now=5000), {}, [], 1000, 2000, "7d")
+        self.assertEqual(out["axes"], ["Availability", "Packet loss", "Problems", "Failed checks"])
+        self.assertEqual(out["series"][0]["values"], [100.0, 90.0, 100.0, None])
+        self.assertEqual(out["series"][1]["values"], [99.0, None, None, 80.0])
+
+
 class ScopeTests(unittest.TestCase):
     """A user limited to some devices: network-wide templates, other people's reports and Telegram are closed."""
 
@@ -401,8 +414,8 @@ class CustomReportTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         start_api_server()
-        cls.a = add_device("blk-a", "192.0.2.160")
-        cls.b = add_device("blk-b", "192.0.2.161")
+        cls.a = add_device("blk-a", "192.0.2.196")   # addresses no other test uses
+        cls.b = add_device("blk-b", "192.0.2.197")
         now = int(time.time())
         with database.get_connection() as conn:
             for back in range(1, 8 * 24):

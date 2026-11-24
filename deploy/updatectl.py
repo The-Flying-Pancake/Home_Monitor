@@ -452,7 +452,9 @@ def install(args, runner=None) -> dict:
     if version_tuple(rel["version"]) <= version_tuple(current or "0.0.0"):
         raise UpdateError(f"Already up to date ({current}); the newest release is {rel['version']}")
     progress = Progress(args.data, current, rel["version"])
-    work = tempfile.mkdtemp(prefix="hm-update-", dir="/root" if os.path.isdir("/root") else None)
+    # Root's own folder on the box (recovery at boot looks there); anywhere else (tests as a plain user) the
+    # system's temporary folder.
+    work = tempfile.mkdtemp(prefix="hm-update-", dir="/root" if os.access("/root", os.W_OK) else None)
     log = os.path.join(work, "install.log")
     output = ""
     try:

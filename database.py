@@ -7,6 +7,7 @@ metrics, settings, credentials and audit records.
 
 import contextlib
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -75,6 +76,24 @@ def mark_schema() -> None:
             conn.commit()
 
 
+# How long a connection waits for another to finish writing (a backup or a restart can take a few seconds).
+BUSY_WAIT = 30.0
+# A connection open longer than this is noted in the log with the code that opened it: whatever holds the
+# database that long makes everyone else wait (task 283).
+SLOW_CONNECTION = 5.0
+log = logging.getLogger("database")
+
+
+def _opened_by() -> str:
+    """The code outside this file that opened the connection (file:line function), for the slow-connection note."""
+    import traceback
+    here = os.path.abspath(__file__)
+    for f in reversed(traceback.extract_stack()[:-3]):
+        if os.path.abspath(f.filename) != here and "contextlib" not in f.filename:
+            return f"{os.path.basename(f.filename)}:{f.lineno} {f.name}"
+    return "unknown"
+
+
 @contextlib.contextmanager
 def get_connection() -> Iterator[sqlite3.Connection]:
     """Yields a connection with WAL mode, foreign keys and secure delete, and always closes it.
@@ -82,7 +101,8 @@ def get_connection() -> Iterator[sqlite3.Connection]:
     sqlite3.Connection's own context manager only commits or rolls back; it
     does not close, which leaks a connection per call until garbage collection.
     """
-    conn = sqlite3.connect(DB_FILE, timeout=10.0)
+    started = time.monotonic()
+    conn = sqlite3.connect(DB_FILE, timeout=BUSY_WAIT)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL;")
     conn.execute("PRAGMA foreign_keys = ON;")
@@ -95,6 +115,9 @@ def get_connection() -> Iterator[sqlite3.Connection]:
         raise
     finally:
         conn.close()
+        held = time.monotonic() - started
+        if held > SLOW_CONNECTION:
+            log.warning("A database connection was open for %.1f s, opened by %s", held, _opened_by())
 
 
 DEVICE_COLUMNS = ("id", "hostname", "ip_address", "profile_id", "snmp_version", "snmp_community", "snmp_port",
@@ -108,7 +131,7 @@ def _migrate_device_uniqueness() -> None:
     can only drop by rebuilding the table."""
     if not os.path.exists(DB_FILE):
         return
-    conn = sqlite3.connect(DB_FILE, timeout=10.0)
+    conn = sqlite3.connect(DB_FILE, timeout=BUSY_WAIT)
     try:
         conn.isolation_level = None
         row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'devices';").fetchone()

@@ -59,6 +59,28 @@ class LayoutTests(unittest.TestCase):
     def layout(self):
         return json.loads(database.get_all_settings()[proxmox.LAYOUT_KEY])
 
+    def test_a_starting_guest_keeps_its_device(self):
+        """A round while the guest has no address (stopped, or still starting) keeps the device it was linked to, so
+        a snapshot first is not refused and the audit names it (task 285); a deleted device is not kept."""
+        database.set_internal_setting(proxmox.LAYOUT_KEY, "{}")
+        now = time.time()
+        self.refresh(data(), now)
+        self.assertEqual(next(g for g in self.layout()["guests"] if g["vmid"] == 101)["device_id"], self.vm)
+        configs = {101: {"macs": ["bc:24:11:aa:bb:cc"], "onboot": True}, 102: {"macs": [], "onboot": True}}
+
+        def round_without_address(devices, at):
+            d = data(status="running", uptime=5)
+            d["nodes"][0]["device_id"] = self.node
+            with mock.patch.object(proxmox, "is_enabled", return_value=True), mock.patch.object(proxmox, "load_config", return_value=CFG), \
+                    mock.patch.object(proxmox.CACHE, "get", return_value=d), \
+                    mock.patch.object(proxmox, "guest_config", side_effect=lambda c, g, n: configs[g["vmid"]]):
+                self.assertIsNone(proxmox.refresh(devices, [], at))      # no ARP row: the guest has no address yet
+
+        round_without_address(database.list_devices(), now + 60)
+        self.assertEqual(next(g for g in self.layout()["guests"] if g["vmid"] == 101)["device_id"], self.vm)
+        round_without_address([d for d in database.list_devices() if d["id"] != self.vm], now + 120)
+        self.assertIsNone(next(g for g in self.layout()["guests"] if g["vmid"] == 101)["device_id"])
+
     def test_layout_alerts_map_and_forecast(self):
         database.set_internal_setting(proxmox.LAYOUT_KEY, "{}")
         now = time.time()

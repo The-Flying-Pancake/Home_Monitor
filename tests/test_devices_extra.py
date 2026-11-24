@@ -283,6 +283,56 @@ class PingOnlyTests(unittest.TestCase):
         live.assert_not_called()
         request("DELETE", f"/api/devices/{dev}")
 
+    def test_a_busy_database_is_one_warning_not_a_traceback(self):
+        """A job that meets "database is locked" (a backup or restart holding it) logs one warning and the next
+        round reads again; other errors still log their traceback (task 283)."""
+        import sqlite3
+        import time as _time
+
+        def locked():
+            raise sqlite3.OperationalError("database is locked")
+
+        def broken():
+            raise ValueError("a real fault")
+
+        def wait(key):
+            for _ in range(100):
+                with server.scheduler.lock:
+                    if key not in server.scheduler.in_flight:
+                        return
+                _time.sleep(0.02)
+
+        with self.assertLogs("server", level="WARNING") as logs:
+            self.assertTrue(server.scheduler._submit("busytest", 1, locked))
+            wait(("busytest", 1))
+            self.assertTrue(server.scheduler._submit("busytest", 2, broken))
+            wait(("busytest", 2))
+        busy = [r for r in logs.records if "busytest job (id 1)" in r.getMessage()]
+        fault = [r for r in logs.records if "busytest job failed (id 2)" in r.getMessage()]
+        self.assertEqual([r.levelname for r in busy], ["WARNING"])
+        self.assertIsNone(busy[0].exc_info)
+        self.assertEqual([r.levelname for r in fault], ["ERROR"])
+        self.assertIsNotNone(fault[0].exc_info)
+
+    def test_a_connection_held_long_is_noted_with_who_opened_it(self):
+        """A connection open longer than SLOW_CONNECTION is one warning naming the code that opened it, so a lock
+        that makes everyone else wait can be traced (task 283); a quick one says nothing."""
+        import time as _time
+        from unittest import mock
+
+        def holder():
+            with database.get_connection():
+                _time.sleep(0.25)
+
+        with mock.patch.object(database, "SLOW_CONNECTION", 0.1):
+            with self.assertLogs("database", level="WARNING") as logs:
+                holder()
+            with database.get_connection():
+                pass
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn("holder", logs.records[0].getMessage())
+        self.assertIn("test_devices_extra.py", logs.records[0].getMessage())
+
     def test_ping_test(self):
         from unittest import mock
         with mock.patch.object(poller, "ping_host", side_effect=[(True, 1.0), (False, None), (True, 3.0)]):

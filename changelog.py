@@ -354,6 +354,18 @@ RELEASES: List[Dict[str, Any]] = [
         "When the daily check or Check for updates finds a new version, Telegram tells you once, with what is new and where to update.",
         "A version you chose to skip sends no message. Switch the message off or change its words in Settings, Notifications.",
     ]},
+    {"id": 46, "date": "2026-11-24", "title": "Home Monitor 1.0 is here", "items": [
+        "Welcome to Home Monitor 1.0! What began as a small way to watch a home network now looks after your devices, services, Proxmox hosts, backups and updates in one place.",
+        "Thank you for running it, reporting problems and sharing ideas along the way. This is a big day for a small hobby project.",
+        "Everything you have set up carries straight on. Your devices, history, alerts and settings stay just as they were.",
+        "Installing a new container no longer stops without a word on a Proxmox host whose highest numbered container is not a monitor.",
+        "A port check now tells you when its port stops answering while the host still answers ping.",
+        "The Device deep dive report opens again for devices with packet loss figures.",
+        "When a backup or a restart keeps the database busy for a moment, the monitor waits a little longer and notes it in one short line.",
+        "Right after a Proxmox guest starts, Take a snapshot first works at once and the audit log names the guest.",
+        "An outage review always shows the incident's own notes and changes on its timeline, however busy the network was.",
+        "A backup folder that is a link is refused before anything is written, with a clear message.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 
