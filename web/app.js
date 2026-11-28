@@ -3195,6 +3195,7 @@ function showError(elemId, msg) {
 // [id, title, blurb, menu group, permission to change it]. Account and Users are fixed cards in index.html.
 const SETTINGS_SECTIONS = [
   ["account", "Account", "", "You", null],
+  ["themes", "Themes", "", "You", null],
   ["alerts", "Alert rules", "Every condition that opens a problem: whether it is on, its threshold, how long it must last, its severity and whether Telegram hears about it. Set for all devices, a template, a tag or one device.", "Monitoring", "settings.alerts"],
   ["notify", "Notifications", "Messages to your phone through a Telegram bot. Each event can be switched on or off and has its own message text.", "Monitoring", "settings.notifications"],
   ["polling", "Polling", "How often devices are checked. Shorter intervals give finer graphs and a larger database.", "Monitoring", "settings.system"],
@@ -3214,7 +3215,7 @@ const SETTINGS_SECTIONS = [
   ["proxmox", "Proxmox", "", "System", "settings.system"],
   ["system", "System", "Server and poller status.", "System", "settings.system"],
 ];
-const STATIC_SETTINGS_CARDS = new Set(["account", "users", "proxmox", "groups", "https", "maintenance", "pihole", "unifi"]);
+const STATIC_SETTINGS_CARDS = new Set(["account", "themes", "users", "proxmox", "groups", "https", "maintenance", "pihole", "unifi"]);
 let settingsSchema = null;
 let settingsRoute = { scope: "global", target: "", focus: false };
 let settingsSection = "alerts";
@@ -3250,8 +3251,14 @@ function settingInput(s, value) {
   const id = `setting-${escapeHtml(s.key)}`;
   const common = `id="${id}" data-setting="${escapeHtml(s.key)}"`;
   if (s.type.startsWith("select:")) {
-    return `<select ${common}>${s.type.slice(7).split(",").map(o =>
+    const opts = s.type.slice(7).split(",");
+    const select = `<select ${common}>${opts.map(o =>
       `<option value="${escapeHtml(o)}" ${o === value ? "selected" : ""}>${escapeHtml(o)}</option>`).join("")}</select>`;
+    // On or off: Modern shows a switch (Primer ToggleSwitch) that sets this same select; Classic shows the select.
+    if (opts.length === 2 && opts.includes("on") && opts.includes("off")) {
+      return select + `<button type="button" class="ui-switch" role="switch" aria-checked="${value === "on"}" data-switch-for="${id}" aria-label="${escapeHtml(s.label || s.key)}"><span class="ui-switch-knob"></span><span class="ui-switch-text">${value === "on" ? "On" : "Off"}</span></button>`;
+    }
+    return select;
   }
   if (s.type === "secret") {
     // Stored secrets are never sent to the browser; an empty field keeps the stored value.
@@ -3290,6 +3297,7 @@ const SETTINGS_PAGES = [
   { id: "data", title: "Data and backups", group: "System", cards: ["backups", "retention"] },
   { id: "system", title: "System", group: "System", cards: ["system", "updates", "https"], tabs: { system: "Status", updates: "Updates", https: "HTTPS" } },
   { id: "demo", title: "Demo data", group: "System", cards: ["demo"] },
+  { id: "themes", title: "Themes", group: "You", cards: ["themes"] },
   { id: "account", title: "Account", group: "", cards: ["account"], hidden: true },
 ];
 let settingsTab = {};              // page id -> the card its tabs show

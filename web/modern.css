@@ -1,0 +1,296 @@
+/* Modern: the second look of the app, chosen per user in Settings, Themes (Classic is the default).
+ *
+ * It borrows the calm, neutral look of shadcn/ui (zinc greys, one quiet accent, thin borders, soft corners)
+ * and Primer's way of showing controls (segmented choices, underlined tabs, quiet tables). It only changes how
+ * things look: every rule here applies under :root[data-ui="modern"], on the same pages and controls, so
+ * nothing works differently and Classic (style.css alone) is untouched. The fonts stay as they are.
+ *
+ * Light and dark are chosen as before (the top bar, or the system); both have Modern colours below. The
+ * specificity is one step above style.css's own light rules, so a light choice always wins over dark here. */
+
+/* --- Colours: dark (the app's default) --- */
+:root[data-ui="modern"] {
+  --bg: #09090b;
+  --panel: #0f0f12;
+  --panel-header: #121215;
+  --border: #27272a;
+  --border-highlight: #3f3f46;
+  --text: #e4e4e7;
+  --text-dim: #a1a1aa;
+  --text-bright: #fafafa;
+  --green: #16a34a;
+  --green-bright: #22c55e;
+  --green-hover: #4ade80;
+  --yellow: #ca8a04;
+  --yellow-bright: #eab308;
+  --red: #dc2626;
+  --red-bright: #f87171;
+  --orange: #fb923c;
+  --blue: #60a5fa;
+  --purple: #a78bfa;
+  --input-bg: #09090b;
+  --hover: #18181b;
+  --grid: #1c1c20;
+  --inset: #0b0b0d;
+  --btn: #18181b;
+  --btn-hover: #27272a;
+  --neutral-bg: #27272a;
+  --raised: #18181b;
+  --changed-bg: #1c1a0f;
+  --err-tint: #1f1012;
+  --warn-tint: #1f1a0b;
+  --ok-bg: #052e16;
+  --ok-border: #14532d;
+  --warn-bg: #2a2005;
+  --warn-border: #713f12;
+  --err-bg: #2a0f0f;
+  --err-border: #7f1d1d;
+  --high-bg: #2a1608;
+  --high-border: #7c2d12;
+  --info-bg: #0c1a2e;
+  --info-border: #1e3a8a;
+  --shadow: rgba(0, 0, 0, 0.5);
+  --compare: #71717a;
+  --ring: #52525b;
+  --radius: 8px;
+}
+
+/* --- Colours: light (chosen, or the system's when nothing is chosen) --- */
+:root[data-ui="modern"][data-theme="light"] {
+  --bg: #fafafa;
+  --panel: #ffffff;
+  --panel-header: #fafafa;
+  --border: #e4e4e7;
+  --border-highlight: #d4d4d8;
+  --text: #27272a;
+  --text-dim: #71717a;
+  --text-bright: #09090b;
+  --green: #16a34a;
+  --green-bright: #15803d;
+  --green-hover: #16a34a;
+  --yellow: #a16207;
+  --yellow-bright: #a16207;
+  --red: #dc2626;
+  --red-bright: #dc2626;
+  --orange: #c2410c;
+  --blue: #2563eb;
+  --purple: #7c3aed;
+  --input-bg: #ffffff;
+  --hover: #f4f4f5;
+  --grid: #f4f4f5;
+  --inset: #fafafa;
+  --btn: #ffffff;
+  --btn-hover: #f4f4f5;
+  --neutral-bg: #f4f4f5;
+  --raised: #ffffff;
+  --changed-bg: #fefce8;
+  --err-tint: #fef2f2;
+  --warn-tint: #fefce8;
+  --ok-bg: #f0fdf4;
+  --ok-border: #bbf7d0;
+  --warn-bg: #fefce8;
+  --warn-border: #fde68a;
+  --err-bg: #fef2f2;
+  --err-border: #fecaca;
+  --high-bg: #fff7ed;
+  --high-border: #fed7aa;
+  --info-bg: #eff6ff;
+  --info-border: #bfdbfe;
+  --shadow: rgba(0, 0, 0, 0.08);
+  --compare: #a1a1aa;
+  --ring: #a1a1aa;
+}
+@media (prefers-color-scheme: light) {
+  :root[data-ui="modern"]:not([data-theme="dark"]) {
+    --bg: #fafafa;
+    --panel: #ffffff;
+    --panel-header: #fafafa;
+    --border: #e4e4e7;
+    --border-highlight: #d4d4d8;
+    --text: #27272a;
+    --text-dim: #71717a;
+    --text-bright: #09090b;
+    --green: #16a34a;
+    --green-bright: #15803d;
+    --green-hover: #16a34a;
+    --yellow: #a16207;
+    --yellow-bright: #a16207;
+    --red: #dc2626;
+    --red-bright: #dc2626;
+    --orange: #c2410c;
+    --blue: #2563eb;
+    --purple: #7c3aed;
+    --input-bg: #ffffff;
+    --hover: #f4f4f5;
+    --grid: #f4f4f5;
+    --inset: #fafafa;
+    --btn: #ffffff;
+    --btn-hover: #f4f4f5;
+    --neutral-bg: #f4f4f5;
+    --raised: #ffffff;
+    --changed-bg: #fefce8;
+    --err-tint: #fef2f2;
+    --warn-tint: #fefce8;
+    --ok-bg: #f0fdf4;
+    --ok-border: #bbf7d0;
+    --warn-bg: #fefce8;
+    --warn-border: #fde68a;
+    --err-bg: #fef2f2;
+    --err-border: #fecaca;
+    --high-bg: #fff7ed;
+    --high-border: #fed7aa;
+    --info-bg: #eff6ff;
+    --info-border: #bfdbfe;
+    --shadow: rgba(0, 0, 0, 0.08);
+    --compare: #a1a1aa;
+    --ring: #a1a1aa;
+  }
+}
+
+/* --- The page itself --- */
+[data-ui="modern"] body { -webkit-font-smoothing: antialiased; }
+[data-ui="modern"] .sidebar { background: var(--bg); }
+[data-ui="modern"] .sidebar-head { border-bottom-color: transparent; }
+[data-ui="modern"] .side-nav a { border-radius: 6px; border: 0; }
+[data-ui="modern"] .side-nav a.active { background: var(--hover); color: var(--text-bright); font-weight: 600; }
+[data-ui="modern"] .side-nav a.active svg { color: var(--text-bright); }
+[data-ui="modern"] .side-collapse { border-radius: 6px; }
+[data-ui="modern"] .topbar { background: var(--bg); }
+
+/* --- Cards and panels: softer corners, quiet headers --- */
+[data-ui="modern"] .panel,
+[data-ui="modern"] .settings-card,
+[data-ui="modern"] .widget,
+[data-ui="modern"] .chart-card,
+[data-ui="modern"] .stat { border-radius: 12px; }
+[data-ui="modern"] .panel { box-shadow: 0 1px 2px var(--shadow); }
+[data-ui="modern"] .panel-header-bar { background: transparent; font-size: 13px; padding: 12px 16px; }
+[data-ui="modern"] .stat-label,
+[data-ui="modern"] .stat-inline .stat-label { text-transform: none; letter-spacing: 0; font-size: 12px; }
+
+/* --- Buttons: secondary by default; primary is the foreground colour (shadcn); danger is red outline --- */
+[data-ui="modern"] .btn {
+  background: var(--panel); border: 1px solid var(--border); color: var(--text-bright);
+  border-radius: 6px; padding: 6px 12px; font-size: 12px; font-weight: 500;
+}
+[data-ui="modern"] .btn:hover { background: var(--hover); border-color: var(--border); color: var(--text-bright); }
+[data-ui="modern"] .btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+[data-ui="modern"] .btn-small { padding: 3px 9px; font-size: 11px; }
+[data-ui="modern"] .btn-primary { background: var(--text-bright); border-color: var(--text-bright); color: var(--bg); }
+[data-ui="modern"] .btn-primary:hover { background: var(--text-bright); border-color: var(--text-bright); color: var(--bg); opacity: 0.88; }
+[data-ui="modern"] .btn-danger { background: transparent; border-color: var(--err-border); color: var(--red-bright); }
+[data-ui="modern"] .btn-danger:hover { background: var(--red); border-color: var(--red); color: #ffffff; }
+
+/* --- Segmented choices (Primer SegmentedControl): a quiet track, the chosen one raised --- */
+[data-ui="modern"] .seg { background: var(--hover); padding: 3px; border-radius: 8px; gap: 2px; display: inline-flex; }
+[data-ui="modern"] .seg .btn,
+[data-ui="modern"] .seg .btn:first-child,
+[data-ui="modern"] .seg .btn:last-child { border: 0; border-radius: 6px; margin: 0; background: transparent; color: var(--text-dim); }
+[data-ui="modern"] .seg .btn:hover { color: var(--text-bright); background: transparent; }
+[data-ui="modern"] .seg .btn.active { background: var(--panel); color: var(--text-bright); box-shadow: 0 1px 2px var(--shadow); }
+
+/* --- Tabs (Primer UnderlineNav) --- */
+[data-ui="modern"] .tab { font-weight: 500; }
+[data-ui="modern"] .tab.active { border-bottom-color: var(--text-bright); }
+[data-ui="modern"] .settings-tabs a { font-weight: 500; }
+
+/* --- Forms: labels in normal case, a soft ring on focus --- */
+[data-ui="modern"] .form-group label { text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--text); }
+[data-ui="modern"] input[type="text"],
+[data-ui="modern"] input[type="password"],
+[data-ui="modern"] input[type="number"],
+[data-ui="modern"] input[type="search"],
+[data-ui="modern"] input[type="time"],
+[data-ui="modern"] input[type="email"],
+[data-ui="modern"] select,
+[data-ui="modern"] textarea { border-radius: 6px; }
+[data-ui="modern"] input:focus,
+[data-ui="modern"] select:focus,
+[data-ui="modern"] textarea:focus { border-color: var(--ring); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 35%, transparent); }
+
+/* --- Tables: no header band, a light row hover --- */
+[data-ui="modern"] th { background: transparent; }
+[data-ui="modern"] tbody tr:hover td { background: var(--hover); }
+
+/* --- Dialogs: rounder, a dimmed and slightly blurred page behind --- */
+[data-ui="modern"] .modal-backdrop { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(2px); }
+[data-ui="modern"] .modal { border-color: var(--border); border-radius: 12px; overflow: hidden; }
+[data-ui="modern"] .modal-header { border-bottom-color: transparent; padding: 16px 20px 6px; font-size: 15px; }
+[data-ui="modern"] .modal-body { padding: 12px 20px; }
+[data-ui="modern"] .modal-footer { background: transparent; border-top-color: transparent; padding: 8px 20px 18px; }
+
+/* --- Settings menu (Primer NavList) --- */
+[data-ui="modern"] .settings-nav a { border-radius: 6px; }
+[data-ui="modern"] .settings-nav a.active { background: var(--hover); box-shadow: none; font-weight: 600; }
+[data-ui="modern"] .settings-nav-group { text-transform: none; letter-spacing: 0; font-size: 11px; font-weight: 600; }
+
+/* --- Messages --- */
+[data-ui="modern"] .toast { border-radius: 10px; }
+
+/* --- Switches (Primer ToggleSwitch) for on or off settings: Modern only; Classic keeps its select --- */
+.ui-switch { display: none; }
+[data-ui="modern"] select:has(+ .ui-switch) { display: none; }
+[data-ui="modern"] .ui-switch {
+  display: inline-flex; align-items: center; gap: 8px; background: none; border: 0; padding: 2px 0; cursor: pointer;
+  color: var(--text); font: inherit; font-size: 12px; font-weight: 500;
+}
+[data-ui="modern"] .ui-switch-knob {
+  position: relative; width: 36px; height: 20px; border-radius: 999px; background: var(--border-highlight); flex: none;
+  transition: background-color 0.15s ease;
+}
+[data-ui="modern"] .ui-switch-knob::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); transition: transform 0.15s ease;
+}
+[data-ui="modern"] .ui-switch[aria-checked="true"] .ui-switch-knob { background: var(--green); }
+[data-ui="modern"] .ui-switch[aria-checked="true"] .ui-switch-knob::after { transform: translateX(16px); }
+[data-ui="modern"] .ui-switch:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 6px; }
+@media (prefers-reduced-motion: reduce) {
+  [data-ui="modern"] .ui-switch-knob, [data-ui="modern"] .ui-switch-knob::after { transition: none; }
+}
+/* Checkboxes in Settings and in dialogs' option rows read as switches too (the same checkbox underneath). */
+[data-ui="modern"] .settings-card .check-label input[type="checkbox"],
+[data-ui="modern"] .modal .check-label input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none; position: relative; width: 32px; height: 18px; margin: 0 8px 0 0;
+  border-radius: 999px; background: var(--border-highlight); vertical-align: middle; cursor: pointer; flex: none;
+  transition: background-color 0.15s ease;
+}
+[data-ui="modern"] .settings-card .check-label input[type="checkbox"]::after,
+[data-ui="modern"] .modal .check-label input[type="checkbox"]::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); transition: transform 0.15s ease;
+}
+[data-ui="modern"] .settings-card .check-label input[type="checkbox"]:checked,
+[data-ui="modern"] .modal .check-label input[type="checkbox"]:checked { background: var(--green); }
+[data-ui="modern"] .settings-card .check-label input[type="checkbox"]:checked::after,
+[data-ui="modern"] .modal .check-label input[type="checkbox"]:checked::after { transform: translateX(14px); }
+[data-ui="modern"] .settings-card .check-label input[type="checkbox"]:focus-visible,
+[data-ui="modern"] .modal .check-label input[type="checkbox"]:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+/* --- Labels (Primer Label): status and severity as rounded labels in normal case --- */
+[data-ui="modern"] .status-pill,
+[data-ui="modern"] [class*="sev-pill"] {
+  border-radius: 999px; text-transform: none; font-size: 11px; font-weight: 500; padding: 1px 8px; letter-spacing: 0;
+}
+[data-ui="modern"] .status-pill::first-letter,
+[data-ui="modern"] [class*="sev-pill"]::first-letter { text-transform: uppercase; }
+
+/* --- Settings, Themes: the two choices as cards --- */
+.theme-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 10px; }
+.theme-choice { display: block; border: 1px solid var(--border); border-radius: 8px; padding: 12px; cursor: pointer; background: var(--panel); }
+.theme-choice:hover { border-color: var(--border-highlight); }
+.theme-choice input { margin-right: 6px; }
+.theme-choice.chosen { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+.theme-choice .theme-name { font-weight: 600; color: var(--text-bright); }
+.theme-choice .theme-text { display: block; color: var(--text-dim); font-size: 12px; margin-top: 4px; }
+.theme-swatch { display: flex; gap: 4px; margin-top: 10px; }
+.theme-swatch span { flex: 1; height: 22px; border-radius: 4px; border: 1px solid rgba(127, 127, 127, 0.25); }
+/* Each theme's own colours, whichever is in use (no inline styles: the page's security policy forbids them). */
+.swatch-classic span:nth-child(1) { background: #0f1319; }
+.swatch-classic span:nth-child(2) { background: #161c24; }
+.swatch-classic span:nth-child(3) { background: #238636; }
+.swatch-classic span:nth-child(4) { background: #2f81f7; }
+.swatch-modern span:nth-child(1) { background: #09090b; }
+.swatch-modern span:nth-child(2) { background: #27272a; }
+.swatch-modern span:nth-child(3) { background: #fafafa; }
+.swatch-modern span:nth-child(4) { background: #60a5fa; }

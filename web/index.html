@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/reports.css">
   <link rel="stylesheet" href="/workflows.css">
   <link rel="stylesheet" href="/incidents.css">
+  <link rel="stylesheet" href="/modern.css">
   <script src="/theme.js"></script>
 </head>
 <body>
@@ -123,6 +124,7 @@
         <div class="user-menu hidden" id="user-menu">
           <div class="dim user-role" id="header-role"></div>
           <a href="#/settings/account" class="user-menu-item">Account and password</a>
+          <a href="#/settings/themes" class="user-menu-item">Themes</a>
           <button type="button" class="user-menu-item" id="btn-logout">Log out</button>
         </div>
       </div>
@@ -1212,6 +1214,17 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
               </div>
             </div>
           </form>
+        </section>
+        <section class="settings-card hidden" id="settings-themes" data-card="themes">
+          <div class="settings-card-head"><h3>Themes</h3><p>How the monitor looks for you. Only you see your choice; everyone else keeps their own. Light or dark is still the sun and moon button at the top.</p></div>
+          <div class="theme-choices" id="theme-choices" role="radiogroup" aria-label="Theme">
+            <label class="theme-choice" data-ui-choice="classic"><input type="radio" name="ui-theme" value="classic"><span class="theme-name">Classic</span>
+              <span class="theme-text">The monitor as it has always looked.</span>
+              <span class="theme-swatch swatch-classic" aria-hidden="true"><span></span><span></span><span></span><span></span></span></label>
+            <label class="theme-choice" data-ui-choice="modern"><input type="radio" name="ui-theme" value="modern"><span class="theme-name">Modern</span>
+              <span class="theme-text">Calm neutral greys, softer corners and quieter controls. Everything works the same.</span>
+              <span class="theme-swatch swatch-modern" aria-hidden="true"><span></span><span></span><span></span><span></span></span></label>
+          </div>
         </section>
         <section class="settings-card hidden" id="settings-account" data-card="account">
           <div class="settings-card-head"><h3>Account</h3><p>Your sign-in details. Each person who uses the monitor should have their own user (Settings, Users and sign-in).</p></div>

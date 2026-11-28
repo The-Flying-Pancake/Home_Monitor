@@ -15,6 +15,12 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 1.2.0: Release 50, A second look: Modern (2026-11-28)
+
+- Settings has a new Themes page. Classic is the monitor as it has always looked and stays the default. Modern uses calm neutral greys, softer corners and quieter controls.
+- Each person picks their own theme and it follows them to any browser. Everything works the same in both, in light and in dark.
+- In Modern, on or off settings are switches and status labels read in normal words.
+
 ### 1.1.0: Release 49, Restore across versions and sealed backups (2026-11-28)
 
 - A backup made with a newer version can now be restored. The monitor first updates itself to the backup's version or to the newest one, whichever you choose. A backup is never restored into an older version.

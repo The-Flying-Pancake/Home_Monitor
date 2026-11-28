@@ -4,6 +4,68 @@
  */
 
 const THEME_STORE = "monitor.theme.v1";
+const UI_STORE = "monitor.ui.v1";
+
+/* Classic or Modern (Settings, Themes): each user's own look, kept on their account and remembered in this
+ * browser so the next visit draws it at once (theme.js). Charts redraw for the new colours. */
+function applyUiTheme(ui) {
+  const modern = ui === "modern";
+  const was = document.documentElement.dataset.ui === "modern";
+  if (modern) document.documentElement.dataset.ui = "modern";
+  else delete document.documentElement.dataset.ui;
+  try { localStorage.setItem(UI_STORE, modern ? "modern" : "classic"); } catch (e) { /* storage unavailable */ }
+  document.querySelectorAll("#theme-choices [data-ui-choice]").forEach(l => {
+    const chosen = l.dataset.uiChoice === (modern ? "modern" : "classic");
+    l.classList.toggle("chosen", chosen);
+    l.querySelector("input").checked = chosen;
+  });
+  if (was !== modern) window.dispatchEvent(new Event("themechange"));
+}
+
+/* Modern's switches for on or off settings: the select stays the setting; the switch only sets it and says so,
+ * so saving and the unsaved-changes warning work as in Classic. */
+function drawSwitch(btn, select) {
+  const on = select.value === "on";
+  btn.setAttribute("aria-checked", String(on));
+  const text = btn.querySelector(".ui-switch-text");
+  if (text) text.textContent = on ? "On" : "Off";
+}
+document.addEventListener("click", ev => {
+  const btn = ev.target.closest("[data-switch-for]");
+  if (!btn) return;
+  const select = document.getElementById(btn.dataset.switchFor);
+  if (!select || select.disabled) return;
+  select.value = select.value === "on" ? "off" : "on";
+  select.dispatchEvent(new Event("input", { bubbles: true }));
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  drawSwitch(btn, select);
+});
+document.addEventListener("change", ev => {
+  const t = ev.target;
+  if (t && t.tagName === "SELECT" && t.id) {
+    const btn = document.querySelector(`[data-switch-for="${CSS.escape(t.id)}"]`);
+    if (btn) drawSwitch(btn, t);
+  }
+});
+
+function initUiThemes() {
+  const box = document.getElementById("theme-choices");
+  if (!box) return;
+  box.addEventListener("change", async ev => {
+    const ui = ev.target.value;
+    const before = document.documentElement.dataset.ui === "modern" ? "modern" : "classic";
+    applyUiTheme(ui);
+    try {
+      await api("/api/auth/theme", { method: "POST", body: { ui } });
+      if (currentUser) currentUser.ui = ui;
+      showToast(`Theme: ${ui === "modern" ? "Modern" : "Classic"}`, "success");
+    } catch (err) {
+      applyUiTheme(before);
+      showToast(`Could not save the theme: ${err.message}`, "error");
+    }
+  });
+  applyUiTheme(document.documentElement.dataset.ui === "modern" ? "modern" : "classic");
+}
 const SIDEBAR_STORE = "monitor.sidebar.v1";
 let currentUser = null;
 let bellData = { items: [], read_at: 0, unread: 0 };
@@ -134,6 +196,7 @@ function can(perm) {
 /** Elements marked data-perm="a b" hide unless the user has all of those permissions (body classes, see style.css). */
 function applyCurrentUser(user) {
   currentUser = user;
+  if (user.ui) applyUiTheme(user.ui);
   for (const p of ALL_PERMISSIONS) document.body.classList.toggle("lacks-" + p.replace(".", "-"), !user.permissions.includes(p));
   // Limited to some devices: elements marked data-unscoped (shared objects, the whole network) hide.
   document.body.classList.toggle("scoped", !!user.scoped);
@@ -240,6 +303,7 @@ function toggleCollapse(h) {
 
 function initShell() {
   applyCollapsed();
+  initUiThemes();
   document.addEventListener("click", ev => {
     const h = ev.target.closest("[data-collapse]");
     if (h && !ev.target.closest("button, a, input, select")) toggleCollapse(h);

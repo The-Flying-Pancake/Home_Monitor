@@ -380,6 +380,11 @@ RELEASES: List[Dict[str, Any]] = [
         "A very busy disk no longer holds the database for seconds while ordinary readings are saved.",
         "A Proxmox container no longer shows its host's temperature sensors and disk throughput as its own, so one hot host CPU warns once. This needs the Proxmox connection.",
     ]},
+    {"id": 50, "date": "2026-11-28", "title": "A second look: Modern", "items": [
+        "Settings has a new Themes page. Classic is the monitor as it has always looked and stays the default. Modern uses calm neutral greys, softer corners and quieter controls.",
+        "Each person picks their own theme and it follows them to any browser. Everything works the same in both, in light and in dark.",
+        "In Modern, on or off settings are switches and status labels read in normal words.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 

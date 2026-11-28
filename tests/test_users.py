@@ -126,6 +126,22 @@ class UserApiTests(unittest.TestCase):
         self.assertEqual(status, 201, resp)
         return resp["user"]
 
+    def test_theme_is_each_users_own(self):
+        """Settings, Themes: Classic by default, Modern when chosen; a viewer may choose too, and one user's choice
+        leaves the others alone. Nothing but classic or modern is taken."""
+        self.make_user("theme-viewer", role="viewer")
+        status, _, cookie = login_as("theme-viewer")
+        self.assertEqual(status, 200)
+        self.assertEqual(as_user(cookie, "GET", "/api/auth/status")[1]["user"]["ui"], "classic")
+        status, body, _ = as_user(cookie, "POST", "/api/auth/theme", {"ui": "modern"})
+        self.assertEqual((status, body), (200, {"ui": "modern"}))
+        self.assertEqual(as_user(cookie, "GET", "/api/auth/status")[1]["user"]["ui"], "modern")
+        self.assertEqual(request("GET", "/api/auth/status")[1]["user"]["ui"], "classic")      # the admin's own stays
+        self.assertEqual(as_user(cookie, "POST", "/api/auth/theme", {"ui": "neon"})[0], 400)
+        self.assertEqual(as_user(cookie, "GET", "/api/auth/status")[1]["user"]["ui"], "modern")
+        self.assertEqual(request("POST", "/api/auth/theme", {"ui": "modern"}, session=False)[0], 401)
+        self.assertEqual(as_user(cookie, "POST", "/api/auth/theme", {"ui": "classic"})[0], 200)
+
     def test_list_never_sends_hashes(self):
         status, body, _ = request("GET", "/api/users")
         self.assertEqual(status, 200)

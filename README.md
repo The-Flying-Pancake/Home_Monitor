@@ -36,6 +36,7 @@ installs with one file and backs itself up.
 | 📄 **Reports** | Ready-made reports you can adjust (a monthly health summary, availability, latency, bandwidth, a single device, storage, Wi-Fi, Pi-hole and more), each with headline figures, a short summary in plain words and clear charts, downloaded as a PDF or a CSV file. Save one to run every day, week or month and have it sent to Telegram. |
 | 🔌 **Integrations** | Proxmox (guests, storage, start and stop), UniFi (clients, Wi-Fi, switch ports) and Pi-hole. |
 | 👥 **Users** | Roles and per-device access, two-factor authentication and an audit log. |
+| 🎨 **Themes** | Pick the look you like: Classic or Modern with calm neutral greys and softer corners. Everyone chooses their own, in light or dark. |
 | 💾 **Backups** | A daily backup with everything a rebuild needs, kept locally or synced to your NAS with Syncthing. Every backup is sealed with your backup passphrase and can prove it was not changed. Download one from Settings and restore one from the web page, from the installer or right on a fresh install's first screen. A backup from a newer version works too: the monitor updates itself first. |
 | 🔄 **Updates** | Settings, System, Updates installs new signed releases, keeps a backup and lets you undo the update for two days. |
 

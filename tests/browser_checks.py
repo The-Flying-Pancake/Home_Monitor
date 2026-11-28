@@ -501,6 +501,57 @@ def t_settings_sidebar(b):
     return "menu swapped in Settings and back on leaving"
 
 
+@check("Settings, Themes: Modern changes the look at once, stays after a reload, and Classic brings the old look back")
+def t_themes(b):
+    goto(b, "#/settings/themes")
+    b.wait_for("!!document.querySelector('#settings-themes:not(.hidden) [data-ui-choice=modern]')")
+    bg = "getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()"
+    classic_bg = b.eval(bg)
+    assert b.eval("document.documentElement.dataset.ui") is None, "Modern on before it was chosen"
+    assert b.eval("document.querySelector('[data-ui-choice=classic]').classList.contains('chosen')"), "Classic not shown as chosen"
+    b.eval("document.querySelector('[data-ui-choice=modern] input').click(); true")
+    b.wait_for("document.documentElement.dataset.ui === 'modern'")
+    b.wait_for("currentUser && currentUser.ui === 'modern'")
+    modern_bg = b.eval(bg)
+    assert modern_bg != classic_bg, f"the colours did not change ({classic_bg} and {modern_bg})"
+    assert b.eval("document.querySelector('[data-ui-choice=modern]').classList.contains('chosen')")
+    # The account keeps it: after a reload with nothing remembered in the browser, Modern comes back from the server.
+    b.eval("localStorage.removeItem('monitor.ui.v1'); location.reload(); true")
+    time.sleep(1.5)
+    b.wait_for("document.documentElement.dataset.auth === 'in' && document.documentElement.dataset.ui === 'modern'", 20)
+    goto(b, "#/settings/themes")
+    b.wait_for("!!document.querySelector('#settings-themes:not(.hidden)')")
+    b.eval("document.querySelector('[data-ui-choice=classic] input').click(); true")
+    b.wait_for("document.documentElement.dataset.ui === undefined && currentUser.ui === 'classic'")
+    assert b.eval(bg) == classic_bg, "Classic did not bring the old colours back"
+    assert b.eval("!!document.querySelector('#user-menu a[href=\"#/settings/themes\"], .user-menu-item[href=\"#/settings/themes\"]')"), "no Themes link under the name"
+    return f"Modern changed the page colour ({classic_bg} to {modern_bg}), came back from the account after a reload; Classic restored it"
+
+
+@check("Modern: an on or off setting is a switch that sets the same setting (unsaved until saved); Classic keeps the select")
+def t_theme_switch(b):
+    goto(b, "#/settings/notify")
+    b.wait_for("!!document.querySelector('#settings-notify [data-switch-for]')")
+    sel = "document.querySelector('#settings-notify [data-switch-for]')"
+    shown = f"(() => {{ const e = {sel}; return !!e && e.offsetParent !== null; }})()"
+    assert not b.eval(shown), "the switch shows in Classic"
+    b.eval("applyUiTheme('modern'); true")
+    b.wait_for(shown)
+    target = b.eval(f"{sel}.dataset.switchFor")
+    before = b.eval(f"document.getElementById({json.dumps(target)}).value")
+    assert not b.eval(f"document.getElementById({json.dumps(target)}).offsetParent"), "the select still shows beside the switch"
+    b.eval(f"{sel}.click(); true")
+    after = b.eval(f"document.getElementById({json.dumps(target)}).value")
+    checked = b.eval(f"{sel}.getAttribute('aria-checked')")
+    assert after != before and checked == str(after == "on").lower(), (before, after, checked)
+    b.wait_for("!!document.querySelector('#settings-nav a.dirty')")
+    b.eval(f"{sel}.click(); true")                              # back as it was
+    assert b.eval(f"document.getElementById({json.dumps(target)}).value") == before
+    b.eval("applyUiTheme('classic'); true")
+    assert not b.eval(shown), "the switch stayed in Classic"
+    return f"{target}: {before} to {after} by the switch, marked unsaved, back again; hidden in Classic"
+
+
 @check("Settings, Backups: no backup passphrase shows that backups are paused and Set backup passphrase; a passphrase hides it")
 def t_backup_passphrase_bar(b):
     goto(b, "#/settings/backups")
@@ -2055,7 +2106,7 @@ def t_settings_guard(b):
     assert b.eval("document.querySelector('#settings-tabs a.active').textContent.trim()") == "HTTPS"
     assert b.eval("!!document.querySelector('#settings-nav a[data-section=system].active')")
     groups = b.eval("[...document.querySelectorAll('#settings-nav .settings-nav-group')].map(g => g.textContent)")
-    assert groups == ["Monitoring", "Alerts", "Integrations", "System"], groups
+    assert groups == ["Monitoring", "Alerts", "Integrations", "System", "You"], groups
     return "edit kept across pages; leaving asked first; discarded; System tabs follow old links"
 
 
@@ -2565,7 +2616,7 @@ def main() -> int:
 
         print(f"Browser checks against {BASE} (isolated database {_env.TMP})")
         for test in shard_checks([t_login, t_dashboard, t_resize, t_move, t_columns, t_graph_tile, t_content_follows, t_map, t_sort, t_groups,
-                     t_ack, t_incidents, t_live, t_snmp_check, t_snmp_v3_fields, t_snmp_test_before_saving, t_reload_after_update, t_reports, t_report_builder, t_alert_wifi, t_map_wifi_traffic, t_map_lldp, t_map_fold, t_scan_hide_monitored, t_inventory_groups, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_backup_passphrase_bar, t_restore_from_file, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_custom_oid_capacity, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_guide_search, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
+                     t_ack, t_incidents, t_live, t_snmp_check, t_snmp_v3_fields, t_snmp_test_before_saving, t_reload_after_update, t_reports, t_report_builder, t_alert_wifi, t_map_wifi_traffic, t_map_lldp, t_map_fold, t_scan_hide_monitored, t_inventory_groups, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_themes, t_theme_switch, t_backup_passphrase_bar, t_restore_from_file, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_custom_oid_capacity, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_guide_search, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
             test(browser)
     finally:
         if browser:

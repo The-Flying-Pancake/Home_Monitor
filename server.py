@@ -132,6 +132,7 @@ STATIC_FILES = {
     "": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/modern.css": ("modern.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
     "/map.js": ("map.js", "application/javascript; charset=utf-8"),
     "/workflows.js": ("workflows.js", "application/javascript; charset=utf-8"),
@@ -919,6 +920,21 @@ def migrate_retention(existing: Dict[str, str]) -> bool:
     database.add_audit("settings", f"Audit log retention raised from {days} to {database.AUDIT_RETENTION_FLOOR} days",
                        RETENTION_RAISED_DETAIL)
     return True
+
+
+# Themes (Settings, Themes): each user's look, Classic (the default) or Modern. Kept as an internal setting
+# per user name; only how the app looks, so any signed-in user may change their own.
+UI_THEMES = ("classic", "modern")
+UI_THEME_KEY = "ui_theme."
+
+
+def ui_theme(username: str) -> str:
+    value = database.get_plain_setting(UI_THEME_KEY + username, "classic")
+    return value if value in UI_THEMES else "classic"
+
+
+def set_ui_theme(username: str, ui: str) -> None:
+    database.set_internal_setting(UI_THEME_KEY + username, ui if ui in UI_THEMES else "classic")
 
 
 SECURITY_NOTICE_MARKER = "notice_security_0_12"
@@ -4546,7 +4562,7 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
             account = database.get_account()
             self._send_json(200, {"configured": account is not None, "authenticated": self.user is not None,
                                   "username": self.user.username if self.user else None,
-                                  "user": self.user.to_json() if self.user else None,
+                                  "user": dict(self.user.to_json(), ui=ui_theme(self.user.username)) if self.user else None,
                                   "min_length": auth.MIN_PASSWORD_LENGTH,
                                   "setup_token_required": account is None and bool(os.environ.get("MONITOR_SETUP_TOKEN")),
                                   # Forgotten password: possible when Telegram works and someone has 2FA.
@@ -4656,6 +4672,15 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
             self._set_session_cookie(auth.SESSIONS.create(username))
             database.add_audit("auth", f"Created administrator account {username}", f"From {client}", actor=username)
             self._send_json(201, {"success": True, "username": username})
+            return
+
+        if path == "/api/auth/theme":
+            # Classic or Modern, each person's own choice (Settings, Themes). Only how the app looks.
+            ui = _get_str(payload, "ui", max_len=16)
+            if ui not in UI_THEMES:
+                raise RequestError(400, "Choose Classic or Modern")
+            set_ui_theme(self.session["username"], ui)
+            self._send_json(200, {"ui": ui})
             return
 
         if path == "/api/auth/logout":
@@ -7826,7 +7851,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:
