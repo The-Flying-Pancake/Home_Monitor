@@ -1716,7 +1716,22 @@ if [[ -f "$CONF" ]]; then
   v="$(conf SYNCTHING_FOLDER)"; [[ -n "$v" ]] && SYNCTHING_FOLDER="$v"
   [[ "$(conf UNPRIVILEGED)" == 1 ]] && UNPRIVILEGED=1
 fi
-LATEST=0; [[ "${1-}" == "--latest" ]] && LATEST=1
+# --latest: the newest backup without questions (RESTORE="latest"). --file F --choice C --passphrase-stdin: the
+# restore asked for in Settings or on the setup page (sitectl.py restore-request): that file, the version choice
+# made there (here, backup or newest) and its passphrase on stdin, without questions.
+LATEST=0; FILE=""; CHOICE=""; PASS_STDIN=0
+while (( $# )); do
+  case "$1" in
+    --latest) LATEST=1 ;;
+    --file) FILE="${2-}"; shift ;;
+    --choice) CHOICE="${2-}"; shift ;;
+    --passphrase-stdin) PASS_STDIN=1 ;;
+    *) echo "Unknown option: $1"; exit 2 ;;
+  esac
+  shift
+done
+case "$CHOICE" in ""|here|backup|newest) ;; *) echo "--choice is here, backup or newest"; exit 2 ;; esac
+[[ -n "$FILE" ]] && LATEST=1
 human(){ numfmt --to=iec-i --suffix=B "$1" 2>/dev/null || echo "$1 B"; }
 
 from_syncthing() {
@@ -1789,8 +1804,12 @@ choose_backup() {
   ARCHIVE="$BACKUP_DIR/$(awk '{print $3}' <<<"${items[$((pick-1))]}")"
 }
 
-choose_source
-choose_backup
+if [[ -n "$FILE" ]]; then
+  ARCHIVE="$FILE"
+else
+  choose_source
+  choose_backup
+fi
 NAME="$(basename "$ARCHIVE")"
 # Everything below works on a private copy: the file cannot change between the checks and the restore.
 WORK="$(mktemp -d /root/.hm-restore.XXXXXX)"
@@ -1798,6 +1817,7 @@ trap 'rm -rf "$WORK"' EXIT
 COPY="$WORK/backup.tar.gz"
 python3 $APP/sitectl.py take "$ARCHIVE" --to "$COPY" >/dev/null || { log "This backup could not be copied. Nothing was restored."; exit 1; }
 pass=""; FLAGS=()
+if (( PASS_STDIN )); then IFS= read -r pass || true; fi
 sitectl_pass() {  # sitectl with the typed passphrase on stdin when there is one, else the one kept here
   if [[ -n "$pass" ]]; then printf '%s\n' "$pass" | python3 $APP/sitectl.py "$@" --passphrase-stdin
   else python3 $APP/sitectl.py "$@"; fi
@@ -1806,6 +1826,7 @@ check() { set +e; out="$(sitectl_pass check-auth "$COPY" --key "$KEY" "${FLAGS[@
 show() { grep -v '^HM_AUTH=' <<<"$out" | sed 's/^ERROR: //; s/^/  /' || true; }
 ask_pass() {
   (( rc == 4 )) || return 0
+  if (( PASS_STDIN )); then show; log "The passphrase given does not open this backup. Nothing was restored."; exit 1; fi
   if (( LATEST )); then show; log "The backup passphrase kept here does not open this backup. Nothing was restored."; exit 1; fi
   for attempt in 1 2 3; do
     read -rsp "  Backup passphrase for this backup: " pass; echo
@@ -1825,6 +1846,12 @@ if (( rc == 7 && ! LATEST )) && grep -q '^HM_AUTH=unverified-tagged' <<<"$out"; 
   fi
   unset older
 fi
+if (( rc == 7 && PASS_STDIN )); then
+  log "The passphrase given does not prove this backup unchanged. Check the passphrase: it must be the backup"
+  log "passphrase that was set when this backup was made. A backup that cannot be proven unchanged can only be"
+  log "restored on purpose from the console (/root/restore.sh). Nothing was restored."
+  exit 1
+fi
 if (( rc == 7 )); then
   echo; show; echo
   if (( LATEST )); then
@@ -1840,6 +1867,11 @@ if (( rc == 7 )); then
   fi
   FLAGS+=(--accept-unverified); check; ask_pass
 fi
+if (( rc == 8 && PASS_STDIN )); then
+  log "This backup carries no usable key for its stored passwords. It can only be restored from the console"
+  log "(/root/restore.sh), which can restore it without them. Nothing was restored."
+  exit 1
+fi
 if (( rc == 8 )); then
   echo; show; echo
   if (( LATEST )); then
@@ -1853,6 +1885,68 @@ fi
 if (( rc != 0 )); then
   show; log "Nothing was restored; the monitor runs on the data it had. See the reason above."; exit 1
 fi
+# Which version restores it (task 294). A backup's data never goes to an older version and an older release
+# is never installed: a backup whose layout this version cannot read is restored after an update (to the
+# backup's own version or the newest); any other can also wait for an update to the newest first.
+UPDATE_TO=""; UPDATE_FIRST=0
+jget() { python3 -c 'import json,sys
+try: v=json.loads(sys.argv[1]).get(sys.argv[2])
+except Exception: v=None
+print("" if v is None else v)' "$1" "$2"; }
+newer_than() { python3 -c 'import sys
+t=lambda v: tuple(int(x) for x in v.split("."))
+try: sys.exit(0 if t(sys.argv[1]) > t(sys.argv[2]) else 1)
+except Exception: sys.exit(1)' "$1" "$2"; }
+info="$(python3 $APP/sitectl.py backup-info "$COPY" 2>/dev/null || echo '{}')"
+VERDICT="$(jget "$info" verdict)"; B_VER="$(jget "$info" version)"; HERE_VER="$(jget "$info" this_version)"
+NEWEST="$(jget "$(python3 $APP/updatectl.py check --data "$DATA" 2>/dev/null || echo '{}')" latest)"
+if [[ -n "$NEWEST" ]] && ! newer_than "$NEWEST" "$HERE_VER"; then NEWEST=""; fi
+B_VER_UP=""     # the backup's own version, when it is a release newer than this one
+if [[ -n "$B_VER" ]] && newer_than "$B_VER" "$HERE_VER"; then B_VER_UP="$B_VER"; fi
+if [[ "$VERDICT" == "newer" ]]; then
+  echo; log "This backup was made with version ${B_VER:-a newer version}. This monitor runs $HERE_VER, which cannot read its data,"
+  log "so it is updated first. A backup is never restored into an older version."
+  if [[ -z "$NEWEST" && -z "$B_VER_UP" ]]; then
+    log "The releases on GitHub could not be read, so nothing was updated or restored. Check the box can reach GitHub."
+    exit 1
+  fi
+  if [[ "$CHOICE" == "here" ]]; then
+    log "Restoring on this version was chosen, but it cannot read this backup. Nothing was restored."
+    exit 1
+  elif [[ "$CHOICE" == "backup" ]]; then
+    [[ -n "$B_VER_UP" ]] || { log "The backup's own version is not a release this monitor can update to. Nothing was restored."; exit 1; }
+    UPDATE_FIRST=1; UPDATE_TO="$B_VER_UP"
+  elif [[ "$CHOICE" == "newest" ]]; then
+    [[ -n "$NEWEST" ]] || { log "The newest release could not be read from GitHub. Nothing was restored."; exit 1; }
+    UPDATE_FIRST=1; UPDATE_TO=""
+  elif (( LATEST )); then
+    UPDATE_FIRST=1
+    if [[ -z "$NEWEST" ]]; then UPDATE_TO="$B_VER_UP"; fi
+  else
+    echo
+    if [[ -n "$B_VER_UP" ]]; then printf "    1) Update to %s (the backup's version) and restore\n" "$B_VER_UP"; fi
+    if [[ -n "$NEWEST" ]]; then printf '    2) Update to %s (the newest) and restore\n' "$NEWEST"; fi
+    printf '    0) Cancel\n'
+    read -rp "  Choice: " pick
+    case "$pick" in
+      1) [[ -n "$B_VER_UP" ]] || { echo "  Cancelled."; exit 0; }; UPDATE_FIRST=1; UPDATE_TO="$B_VER_UP" ;;
+      2) [[ -n "$NEWEST" ]] || { echo "  Cancelled."; exit 0; }; UPDATE_FIRST=1; UPDATE_TO="" ;;
+      *) echo "  Cancelled."; exit 0 ;;
+    esac
+  fi
+elif [[ "$CHOICE" == "newest" ]]; then
+  [[ -n "$NEWEST" ]] || { log "No newer release could be read from GitHub. Nothing was restored."; exit 1; }
+  UPDATE_FIRST=1; UPDATE_TO=""
+elif [[ -n "$NEWEST" ]] && (( ! LATEST )); then
+  echo; log "This backup was made with version ${B_VER:-unknown}. A newer version than this one ($HERE_VER) is out: $NEWEST."
+  printf '    1) Restore on %s (this version)\n    2) Update to %s first, then restore\n' "$HERE_VER" "$NEWEST"
+  read -rp "  Choice [1]: " pick
+  case "${pick:-1}" in
+    1) ;;
+    2) UPDATE_FIRST=1; UPDATE_TO="" ;;
+    *) echo "  Cancelled."; exit 0 ;;
+  esac
+fi
 if (( ! LATEST )); then
   echo; echo "  You chose: $NAME"
   echo "  Site settings in it (applied after the restore; a line starting with ! is refused):"
@@ -1861,6 +1955,15 @@ if (( ! LATEST )); then
   [[ "$confirm" == "RESTORE" ]] || { echo "  Cancelled."; exit 0; }
 fi
 
+if (( UPDATE_FIRST )); then
+  log "Updating to ${UPDATE_TO:-$NEWEST} first (signed release from GitHub; this takes a few minutes)…"
+  if ! python3 $APP/updatectl.py install --data "$DATA" ${UPDATE_TO:+--version "$UPDATE_TO"} >"$WORK/update.json" 2>&1; then
+    sed 's/^/  /' "$WORK/update.json" | tail -n 8
+    log "The update did not complete, so nothing was restored. The monitor runs as before."
+    exit 1
+  fi
+  log "Updated to $(jget "$(cat "$WORK/update.json")" to). Now restoring."
+fi
 systemctl stop homelab-monitor || true
 # The restore checks the backup against this build first (a newer, damaged or unmigratable one is
 # refused with the current data untouched): then the monitor simply starts again on what it had.
@@ -1920,15 +2023,14 @@ while :; do
   if (( ${#p1} < 12 )); then printf '  %sAt least 12 characters, please.%s\n' "$YEL" "$R"; continue; fi
   break
 done
-if ! printf '%s\n' "$p1" | python3 "$APP/sitectl.py" set-passphrase --data "$DATA"; then
+if ! printf '%s\n' "$p1" | python3 "$APP/sitectl.py" set-passphrase --data "$DATA" --key /etc/homelab-monitor/vault.key; then
   unset p1 p2; hm_fail "The passphrase was not saved (see the message above)."
 fi
 unset p1 p2
 /root/backup.sh || hm_fail "The passphrase is saved, but the first sealed backup failed: run /root/backup.sh to see why."
 hm_box "$GRN" "✔  Backup passphrase set and a sealed backup made"
-printf '  Backups you already have stay as they are until the daily clean-up removes them, with the\n'
-printf "  newest 7 kept. Copies on your NAS or in Syncthing's history may still hold the key in the\n"
-printf '  clear, so remove them there if you want them gone now.\n\n'
+printf '  The backups you already had are sealed with it too. Copies kept elsewhere, such as\n'
+printf "  Syncthing's file history or a copy you made by hand, are not touched: remove those there.\n\n"
 EOF
 
 # Shared look for the two account helpers below (same wordmark as the installer).
@@ -2185,6 +2287,58 @@ RestrictSUIDSGID=yes
 SystemCallArchitectures=native
 UNIT
 
+# Restore from Settings or the setup page: root restores the uploaded backup with /root/restore.sh (which may
+# update first, so it runs as freely as hm-update.service).
+cat > "$FILES/hm-restore.path" <<UNIT
+[Unit]
+Description=Restore an uploaded backup when the monitor asks
+[Path]
+PathChanged=${DATA_DIR}/requests/restore
+Unit=hm-restore.service
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat > "$FILES/hm-restore.service" <<UNIT
+[Unit]
+Description=Restore a Homelab Monitor backup uploaded in the web page
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 ${APP_DIR}/sitectl.py restore-request --data ${DATA_DIR} --key ${KEY_DIR}/vault.key
+TimeoutStartSec=60min
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+UNIT
+
+# Settings, Backups, Download: root copies the backup asked for into DATA/exports for the app to hand over once.
+cat > "$FILES/hm-export.path" <<UNIT
+[Unit]
+Description=Copy a backup for download when the monitor asks
+[Path]
+PathChanged=${DATA_DIR}/requests/backup-export
+Unit=hm-export.service
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat > "$FILES/hm-export.service" <<UNIT
+[Unit]
+Description=Copy a Homelab Monitor backup for download
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 ${APP_DIR}/sitectl.py export-request --data ${DATA_DIR}
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+UNIT
+
 cat > "$FILES/hm-backup-now.path" <<UNIT
 [Unit]
 Description=Back up when the monitor asks
@@ -2207,7 +2361,7 @@ install_services() {
     install -m 0600 -o ${SERVICE_USER} -g ${SERVICE_USER} setup.env ${KEY_DIR}/setup.env
     cd / && rm -rf \$d /root/.hm-files.tgz
     systemctl daemon-reload
-    systemctl enable --now hm-egress.service hm-egress-refresh.timer homelab-monitor.service homelab-monitor-backup.timer hm-site.path hm-backup-now.path hm-passphrase.path hm-update.path
+    systemctl enable --now hm-egress.service hm-egress-refresh.timer homelab-monitor.service homelab-monitor-backup.timer hm-site.path hm-backup-now.path hm-passphrase.path hm-export.path hm-restore.path hm-update.path
     systemctl enable hm-update-recover.service"
   load_ingress
 }
@@ -2236,7 +2390,7 @@ load_ingress() {
 # folder for install.conf and layout (read by root, so the app's user cannot change them).
 files_into_place() {
   cat <<CMDS
-    install -m 0644 homelab-monitor.service hm-egress.service hm-egress-refresh.service hm-egress-refresh.timer hm-ingress.service homelab-monitor-backup.service homelab-monitor-backup.timer hm-site.path hm-site.service hm-backup-now.path hm-passphrase.path hm-passphrase.service hm-update.path hm-update.service hm-update-recover.service /etc/systemd/system/
+    install -m 0644 homelab-monitor.service hm-egress.service hm-egress-refresh.service hm-egress-refresh.timer hm-ingress.service homelab-monitor-backup.service homelab-monitor-backup.timer hm-site.path hm-site.service hm-backup-now.path hm-passphrase.path hm-passphrase.service hm-export.path hm-export.service hm-restore.path hm-restore.service hm-update.path hm-update.service hm-update-recover.service /etc/systemd/system/
     install -d -m 0755 /etc/homelab-monitor-egress
     install -m 0644 egress-hosts /etc/homelab-monitor-egress/hosts
     install -m 0644 github-hosts /etc/homelab-monitor-egress/github-hosts
@@ -2333,14 +2487,14 @@ show_findings() {  # what the upgrade check found, one line each
     esac
   done < "$STATE/precheck"
 }
-# No backup passphrase on the box: backups that leave it go without the key, and none can be proven
-# unchanged. Said at the end of an install, an upgrade and a restore, with the command that fixes it.
+# No backup passphrase on the box: no backup is made until one is set (task 305). Said at the end of an
+# install, an upgrade and a restore, with the command that fixes it.
 passphrase_note() {
   [[ "$MODE" == preview ]] && return 0
   pct exec "${CTID}" -- test -f "${INSTALL_DIR}/backup-passphrase" >/dev/null 2>&1 && return 0
-  printf '  %sNo backup passphrase is set.%s Backups that leave this box go without the key that opens the
+  printf '  %sNo backup passphrase is set, so backups are paused.%s The web page asks for one when you log
 ' "$YEL$B" "$R"
-  printf '  stored passwords, and backups cannot be proven unchanged. To set one, run %s/root/backup-passphrase.sh%s
+  printf '  in, or run %s/root/backup-passphrase.sh%s
 ' "$B" "$R"
   printf '  in the %s, then keep the passphrase in your password manager.
 
@@ -2365,7 +2519,7 @@ install_helpers() {
     cd / && rm -rf \$d /root/.hm-files.tgz
     systemctl daemon-reload
     systemctl restart hm-egress.service
-    systemctl enable --now hm-site.path hm-backup-now.path hm-passphrase.path hm-update.path
+    systemctl enable --now hm-site.path hm-backup-now.path hm-passphrase.path hm-export.path hm-restore.path hm-update.path
     systemctl enable hm-update-recover.service     # at boot only: an update from the app may be running now
     if [ '$1' = yes ]; then systemctl start homelab-monitor; fi"
   load_ingress

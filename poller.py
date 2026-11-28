@@ -1587,6 +1587,26 @@ class TableCollector:
         self.retries = retries
         self.now = int(time.time())
         self._defined: Dict[str, Dict[str, Any]] = {}
+        self._container: Optional[bool] = None
+
+    def is_container(self) -> bool:
+        """Whether this device is a Proxmox LXC container (from the Proxmox connection's last refresh)."""
+        if self._container is None:
+            try:
+                import proxmox
+                self._container = self.device["id"] in proxmox.container_devices()
+            except Exception:
+                self._container = False
+        return self._container
+
+    def _skip_host_hardware(self, table: str) -> bool:
+        """A container's sensors and disks are its host's: not read here, and anything stored before is cleared
+        once, so its problems close. The Proxmox host's own device reports them, once."""
+        if not self.is_container():
+            return False
+        if database.get_device_table(self.device["id"], table):
+            database.replace_device_table(self.device["id"], table, {}, self.now)
+        return True
 
     def walk(self, oid: str) -> Dict[str, Any]:
         return snmp_walk(self.ip, oid, self.community, self.port, self.timeout, self.retries,
@@ -1844,7 +1864,9 @@ class TableCollector:
         return True
 
     def collect_sensors(self) -> bool:
-        """lm-sensors temperatures (CPU package, NVMe, board), stored as sensor.<name>.temp_c."""
+        """lm-sensors temperatures (CPU package, NVMe, board), stored as sensor.<name>.temp_c. Not on a container."""
+        if self._skip_host_hardware("sensors"):
+            return False
         cols = _table_columns(self.walk(LM_TEMP))
         rows, temps = {}, {}
         for idx, name in cols.get(2, {}).items():
@@ -1862,7 +1884,9 @@ class TableCollector:
         return True
 
     def collect_diskio(self) -> bool:
-        """Read and write throughput per whole disk from UCD-DISKIO-MIB 64-bit byte counters."""
+        """Read and write throughput per whole disk from UCD-DISKIO-MIB 64-bit byte counters. Not on a container."""
+        if self._skip_host_hardware("diskio"):
+            return False
         cols = _table_columns(self.walk(UCD_DISKIO))
         previous = database.get_device_table(self.device["id"], "diskio")
         rows, rates = {}, {}

@@ -36,7 +36,7 @@ installs with one file and backs itself up.
 | 📄 **Reports** | Ready-made reports you can adjust (a monthly health summary, availability, latency, bandwidth, a single device, storage, Wi-Fi, Pi-hole and more), each with headline figures, a short summary in plain words and clear charts, downloaded as a PDF or a CSV file. Save one to run every day, week or month and have it sent to Telegram. |
 | 🔌 **Integrations** | Proxmox (guests, storage, start and stop), UniFi (clients, Wi-Fi, switch ports) and Pi-hole. |
 | 👥 **Users** | Roles and per-device access, two-factor authentication and an audit log. |
-| 💾 **Backups** | A daily backup with everything a rebuild needs, kept locally or synced to your NAS with Syncthing. Set a backup passphrase and each backup is sealed and can prove it was not changed. Restore in place from the installer. |
+| 💾 **Backups** | A daily backup with everything a rebuild needs, kept locally or synced to your NAS with Syncthing. Every backup is sealed with your backup passphrase and can prove it was not changed. Download one from Settings and restore one from the web page, from the installer or right on a fresh install's first screen. A backup from a newer version works too: the monitor updates itself first. |
 | 🔄 **Updates** | Settings, System, Updates installs new signed releases, keeps a backup and lets you undo the update for two days. |
 
 ## 🚀 Getting started
@@ -78,7 +78,11 @@ is enough.
    [brackets]: the container's number, its name, its address (DHCP is fine), whether to start with
    demo data and the kind of container. Then choose a root password for the new container.
 5. **Open the address it shows at the end** in your browser. Type the one-time setup code it prints,
-   create your administrator account and let the setup guide find the devices on your network.
+   create your administrator account and choose a backup passphrase (keep it in your password
+   manager: backups wait until it is set). Then let the setup guide find the devices on your network.
+
+Moving to a new install? After typing the setup code, choose **Restore from a backup instead** and
+upload a backup from your old monitor. You then log in with the accounts it holds.
 
 The installer makes a small container for the monitor (Ubuntu 24.04 with 2 cores, 1 GB of memory and
 a 20 GB disk) and tags it `homelab-monitor`, so it can find it again for upgrades. Only your own
@@ -148,6 +152,7 @@ checks the signature by itself before every update.
   rest while you watch. An update is installed only if its signature matches the release key built
   into your copy. It backs up first and puts the old version back by itself if the new one does not
   start. For two days you can still go back, and the update history keeps the log of every update.
+  Skipped a few versions? What's new lists the notes of each one, newest first.
 - **From the Proxmox host:** download the newest `home_monitor.sh` as above, then run
   `./home_monitor.sh --upgrade`. This works without internet access on the monitor, too.
 

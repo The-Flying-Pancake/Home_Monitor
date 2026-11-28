@@ -436,7 +436,10 @@ class RestoreAcrossBuildsTests(unittest.TestCase):
         return path
 
     def test_backup_manifest_records_the_schema(self):
-        r = self.sitectl("backup", "--data", self.data, "--dest", os.path.join(self.tmp, "out"))
+        pf = os.path.join(self.tmp, "pf")
+        with open(pf, "w", encoding="utf-8") as f:
+            f.write("a long backup passphrase" + chr(10))
+        r = self.sitectl("backup", "--data", self.data, "--dest", os.path.join(self.tmp, "out"), "--passphrase-file", pf)
         self.assertEqual(r.returncode, 0, r.stderr)
         path = r.stdout.strip().splitlines()[-1]
         with tarfile.open(path) as tar:

@@ -133,6 +133,8 @@ function promptLogin(mode) {
       show(document.getElementById("auth-submit"));
     }
     document.getElementById("auth-https-lost").classList.toggle("hidden", !httpsLost);
+    // A fresh install can start from a backup instead of a new account (task 299).
+    document.getElementById("auth-restore").classList.toggle("hidden", !setup || httpsLost);
     hide(document.getElementById("auth-error"));
     screen.dataset.mode = mode;
     screen._resolve = resolve;
@@ -183,6 +185,7 @@ function promptConfirm(info = {}) {
 }
 
 function initAuth() {
+  document.getElementById("auth-restore").addEventListener("click", () => setupRestore());
   document.getElementById("auth-min").textContent = "12";
   document.getElementById("auth-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();

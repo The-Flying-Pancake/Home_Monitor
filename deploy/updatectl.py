@@ -2,7 +2,8 @@
 
   updatectl.py requests --data DIR      what the web app asked for (DATA/requests/update-*), one by one
   updatectl.py check    --data DIR      the newest release: version, date and notes (changes nothing)
-  updatectl.py install  --data DIR      download, check the signature, refuse older versions, upgrade
+  updatectl.py install  --data DIR [--version X]   download (the newest, or exactly X), check the signature,
+                                        refuse older versions, upgrade
   updatectl.py rollback --data DIR --mode code|all
   updatectl.py prune    --data DIR      pre-update backups older than two days are removed
   updatectl.py record   --data DIR --kind upgrade --ok 1|0 [--from V --to V --why W --log FILE --source host]
@@ -48,6 +49,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -57,6 +59,7 @@ for _candidate in (HERE, os.path.dirname(HERE)):
 import safefile  # noqa: E402
 REPO = "The-Flying-Pancake/Home_Monitor"
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
+API_TAG = f"https://api.github.com/repos/{REPO}/releases/tags/"
 INSTALLER_NAMES = ("home_monitor.sh", "infra.sh")
 API_LIST = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
 APP_DIR = "/opt/homelab-monitor"
@@ -131,16 +134,24 @@ def _refresh_firewall() -> None:
         subprocess.run([script], capture_output=True, timeout=120)
 
 
-def latest_release(fetch=None) -> dict:
-    """The newest release: version, name, date, notes and the two download links."""
+def latest_release(fetch=None, version: str = "") -> dict:
+    """The newest release (or exactly version X, for a restore that needs the backup's version): version, name,
+    date, notes and the two download links."""
+    if version:
+        version_tuple(version)
     if fetch is None:
         fetch = _get
         if fetch.__module__ == __name__:     # the real download (not a test's stand-in)
             _refresh_firewall()
     try:
-        meta = json.loads(fetch(API, 512 * 1024, "application/vnd.github+json"))
+        meta = json.loads(fetch(f"{API_TAG}v{version.lstrip('v')}" if version else API, 512 * 1024,
+                                "application/vnd.github+json"))
     except UpdateError:
         raise
+    except urllib.error.HTTPError as exc:
+        if version and exc.code == 404:
+            raise UpdateError(f"There is no release {version} on GitHub")
+        raise UpdateError(f"Could not reach the release page on GitHub (HTTP {exc.code})")
     except Exception as exc:
         raise UpdateError(f"Could not reach the release page on GitHub ({type(exc).__name__}). "
                           "Is the box allowed out to GitHub (the outbound firewall) and is DNS working?")
@@ -148,9 +159,12 @@ def latest_release(fetch=None) -> dict:
     # home_monitor.sh since 0.10.0; infra.sh (its old name) in releases before that.
     name = next((n for n in INSTALLER_NAMES if assets.get(n) and assets.get(n + ".sig")), None)
     if not name:
-        raise UpdateError("The newest release has no signed installer (home_monitor.sh and home_monitor.sh.sig)")
+        raise UpdateError(f"The release {version or 'newest'} has no signed installer (home_monitor.sh and home_monitor.sh.sig)")
+    wanted = version.lstrip("v")
     version = str(meta.get("tag_name") or "").lstrip("v")
     version_tuple(version)
+    if wanted and version != wanted:
+        raise UpdateError(f"GitHub answered with release {version} when {wanted} was asked for; nothing was installed")
     for url in (assets[name], assets[name + ".sig"]):
         if not str(url).startswith(f"https://github.com/{REPO}/releases/download/"):
             raise UpdateError("The release links do not point at this project's releases")
@@ -331,6 +345,8 @@ def prune(data: str, now: float = None) -> list:
             sys.path.insert(0, HERE)
         import sitectl
         gone += sitectl.prune_pre_restore([SAFE_DIR, data], now)
+        # The one-time keys of the safety copies that just went (task 309).
+        sitectl.sweep_safety_keys(sitectl.SAFETY_KEYS, now)
     except ImportError:
         pass
     return gone
@@ -442,15 +458,19 @@ class Progress:
 
 
 def install(args, runner=None) -> dict:
-    """Downloads the newest release, checks it, then lets its home_monitor.sh upgrade this box in place."""
+    """Downloads the newest release (or exactly --version, for a restore of a backup this build cannot read), checks
+    it, then lets its home_monitor.sh upgrade this box in place. Never an older version than the one running."""
     current = installed_version()
     db = os.path.join(args.data, "monitor.db")
     if not os.path.exists(os.path.join(INSTALL_DIR, "settings.env")):
         raise UpdateError("This install does not record its settings yet: run bash home_monitor.sh --upgrade once from the "
                           "Proxmox host (or --local --upgrade on this machine), then Update works from here")
-    rel = latest_release()
+    wanted = getattr(args, "version", "") or ""
+    rel = latest_release(version=wanted)
+    if wanted and version_tuple(rel["version"]) < version_tuple(current or "0.0.0"):
+        raise UpdateError(f"Release {rel['version']} is older than this one ({current}); an older version is never installed")
     if version_tuple(rel["version"]) <= version_tuple(current or "0.0.0"):
-        raise UpdateError(f"Already up to date ({current}); the newest release is {rel['version']}")
+        raise UpdateError(f"Already up to date ({current}); the {'asked for' if wanted else 'newest'} release is {rel['version']}")
     progress = Progress(args.data, current, rel["version"])
     # Root's own folder on the box (recovery at boot looks there); anywhere else (tests as a plain user) the
     # system's temporary folder.
@@ -631,9 +651,25 @@ def _rollback(args, runner) -> dict:
     # The older build's sitectl.py restores it: it is told the checksum only when it knows the option.
     try:
         with open(os.path.join(old, "sitectl.py"), encoding="utf-8", errors="replace") as f:
-            knows_expect = "--expect-sha256" in f.read()
+            old_text = f.read()
     except OSError:
-        knows_expect = False
+        old_text = ""
+    knows_expect = "--expect-sha256" in old_text
+    # A safety copy sealed with a one-time key (task 309) that the older build cannot open: this build opens it
+    # into root's own folder first (checked against the recorded checksum), and that copy is removed afterwards.
+    opened = ""
+    expect = rec.get("sha256") or ""
+    if args.mode == "all" and backup and "safety_key" not in old_text:
+        opened = os.path.join(SAFE_DIR, "pre-rollback", f"opened-{os.path.basename(backup)}")
+        r = runner(["python3", os.path.join(cur, "sitectl.py"), "open-safety", backup, "--to", opened,
+                    "--safe-dir", SAFE_DIR, "--expect-sha256", expect], capture_output=True, text=True)
+        if r.returncode == 0 and re.fullmatch(r"[0-9a-f]{64}", (r.stdout or "").strip().splitlines()[-1] if r.stdout.strip() else ""):
+            backup, expect = opened, r.stdout.strip().splitlines()[-1]
+        elif r.returncode == 3:
+            opened = ""                                       # no one-time key: the copy is used as it is
+        else:
+            raise UpdateError("The copy kept for undo could not be opened for the older version, so it was not used. "
+                              "Nothing was changed. " + _last_lines(r.stdout + r.stderr))
     # The state now, kept for two days like the update's own backup.
     r = runner(["python3", os.path.join(cur, "sitectl.py"), "backup", "--data", data, "--key", key,
                 "--dest", os.path.join(SAFE_DIR, "pre-rollback"), "--keep", "5", "--safety", "--safe-dir", SAFE_DIR], capture_output=True, text=True)
@@ -647,8 +683,13 @@ def _rollback(args, runner) -> dict:
     if args.mode == "all":
         r = runner(["python3", os.path.join(cur, "sitectl.py"), "restore", backup, "--data", data, "--key", key,
                     "--passphrase-file", os.path.join(INSTALL_DIR, "backup-passphrase")]
-                   + (["--expect-sha256", rec["sha256"]] if knows_expect else []), capture_output=True, text=True)
+                   + (["--expect-sha256", expect] if knows_expect else []), capture_output=True, text=True)
         steps.append(r.stdout + r.stderr)
+        if opened:
+            try:
+                os.remove(opened)                             # the key in the clear never stays
+            except OSError:
+                pass
         if r.returncode != 0:
             _swap_back(cur, runner)
             raise UpdateError("The backup from before the update could not be restored; the current version is "
@@ -844,6 +885,8 @@ def main() -> None:
             p.add_argument("--to", required=True)
         if name == "rollback":
             p.add_argument("--mode", choices=("code", "all"), required=True)
+        if name == "install":
+            p.add_argument("--version", default="", help="exactly this release (never older than the running one)")
         if name == "record":
             p.add_argument("--kind", choices=("upgrade",), required=True)
             p.add_argument("--source", choices=("host",), default="host")

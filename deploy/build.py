@@ -21,6 +21,7 @@ import base64
 import glob
 import hashlib
 import io
+import json
 import os
 import re
 import shutil
@@ -37,7 +38,7 @@ MODULES = ["server.py", "poller.py", "database.py", "vault.py", "ssh_runner.py",
            "availability.py", "proxmox.py", "customoids.py", "totp.py", "compat.py", "taxonomy.py", "tls.py", "changelog.py", "maintenance.py", "forecast.py",
            "inventory.py", "hostactions.py", "lanhttp.py", "pihole.py", "unifi.py", "digest.py", "telebot.py", "botcmds.py", "tpl.py", "sitecheck.py", "safefile.py",
            "demo.py", "report.py", "snmpv3.py", "pdfdoc.py", "reports.py", "incidents.py"]
-WEB = ["index.html", "app.js", "map.js", "workflows.js", "wftemplates.js", "hostactions.js", "telegram.js", "workflows.css", "setup.js", "alerts.js", "theme.js", "shell.js", "users.js", "security.js","adddevice.js", "backups.js", "updates.js", "snmp.js",
+WEB = ["index.html", "app.js", "map.js", "workflows.js", "wftemplates.js", "hostactions.js", "telegram.js", "workflows.css", "setup.js", "alerts.js", "theme.js", "shell.js", "users.js", "security.js","adddevice.js", "backups.js", "restore.js", "updates.js", "snmp.js",
        "charts.js", "availability.js", "proxmox.js", "taxonomy.js", "tls.js", "changes.js", "lan.js", "inventory.js", "reports.js", "reports.css", "incidents.js", "incidents.css", "botcmds.js", "guide.js", "guide.html", "style.css"]
 
 
@@ -64,6 +65,14 @@ def payload() -> bytes:
         add(os.path.join(ROOT, "deploy", "updatectl.py"), "updatectl.py")
         # The public half of the release key: Update installs only what it signed.
         add(os.path.join(ROOT, "deploy", "release-signers"), "release-signers")
+        # Which release note is which version (VERSIONS in changelog_md.py), as data: What's new labels each
+        # version, also after a restore or an update that jumps several (task 295).
+        sys.path.insert(0, os.path.join(ROOT, "deploy"))
+        import changelog_md
+        versions = json.dumps({str(k): v for k, v in sorted(changelog_md.VERSIONS.items())}).encode("ascii")
+        info = tarfile.TarInfo("release-versions.json")
+        info.size, info.mode, info.mtime = len(versions), 0o644, int(time.time())
+        tar.addfile(info, io.BytesIO(versions))
         # When this build was made, shown in Settings, System, so a container's build can be told apart.
         stamp = BUILT.encode("ascii")
         info = tarfile.TarInfo("BUILD")

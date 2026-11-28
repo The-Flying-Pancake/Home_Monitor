@@ -21,8 +21,7 @@ function backupsSection(b) {
     ["Backups there", `${b.count}${b.count ? `, ${formatBytes(b.total_bytes)} in total` : ""}`],
     ["Newest", latest],
   ];
-  const keyLabels = { "sealed": "Sealed with your passphrase", "withheld": "Left out of backups that leave this box",
-    "clear-local": "In the clear, inside this container only" };
+  const keyLabels = { "sealed": "Sealed with your passphrase", "paused": "No backups are made until a backup passphrase is set" };
   if (b.installed && keyLabels[b.key_state]) rows.push(["Key in backups", keyLabels[b.key_state]]);
   if (b.restore_source) rows.push(["Restore source (home_monitor.sh)", b.restore_source]);
   const resultLine = (r, isPending, label) => {
@@ -32,7 +31,7 @@ function backupsSection(b) {
   };
   const helper = b.installed ? "" : `<div class="panel-note-bar warn">This copy has no root helper (development machine): changes are saved and apply in the container.</div>`;
   const noPassphrase = b.installed && b.passphrase_set === false
-    ? `<div class="panel-note-bar warn" id="bk-no-passphrase">No backup passphrase is set. New backups that leave this box do not carry the key that opens your stored passwords, so a rebuild from them cannot use those passwords. Backups also cannot be proven unchanged. Set one with Set backup passphrase below and keep it in your password manager.</div>`
+    ? `<div class="panel-note-bar warn" id="bk-no-passphrase">Backups are paused: no backup passphrase is set. A backup holds the key to every stored password, so none is made until that key can be sealed. Set one with Set backup passphrase below and keep it in your password manager, apart from the backups. The backups you already have are sealed with it too.</div>`
     : "";
   return `${helper}${noPassphrase}<div class="backup-panel" id="backups-panel">
     <table class="storage-table"><tbody>${rows.map(r => `<tr><td>${escapeHtml(r[0])}</td><td>${escapeHtml(r[1])}</td></tr>`).join("")}
@@ -41,6 +40,10 @@ function backupsSection(b) {
       ${b.installed ? `<tr><td>Backup passphrase</td><td>${resultLine(res.passphrase, pending.passphrase, "Saving")}
         <button type="button" class="btn btn-small" data-backup-action="passphrase" data-perm="settings.system">${b.passphrase_set ? "Change backup passphrase" : "Set backup passphrase"}</button>
         ${res.passphrase && !res.passphrase.ok && !pending.passphrase ? `<div class="form-help text-err">${escapeHtml(res.passphrase.output)}</div>` : ""}</td></tr>` : ""}
+      ${downloadRow(b)}
+      ${currentUser && currentUser.role === "admin" ? `<tr><td>Restore from a file</td><td>
+        <button type="button" class="btn btn-small" data-backup-action="restore">Restore from a file</button>
+        <div class="form-help">Replaces everything on this monitor with a backup you upload. A backup is never restored into an older version: when this one cannot read it, the monitor updates first.</div></td></tr>` : ""}
       <tr><td>Syncthing set-up</td><td>${resultLine(res.site, pending.site, "Applying")}
         ${res.site && res.site.output ? `<details class="backup-output"><summary>Details</summary><pre>${escapeHtml(res.site.output)}</pre></details>` : ""}</td></tr>
     </tbody></table>
@@ -59,6 +62,65 @@ function backupsSection(b) {
     </form>
     <p class="form-help">Each backup holds everything a rebuild needs: devices and history, users (with their 2FA), workflows, settings, NFS and Syncthing choices and, sealed with your backup passphrase, the key that unlocks the stored passwords. A restore checks each backup against your passphrase and warns you about any it cannot prove unchanged, so keep the passphrase somewhere apart from the backups. To rebuild: run home_monitor.sh on the Proxmox host, then <code>/root/restore.sh</code> in the new container (or set RESTORE="latest" at the top of home_monitor.sh).</p>
   </div>`;
+}
+
+// Download (task 296): administrators only, after the password and code again. Root copies the backup into a
+// folder the app can read; the page waits for that copy, then the browser saves it. A backup that holds the key
+// unsealed (no backup passphrase) is refused by root.
+let backupDownload = null;   // the name asked for, while waiting for root's copy
+
+function downloadRow(b) {
+  const admin = currentUser && currentUser.role === "admin";
+  if (!b.installed || !admin || !(b.files || []).length) return "";
+  const res = (b.results || {}).export;
+  const waiting = (b.pending || {}).export || backupDownload;
+  const note = waiting ? `<span class="text-warn">Preparing ${escapeHtml(backupDownload || "the backup")}...</span>`
+    : res && !res.ok ? `<div class="form-help text-err">${escapeHtml(res.output)}</div>` : "";
+  return `<tr><td>Download a backup</td><td>
+    <select id="bk-download-pick" aria-label="Backup to download">${b.files.map(f =>
+      `<option value="${escapeHtml(f.name)}">${escapeHtml(f.name)} (${escapeHtml(formatBytes(f.size))})</option>`).join("")}</select>
+    <button type="button" class="btn btn-small" data-backup-action="download" ${waiting ? "disabled" : ""}>Download</button>
+    ${note}
+    <div class="form-help">The file holds your devices and settings in readable form. Stored passwords stay sealed with your backup passphrase. Keep it somewhere safe.</div></td></tr>`;
+}
+
+async function startBackupDownload() {
+  const pick = document.getElementById("bk-download-pick");
+  const name = pick && pick.value;
+  if (!name) return;
+  const asked = Math.floor(Date.now() / 1000) - 1;
+  try {
+    await api("/api/backups/export", { method: "POST", body: { name } });
+  } catch (err) {
+    showToast(err.message, "error");
+    return;
+  }
+  backupDownload = name;
+  refreshBackups();
+  for (let i = 0; i < 120 && backupDownload === name; i++) {
+    await new Promise(r => setTimeout(r, 1500));
+    let b;
+    try { b = (await api("/api/system")).backup; } catch (e) { continue; }
+    const res = (b.results || {}).export;
+    if ((b.pending || {}).export || !res || res.time < asked) continue;
+    backupDownload = null;
+    if (res.ok && res.file === name) {
+      const a = document.createElement("a");
+      a.href = `/api/backups/export/file?name=${encodeURIComponent(name)}`;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      showToast("Your browser is saving the backup.", "success");
+    } else {
+      showToast(res.output || "The backup could not be prepared.", "error");
+    }
+    refreshBackups();
+    return;
+  }
+  backupDownload = null;
+  showToast("The container did not prepare the backup in time. Try again.", "error");
+  refreshBackups();
 }
 
 async function refreshBackups() {
@@ -99,6 +161,8 @@ function initBackups() {
   root.addEventListener("click", async ev => {
     const pass = ev.target.closest("[data-backup-action=passphrase]");
     if (pass) { setBackupPassphrase(pass); return; }
+    if (ev.target.closest("[data-backup-action=download]")) { startBackupDownload(); return; }
+    if (ev.target.closest("[data-backup-action=restore]")) { restoreDialog(); return; }
     const btn = ev.target.closest("[data-backup-action=run]");
     if (!btn) return;
     btn.disabled = true;

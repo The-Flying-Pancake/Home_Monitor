@@ -599,7 +599,7 @@ def _batched_writes() -> Iterator[None]:
     conn.execute("PRAGMA synchronous = OFF;")
 
     @contextlib.contextmanager
-    def shared() -> Iterator[sqlite3.Connection]:
+    def shared(readings: bool = False) -> Iterator[sqlite3.Connection]:
         try:
             yield conn
         except Exception:

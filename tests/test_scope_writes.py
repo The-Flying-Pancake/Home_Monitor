@@ -139,7 +139,9 @@ class ScopeWriteTests(unittest.TestCase):
               ("PUT", "/api/inventory/aa:bb:cc:dd:ee:ff"), ("DELETE", "/api/inventory/aa:bb:cc:dd:ee:ff"),
               ("POST", "/api/map/objects"), ("DELETE", "/api/map/objects/999999"), ("POST", "/api/map/links"),
               ("PUT", "/api/map/positions"), ("PUT", "/api/dashboard"), ("POST", "/api/dashboards"),
-              ("DELETE", "/api/dashboards/sw-none"), ("PUT", "/api/taxonomy"), ("POST", "/api/backups/passphrase")]
+              ("DELETE", "/api/dashboards/sw-none"), ("PUT", "/api/taxonomy"), ("POST", "/api/backups/passphrase"),
+              ("POST", "/api/backups/export"), ("GET", "/api/backups/export/file"), ("POST", "/api/backups/upload/start"),
+              ("POST", "/api/backups/upload"), ("POST", "/api/backups/restore"), ("GET", "/api/backups/restore/status")]
 
     def test_changed_alerts_lists_everything_and_respects_scope(self):
         """Settings, Notifications, Changed alerts: every change in one list, with links; a user limited to
@@ -182,7 +184,7 @@ class ScopeWriteTests(unittest.TestCase):
         with mock.patch.object(server.pihole, "set_blocking") as block, mock.patch.object(server.unifi, "reconnect") as recon:
             for method, path in self.ROUTES:
                 self.assertTrue(rbac.needs_all_devices(method, path), path)
-                body = None if method == "DELETE" else {"enabled": False, "minutes": 5, "mac": "aa:bb:cc:dd:ee:ff"}
+                body = None if method in ("DELETE", "GET") else {"enabled": False, "minutes": 5, "mac": "aa:bb:cc:dd:ee:ff"}
                 status, res, _ = self.as_(self.scoped, method, path, body)
                 self.assertEqual((status, res.get("error")), (403, "This needs access to every device."), (method, path))
             block.assert_not_called()

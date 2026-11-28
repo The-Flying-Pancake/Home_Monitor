@@ -428,6 +428,17 @@ def guest_config(client: Client, g: Dict[str, Any], now: float) -> Dict[str, Any
     return value
 
 
+def container_devices() -> Dict[int, str]:
+    """Monitored devices that are Proxmox LXC containers, {device_id: node}, from the last refresh. A container runs
+    on its host's kernel, so what its SNMP agent says about hardware (temperature sensors, disk throughput) is the
+    host's: the same reading would come in once per container (task 304). The host's own device reports it."""
+    out: Dict[int, str] = {}
+    for g in layout().get("guests", []):
+        if g.get("type") == "lxc" and isinstance(g.get("device_id"), int):
+            out[g["device_id"]] = str(g.get("node") or "")
+    return out
+
+
 def layout() -> Dict[str, Any]:
     if not is_enabled():
         return {}

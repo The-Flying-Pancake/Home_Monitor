@@ -10,7 +10,10 @@
   sitectl.py take        ARCHIVE --to FILE                     a private copy of a backup to work on
   sitectl.py set-passphrase --data DIR                         the backup passphrase, on stdin
   sitectl.py passphrase-request --data DIR --key FILE        the one Settings, Backups asked for
+  sitectl.py export-request --data DIR                       a copy of one backup for Download in Settings
+  sitectl.py restore-request --data DIR --key FILE           the restore of an uploaded backup (Settings, setup page)
   sitectl.py find-backups --data DIR [--also DIR]            backups here, in Syncthing and on mounted shares
+  sitectl.py backup-info ARCHIVE                             version, layout and what this build can do with it (JSON)
   sitectl.py site-of     ARCHIVE                             the site settings a backup would apply
   sitectl.py export-site --data DIR --out FILE
   sitectl.py apply-site  FILE [--fstab /etc/fstab] [--dry-run]
@@ -62,6 +65,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
@@ -129,7 +133,17 @@ MAX_TOTAL = 16 * 1024 ** 3
 MAX_SMALL = 1024 * 1024
 FREE_MARGIN = 256 * 1024 ** 2
 PRE_RESTORE_KEEP, PRE_RESTORE_DAYS = 3, 30
-EXIT_PASSPHRASE, EXIT_UNVERIFIED, EXIT_NO_KEY = 4, 7, 8
+EXIT_PASSPHRASE, EXIT_UNVERIFIED, EXIT_NO_KEY, EXIT_NO_PASSPHRASE = 4, 7, 8, 9
+# No backup without a backup passphrase (task 305): the key to every stored password never goes into a backup
+# readable. Root's safety copies are the exception that needs none: each is sealed with its own one-time key.
+NO_PASSPHRASE_TEXT = ("No backup passphrase is set, so no backup was made. Set one in Settings, Data and backups, "
+                      "or in the container's console as root: /root/backup-passphrase.sh")
+# One-time keys of the safety copies (task 309): one random key per copy, root only, apart from the copies, and
+# removed once its copy is gone. The copy's manifest names its key by a random id.
+SAFETY_KEYS = os.path.join(INSTALL_DIR, "safety-keys")
+SAFETY_KEY_ID = re.compile(r"[0-9a-f]{32}")
+SAFETY_KEY_GRACE = 600                     # a key whose copy is still being written is not swept
+EXIT_NOT_SAFETY = 3                        # open-safety: the copy carries no one-time key (nothing to open)
 RECORD_NAME = re.compile(r"[A-Za-z0-9._-]{1,120}")
 SYNCTHING_HOME = "/var/lib/syncthing"
 SYNCTHING_FILES = ("cert.pem", "key.pem", "config.xml")
@@ -318,6 +332,66 @@ def _safe_dir(args) -> str:
     return getattr(args, "safe_dir", None) or (SAFE_DIR if safefile.is_root() else "")
 
 
+def _safety_keys(args) -> str:
+    """Where the one-time keys go: --safety-keys, else root's fixed folder when running as root, else beside the
+    safety folder (the test suite)."""
+    given = getattr(args, "safety_keys", None)
+    if given:
+        return given
+    if safefile.is_root():
+        return SAFETY_KEYS
+    safe = _safe_dir(args)
+    return os.path.normpath(safe) + "-keys" if safe else ""
+
+
+def _write_safety_key(keys: str, archive: str) -> tuple:
+    """A new one-time key for the safety copy that will be written at archive: (id, secret)."""
+    os.makedirs(keys, mode=0o700, exist_ok=True)
+    if os.path.islink(keys):
+        fail(f"The folder for the safety copies' keys ({keys}) is a link, so nothing was written")
+    kid, secret = secrets.token_hex(16), secrets.token_urlsafe(32)
+    body = json.dumps({"secret": secret, "archive": os.path.abspath(archive), "made": int(time.time())}).encode()
+    safefile.atomic_write(keys, kid, body, 0o600, (0, 0) if safefile.is_root() else None)
+    return kid, secret
+
+
+def read_safety_key(keys: str, kid) -> str:
+    """The one-time secret of a safety copy, or "" when it is gone (or the id is not one of ours)."""
+    if not keys or not isinstance(kid, str) or not SAFETY_KEY_ID.fullmatch(kid):
+        return ""
+    try:
+        meta = json.loads(safefile.read_regular(os.path.join(keys, kid), 4096))
+        return meta["secret"] if isinstance(meta.get("secret"), str) else ""
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return ""
+
+
+def sweep_safety_keys(keys: str, now: float = None) -> list:
+    """Removes each one-time key whose safety copy is gone (pruned, used up or removed by hand)."""
+    now = time.time() if now is None else now
+    gone = []
+    try:
+        names = os.listdir(keys) if keys and not os.path.islink(keys) else []
+    except OSError:
+        names = []
+    for kid in names:
+        path = os.path.join(keys, kid)
+        if not SAFETY_KEY_ID.fullmatch(kid) or os.path.islink(path):
+            continue
+        try:
+            meta = json.loads(safefile.read_regular(path, 4096))
+            archive, made = meta.get("archive") or "", float(meta.get("made") or 0)
+        except (OSError, ValueError, TypeError, AttributeError):
+            archive, made = "", 0.0
+        if now - made > SAFETY_KEY_GRACE and not (archive and os.path.isfile(archive)):
+            try:
+                safefile.unlink_in(keys, kid)
+                gone.append(kid)
+            except OSError:
+                pass
+    return gone
+
+
 def _inside(path: str, folder: str) -> bool:
     if not folder:
         return False
@@ -389,22 +463,29 @@ def check_tag(folder: str, manifest: dict, passphrase: str) -> bool:
         return False
 
 
+def backup_folder(data: str, quiet: bool = False) -> str:
+    """Where backups go: the Syncthing folder from setup when it passes the same checks as setup, else
+    DATA/backups. The folder comes from the database, which the app's account can write."""
+    st = site_from_db(os.path.join(data, "monitor.db")).get("syncthing") or {}
+    dest = os.path.join(data, "backups")
+    if st.get("enabled") and st.get("data_folder"):
+        try:
+            folder = sitecheck.folder(st["data_folder"], "Syncthing backup folder")
+            sitecheck.no_symlinks(folder)
+            return folder
+        except sitecheck.SiteError as exc:
+            if not quiet:
+                print(f"Note: {exc}. Backing up to {dest} instead.", file=sys.stderr)
+    return dest
+
+
 def backup(args) -> None:
     db = os.path.join(args.data, "monitor.db")
     if not os.path.exists(db):
         fail(f"No database at {db}")
     _no_link(db)
     if not args.dest:
-        st = site_from_db(db).get("syncthing") or {}
-        args.dest = os.path.join(args.data, "backups")
-        if st.get("enabled") and st.get("data_folder"):
-            # The folder comes from the database: used only when it passes the same checks as setup.
-            try:
-                folder = sitecheck.folder(st["data_folder"], "Syncthing backup folder")
-                sitecheck.no_symlinks(folder)
-                args.dest = folder
-            except sitecheck.SiteError as exc:
-                print(f"Note: {exc}. Backing up to {args.dest} instead.", file=sys.stderr)
+        args.dest = backup_folder(args.data)
     # Backups are written without following links (the folder sits in one the monitor's own user owns, so a link
     # there could send root's file anywhere). A link is refused here in plain words, not part way through.
     if os.path.islink(args.dest.rstrip("/") or args.dest):
@@ -419,6 +500,10 @@ def backup(args) -> None:
     place = _place(args)
     if getattr(args, "safety", False) and place != "safe":
         fail(f"A safety copy goes into root's own folder ({safe or SAFE_DIR}), not {args.dest}")
+    passphrase = _passphrase(args) if place != "safe" else ""
+    if place != "safe" and not passphrase:
+        write_result(args.data, "backup", False, NO_PASSPHRASE_TEXT, reason="no-passphrase")
+        fail(NO_PASSPHRASE_TEXT, EXIT_NO_PASSPHRASE)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     work = tempfile.mkdtemp(prefix="hm-backup-")
     key_state = "none"
@@ -435,37 +520,30 @@ def backup(args) -> None:
                 f.write(safefile.read_regular(meta, 1024 * 1024))
         has_key = bool(args.key) and os.path.lexists(args.key)
         key_bytes = safefile.read_regular(args.key, 4096) if has_key else b""
-        passphrase = _passphrase(args)
-        # Where the key goes (see the module notes): root's folder always in the clear (Undo must work
-        # whatever the passphrase is later); sealed when a passphrase exists; in the clear inside the
-        # container; left out of a backup that leaves the box without a passphrase.
-        sealed = withheld = False
-        if has_key and place == "safe":
-            key_state = "clear-safe"
-        elif has_key and passphrase:
-            sealed, key_state = True, "sealed"
-        elif has_key and place == "local":
-            key_state = "clear-local"
-        elif has_key:
-            withheld, key_state = True, "withheld"
+        # The key is always sealed: with the backup passphrase, or for root's safety copy with a one-time key of
+        # its own (kept root only, apart from the copies), so Undo never depends on the passphrase.
+        safety_kid = ""
+        if place == "safe":
+            keys = _safety_keys(args)
+            if not keys:
+                fail("No folder for the safety copies' keys")
+            safety_kid, passphrase = _write_safety_key(keys, os.path.join(args.dest, f"monitor-backup-{stamp}.tar.gz"))
+        sealed = has_key
         if sealed:
             if vault.AESGCM is None:
                 fail("Sealing the key needs the cryptography package")
-            blob = seal_key(key_bytes, passphrase)
+            key_state = "sealed-once" if safety_kid else "sealed"
             with open(os.path.join(work, "vault.key.sealed"), "wb") as f:
-                f.write(blob)
-        elif has_key and not withheld:
-            fd = os.open(os.path.join(work, "vault.key"), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
-            with os.fdopen(fd, "wb") as f:
-                f.write(key_bytes)
+                f.write(seal_key(key_bytes, passphrase))
         with open(os.path.join(work, "site.json"), "w", encoding="utf-8") as f:
             json.dump(site_from_db(db), f, indent=2)
         manifest = {"app": "homelab-monitor", "created": stamp, "host": socket.gethostname(), "format": 3,
                     "schema": _schema_of(os.path.join(work, "monitor.db")), "app_version": _app_version(),
-                    "includes_key": has_key and not withheld, "key_sealed": sealed, "key_withheld": withheld,
+                    "includes_key": has_key, "key_sealed": sealed, "key_withheld": False,
                     "contents": [m for m in BACKUP_MEMBERS if m != "manifest.json"]}
-        if passphrase:
-            manifest["auth"] = make_tag(work, manifest, passphrase)
+        if safety_kid:
+            manifest["safety_key"] = safety_kid
+        manifest["auth"] = make_tag(work, manifest, passphrase)
         with open(os.path.join(work, "manifest.json"), "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
         name = os.path.join(args.dest, f"monitor-backup-{stamp}.tar.gz")
@@ -485,12 +563,11 @@ def backup(args) -> None:
     for old in kept[:-args.keep] if args.keep > 0 else []:
         safefile.unlink_in(args.dest, old)
     message = f"Backup written: {name}"
-    if key_state == "withheld":
-        message += ". No backup passphrase is set, so the key was left out of this backup."
-        print("Note: No backup passphrase is set, so the key was left out of this backup.", file=sys.stderr)
-    if place != "safe":
+    if place == "safe":
+        sweep_safety_keys(_safety_keys(args))
+    else:
         write_result(args.data, "backup", True, message, file=os.path.basename(name), folder=args.dest, key=key_state,
-                     tagged=bool(passphrase))
+                     tagged=True)
     print(name)
 
 
@@ -682,6 +759,13 @@ def _assess(archive: str, work: str, args, run_checks: bool = True) -> dict:
             manifest = {}
     except (OSError, ValueError):
         manifest = {}
+    kid = manifest.get("safety_key")
+    if kid:
+        once = read_safety_key(_safety_keys(args), kid)
+        if not once:
+            fail("This safety copy's one-time key is gone (it is removed together with its copy), so the copy cannot "
+                 "be opened. Nothing was changed.", EXIT_NO_KEY)
+        passphrase = once
     tagged = isinstance(manifest.get("auth"), dict)
     if expect:
         outcome = "root-record"
@@ -757,6 +841,133 @@ def _assess(archive: str, work: str, args, run_checks: bool = True) -> dict:
     return out
 
 
+def _pack(work: str, out: str) -> None:
+    with tarfile.open(out, mode="w:gz") as tar:
+        for member in BACKUP_MEMBERS:
+            path = os.path.join(work, member)
+            if os.path.exists(path):
+                tar.add(path, arcname=member)
+
+
+def open_safety(args) -> None:
+    """For Undo into an older version (task 309): the older build cannot open a safety copy sealed with a one-time
+    key, so this build writes a copy with the key in the clear into root's own folder for it, prints the new copy's
+    checksum and the caller removes it once used. Exits 3 when the copy has no one-time key (use it as it is)."""
+    safe = _safe_dir(args)
+    if not safe or not _inside(args.to, safe):
+        fail(f"An opened safety copy goes only into root's own folder ({safe or SAFE_DIR})")
+    head = small_member(args.archive, "manifest.json") if os.path.isfile(args.archive) else None
+    try:
+        manifest = json.loads(head) if head else {}
+    except ValueError:
+        manifest = {}
+    if not isinstance(manifest, dict) or not manifest.get("safety_key"):
+        sys.exit(EXIT_NOT_SAFETY)
+    work = tempfile.mkdtemp(prefix="hm-open-")
+    try:
+        args.accept_unverified = False
+        _assess(args.archive, work, args, run_checks=False)
+        with open(os.path.join(work, "manifest.json"), encoding="utf-8") as f:
+            manifest = json.load(f)
+        for k in ("auth", "safety_key"):
+            manifest.pop(k, None)
+        manifest.update(key_sealed=False, opened_for_undo=True)
+        with open(os.path.join(work, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+        folder = os.path.dirname(os.path.abspath(args.to))
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        packed = os.path.join(work, "archive.tar.gz")
+        _pack(work, packed)
+        safefile.atomic_copy(folder, os.path.basename(args.to), packed, 0o600)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print(_sha256_file(args.to))
+
+
+def _reseal_one(path: str, passphrase: str, live_key: str) -> str:
+    """One older backup sealed with the passphrase: "sealed" (done), "already", "no-key" (it carries no key and
+    the key on this box does not open it, so it stays as it is) or "unreadable"."""
+    head = small_member(path, "manifest.json")
+    try:
+        manifest = json.loads(head) if head else None
+    except ValueError:
+        manifest = None
+    if not isinstance(manifest, dict):
+        return "unreadable"
+    if manifest.get("key_sealed") or manifest.get("safety_key"):
+        return "already"
+    work = tempfile.mkdtemp(prefix="hm-reseal-")
+    try:
+        try:
+            _unpack(path, work)
+        except SystemExit:
+            return "unreadable"
+        clear = os.path.join(work, "vault.key")
+        if os.path.exists(clear):
+            key = safefile.read_regular(clear, 4096)
+        else:
+            try:
+                with open(os.path.join(work, "vault.json"), encoding="utf-8") as f:
+                    check = (json.load(f) or {}).get("check") or ""
+            except (OSError, ValueError, AttributeError):
+                check = ""
+            if not (live_key and os.path.isfile(live_key) and _key_opens(live_key, check)):
+                return "no-key"
+            key = safefile.read_regular(live_key, 4096)
+        if os.path.exists(clear):
+            os.remove(clear)
+        with open(os.path.join(work, "vault.key.sealed"), "wb") as f:
+            f.write(seal_key(key, passphrase))
+        manifest.pop("auth", None)
+        manifest.update(includes_key=True, key_sealed=True, key_withheld=False, resealed=time.strftime("%Y%m%d-%H%M%S"))
+        manifest["auth"] = make_tag(work, manifest, passphrase)
+        with open(os.path.join(work, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+        packed = os.path.join(work, "archive.tar.gz")
+        _pack(work, packed)
+        st = os.lstat(path)
+        safefile.atomic_copy(os.path.dirname(path), os.path.basename(path), packed, 0o600,
+                             (st.st_uid, st.st_gid) if safefile.is_root() else None)
+        return "sealed"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def reseal_backups(args, passphrase: str) -> dict:
+    """Task 308: once a passphrase is set, the backups made before (the key in the clear inside the container, or
+    left out of those on the share) get the key sealed with it, so restore points stay and no readable key is left.
+    Counts by outcome."""
+    folders = [os.path.join(args.data, "backups")]
+    away = backup_folder(args.data, quiet=True)
+    if away not in folders:
+        folders.append(away)
+    counts: dict = {}
+    for folder in folders:
+        if not os.path.isdir(folder) or os.path.islink(folder):
+            continue
+        for name in sorted(safefile.listdir(folder)):
+            path = os.path.join(folder, name)
+            if not BACKUP_NAME.fullmatch(name) or os.path.islink(path) or not os.path.isfile(path):
+                continue
+            try:
+                outcome = _reseal_one(path, passphrase, getattr(args, "key", None) or "")
+            except (OSError, ValueError, tarfile.TarError) as exc:
+                print(f"Note: {name} could not be sealed ({type(exc).__name__}); it stays as it is", file=sys.stderr)
+                outcome = "unreadable"
+            counts[outcome] = counts.get(outcome, 0) + 1
+    return counts
+
+
+def reseal_text(counts: dict) -> str:
+    done = counts.get("sealed", 0)
+    left = counts.get("no-key", 0) + counts.get("unreadable", 0)
+    text = f"{done} older backup{'' if done == 1 else 's'} sealed with it" if done else ""
+    if left:
+        text += ("; " if text else "") + (f"{left} could not be sealed and stay as they were (no key on this box "
+                                           "opens them, or they could not be read)")
+    return text
+
+
 def verify(args) -> None:
     """Only the checks a restore makes first: can this build restore the backup? Changes nothing."""
     work = tempfile.mkdtemp(prefix="hm-verify-")
@@ -830,8 +1041,13 @@ def take(args) -> None:
 def set_passphrase(args) -> None:
     """The backup passphrase (stdin) into root's file through a new file and a rename; one audit row,
     written as the monitor's own account."""
-    _save_passphrase(args, sys.stdin.readline().rstrip("\n"), "Backup passphrase set from the container shell")
+    passphrase = sys.stdin.readline().rstrip("\n")
+    _save_passphrase(args, passphrase, "Backup passphrase set from the container shell")
     print(f"Backup passphrase saved in {getattr(args, 'file', None) or PASSPHRASE_FILE}")
+    if getattr(args, "key", None):
+        text = reseal_text(reseal_backups(args, passphrase))
+        if text:
+            print(text[0].upper() + text[1:] + ".")
 
 
 def _passphrase_problem(passphrase: str) -> str:
@@ -896,9 +1112,159 @@ def passphrase_request(args) -> None:
     except (SystemExit, OSError):
         write_result(args.data, "passphrase", False, "The passphrase could not be saved. Nothing was changed.")
         sys.exit(1)
-    write_result(args.data, "passphrase", True, "Backup passphrase saved. A sealed backup is being made now.")
+    sealed = reseal_text(reseal_backups(args, passphrase))
+    write_result(args.data, "passphrase", True, "Backup passphrase saved"
+                 + (f"; {sealed}" if sealed else "") + ". A sealed backup is being made now.")
     if not getattr(args, "no_backup", False):
         subprocess.run(["systemctl", "start", "--no-block", "homelab-monitor-backup.service"], capture_output=True)
+
+
+EXPORT_REQUEST, EXPORT_DIR = "backup-export", "exports"
+# Restore from the web page (tasks 297 and 299): the app leaves the uploaded file in DATA/uploads and the request
+# (the version choice, the passphrase sealed with the vault key) in DATA/requests/restore.
+RESTORE_REQUEST, RESTORE_CONTEXT = "restore", "restore-request"
+UPLOAD_DIR, UPLOAD_NAME = "uploads", "restore-upload.tar.gz"
+RESTORE_SCRIPT = "/root/restore.sh"
+RESTORE_CHOICES = ("here", "backup", "newest")
+# What the page shows while it runs: a step from the script's own lines.
+RESTORE_STEPS = (("Updating to", "update"), ("Now restoring", "restore"), ("Restore complete", "done"))
+
+
+def export_request(args) -> None:
+    """Settings, Backups, Download (hm-export.path, task 296): a copy of one backup from the backup folder into
+    DATA/exports, owned by the app's account, for it to hand over once. The request holds only a file name; it is
+    checked against the backup name pattern and looked up in the backup folder root works out itself. A backup that
+    holds the vault key unsealed is refused: a download must not carry the key that opens every stored password."""
+    folder = os.path.join(args.data, "requests")
+    try:
+        name = safefile.read_regular(os.path.join(folder, EXPORT_REQUEST), 512).decode("ascii").strip()
+    except FileNotFoundError:
+        return  # the path unit also fires when the request is removed
+    except (OSError, UnicodeDecodeError):
+        name = ""
+    try:
+        safefile.unlink_in(folder, EXPORT_REQUEST)
+    except OSError:
+        pass
+
+    def refuse(text: str) -> None:
+        write_result(args.data, "export", False, text, file=name if BACKUP_NAME.fullmatch(name) else "")
+        sys.exit(1)
+
+    if not BACKUP_NAME.fullmatch(name):
+        refuse("That is not a backup's name, so nothing was copied.")
+    work = tempfile.mkdtemp(prefix="hm-export-")
+    try:
+        copy = os.path.join(work, "backup.tar.gz")
+        try:
+            take(argparse.Namespace(archive=os.path.join(backup_folder(args.data, quiet=True), name), to=copy))
+        except SystemExit:
+            refuse("That backup could not be read. It may have been removed by the daily clean-up.")
+        try:
+            names = [m.name for _, m in _members(copy)]
+        except (tarfile.TarError, OSError, EOFError, _TooBig):
+            refuse("That backup cannot be read, so it was not offered for download.")
+        if "vault.key" in names:
+            refuse("This backup holds the key to your stored passwords unsealed, so it cannot be downloaded. Set a "
+                   "backup passphrase, then download a backup made after that.")
+        out = os.path.join(args.data, EXPORT_DIR)
+        owner = _service_or_owner(args.data)
+        if os.path.islink(out):
+            refuse("The download folder is a link, so nothing was copied.")
+        if not os.path.isdir(out):
+            os.mkdir(out, 0o700)
+            if owner and hasattr(os, "chown"):
+                os.chown(out, *owner)
+        for old in safefile.listdir(out):
+            safefile.unlink_in(out, old)
+        safefile.atomic_copy(out, name, copy, 0o600, owner)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    write_result(args.data, "export", True, "Ready to download.", file=name)
+
+
+def _restore_progress(data: str, state: str, step: str, lines: list) -> None:
+    body = json.dumps({"time": int(time.time()), "state": state, "step": step, "lines": [_clean(l, 300) for l in lines[-12:]]})
+    try:
+        safefile.atomic_write(data, "restore-progress.json", body.encode("utf-8"), 0o600, _owner_of(data))
+    except OSError:
+        pass
+
+
+def restore_request(args) -> None:
+    """A restore asked for in Settings or on the setup page (hm-restore.path). The request is read and removed first,
+    the passphrase opened with the vault key, the uploaded file copied into root's own folder (and the upload removed),
+    then /root/restore.sh restores that copy without questions: --choice says which version (it never goes to an older
+    one) and the passphrase goes on its stdin. Its lines become DATA/restore-progress.json for the page, its outcome
+    DATA/restore-web.result.json. A backup that cannot be proven unchanged or has no usable key is refused here (the
+    console restore can take those on purpose)."""
+    folder = os.path.join(args.data, "requests")
+    try:
+        raw = safefile.read_regular(os.path.join(folder, RESTORE_REQUEST), 16384)
+    except FileNotFoundError:
+        return  # the path unit also fires when the request is removed
+    except OSError:
+        raw = b""
+    try:
+        safefile.unlink_in(folder, RESTORE_REQUEST)
+    except OSError:
+        pass
+
+    def refuse(text: str) -> None:
+        _restore_progress(args.data, "failed", "check", [text])
+        write_result(args.data, "restore-web", False, text)
+        sys.exit(1)
+
+    try:
+        req = json.loads(raw.decode("utf-8"))
+        choice = req["choice"] if req.get("choice") in RESTORE_CHOICES else ""
+        token = str(req.get("passphrase") or "")
+        if not choice or vault.AESGCM is None or not vault.Vault.is_token(token):
+            raise ValueError("unreadable")
+        key = base64.b64decode(safefile.read_regular(args.key, 4096).decode("ascii").strip())
+        passphrase = vault.Vault._open(vault.AESGCM(key), token, RESTORE_CONTEXT)
+    except Exception:
+        refuse("The restore request could not be read, so nothing was changed. Try again.")
+    if not passphrase or "\n" in passphrase or len(passphrase) > PASSPHRASE_MAX:
+        refuse("That passphrase cannot be used, so nothing was changed.")
+    _restore_progress(args.data, "running", "check", ["Checking the backup..."])
+    work = tempfile.mkdtemp(prefix="hm-webrestore-", dir="/root" if os.access("/root", os.W_OK) else None)
+    lines: list = []
+    try:
+        copy = os.path.join(work, "backup.tar.gz")
+        uploads = os.path.join(args.data, UPLOAD_DIR)
+        try:
+            take(argparse.Namespace(archive=os.path.join(uploads, UPLOAD_NAME), to=copy))
+        except SystemExit:
+            refuse("The uploaded file could not be read. Upload it again.")
+        finally:
+            try:
+                safefile.unlink_in(uploads, UPLOAD_NAME)
+            except OSError:
+                pass
+        step = "check"
+        proc = subprocess.Popen([shutil.which("bash") or "bash", getattr(args, "script", "") or RESTORE_SCRIPT, "--file", copy, "--choice", choice,
+                                 "--passphrase-stdin"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, env=dict(os.environ, NO_COLOR="1"))
+        proc.stdin.write(passphrase + "\n")
+        proc.stdin.close()
+        passphrase = ""
+        for line in proc.stdout:
+            line = line.rstrip()
+            if not line.strip():
+                continue
+            lines.append(line.strip())
+            for text, name in RESTORE_STEPS:
+                if text in line:
+                    step = name
+            _restore_progress(args.data, "running", step, lines)
+        ok = proc.wait() == 0
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    _restore_progress(args.data, "done" if ok else "failed", "done" if ok else step, lines)
+    write_result(args.data, "restore-web", ok, "\n".join(lines[-30:]))
+    if not ok:
+        sys.exit(1)
 
 
 def prune_pre_restore(folders: list, now: float = None) -> list:
@@ -1007,6 +1373,55 @@ def site_lines(site: dict) -> list:
     for m in clean["nfs"].get("mounts", []):
         out.append(f"NFS: {m['source']} on {m['target']} ({m['options']})")
     return out or ["Nothing: NFS and Syncthing are off"]
+
+
+def backup_info(archive: str) -> dict:
+    """What a backup says about itself (its manifest, read without the passphrase) against this build: the version and
+    database layout (schema) it was made with, when, and the verdict. Only for choosing what to offer: the restore
+    checks the unpacked database itself again (compat) before anything is replaced.
+
+      newer    its layout is newer than this build knows: update first (to its version or the newest), then restore
+      same     restores as it is
+      older    restores and is brought up to date
+      too_old  older than this build can bring up to date
+      unknown  no readable manifest: the restore's own checks decide
+    A backup's data never goes to an older version and an older release is never installed."""
+    raw = small_member(archive, "manifest.json")
+    try:
+        manifest = json.loads(raw) if raw else {}
+    except ValueError:
+        manifest = {}
+    manifest = manifest if isinstance(manifest, dict) else {}
+    try:
+        schema = int(manifest.get("schema") or 0)
+    except (TypeError, ValueError):
+        schema = 0
+    version = str(manifest.get("app_version") or "")
+    version = version if re.fullmatch(r"\d{1,4}\.\d{1,4}\.\d{1,4}", version) else ""
+    try:
+        import database  # the app's own module, beside this file in every build
+        build_schema, lowest = database.SCHEMA_VERSION, getattr(database, "MIN_SCHEMA_VERSION", 0)
+    except ImportError:
+        build_schema, lowest = 0, 0
+    if not schema or not build_schema:
+        verdict = "unknown"
+    elif schema > build_schema:
+        verdict = "newer"
+    elif schema < lowest:
+        verdict = "too_old"
+    else:
+        verdict = "same" if schema == build_schema else "older"
+    return {"version": version, "schema": schema, "created": _clean(manifest.get("created") or ""),
+            "this_version": _app_version(), "this_schema": build_schema, "verdict": verdict,
+            "needs_update": verdict == "newer"}
+
+
+def backup_info_cmd(args) -> None:
+    try:
+        info = backup_info(args.archive)
+    except (tarfile.TarError, OSError, EOFError, _TooBig) as exc:
+        fail(f"This backup cannot be read ({type(exc).__name__})")
+    print(json.dumps(info))
 
 
 def site_of(args) -> None:
@@ -1396,7 +1811,15 @@ def main() -> None:
     p.add_argument("--passphrase-file", help=f"seal the key with the passphrase in this file (default {PASSPHRASE_FILE})")
     p.add_argument("--safety", action="store_true", help="a root safety copy: the destination must be in root's own folder")
     p.add_argument("--safe-dir", help=f"root's own folder for safety copies (default {SAFE_DIR} when root)")
+    p.add_argument("--safety-keys", help=f"where the safety copies' one-time keys go (default {SAFETY_KEYS} when root)")
     p.set_defaults(fn=backup)
+    p = sub.add_parser("open-safety")
+    p.add_argument("archive")
+    p.add_argument("--to", required=True, help="the opened copy, inside root's own folder")
+    p.add_argument("--expect-sha256", help="the checksum root recorded for this copy")
+    p.add_argument("--safe-dir", help=f"root's own folder (default {SAFE_DIR} when root)")
+    p.add_argument("--safety-keys", help=f"where the one-time keys are (default {SAFETY_KEYS} when root)")
+    p.set_defaults(fn=open_safety)
     for name, fn in (("restore", restore), ("verify", verify), ("check-auth", check_auth)):
         p = sub.add_parser(name)
         p.add_argument("archive")
@@ -1410,6 +1833,7 @@ def main() -> None:
         p.add_argument("--forget-secrets", action="store_true", help="no usable key: clear the stored secrets")
         p.add_argument("--expect-sha256", help="the checksum root recorded for this file (a safety copy)")
         p.add_argument("--safe-dir", help=f"root's own folder (default {SAFE_DIR} when root)")
+        p.add_argument("--safety-keys", help=f"where the safety copies' one-time keys are (default {SAFETY_KEYS} when root)")
         p.set_defaults(fn=fn)
     p = sub.add_parser("take")
     p.add_argument("archive")
@@ -1418,6 +1842,7 @@ def main() -> None:
     p = sub.add_parser("set-passphrase")
     p.add_argument("--data", required=True)
     p.add_argument("--file", help=f"where the passphrase is kept (default {PASSPHRASE_FILE})")
+    p.add_argument("--key", help="the vault key: older backups are sealed with the new passphrase")
     p.set_defaults(fn=set_passphrase)
     p = sub.add_parser("passphrase-request")
     p.add_argument("--data", required=True)
@@ -1425,6 +1850,17 @@ def main() -> None:
     p.add_argument("--file", help=f"where the passphrase is kept (default {PASSPHRASE_FILE})")
     p.add_argument("--no-backup", action="store_true", help="do not start a backup afterwards (tests)")
     p.set_defaults(fn=passphrase_request)
+    p = sub.add_parser("restore-request")
+    p.add_argument("--data", required=True)
+    p.add_argument("--key", required=True)
+    p.add_argument("--script", default="", help=argparse.SUPPRESS)
+    p.set_defaults(fn=restore_request)
+    p = sub.add_parser("export-request")
+    p.add_argument("--data", required=True)
+    p.set_defaults(fn=export_request)
+    p = sub.add_parser("backup-info")
+    p.add_argument("archive")
+    p.set_defaults(fn=backup_info_cmd)
     p = sub.add_parser("site-of")
     p.add_argument("archive")
     p.set_defaults(fn=site_of)
@@ -1480,7 +1916,7 @@ def main() -> None:
         try:
             args.fn(args)
         except SystemExit as exc:
-            if exc.code not in (0, None):
+            if exc.code not in (0, None, EXIT_NO_PASSPHRASE):          # that one wrote its own reason
                 write_result(args.data, "backup", False, "Backup failed (see the command output or journal)")
             raise
         except Exception as exc:

@@ -79,6 +79,11 @@ class UpdateTests(unittest.TestCase):
         def fetch(url, limit, accept="application/octet-stream"):
             if url == updatectl.API:
                 return release_json(version)
+            if url.startswith(updatectl.API_TAG):
+                if url == f"{updatectl.API_TAG}v{version}":
+                    return release_json(version)
+                import urllib.error
+                raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
             return files[url]
         updatectl._get = fetch
 
@@ -132,7 +137,7 @@ class UpdateTests(unittest.TestCase):
         self.write(os.path.join(self.inst, updatectl.RECORD_NAME), json.dumps(rec))
         return rec
 
-    def run_install(self, runner=None):
+    def run_install(self, runner=None, version=""):
         calls = []
 
         def fake_runner(cmd, **kw):
@@ -142,7 +147,7 @@ class UpdateTests(unittest.TestCase):
             self.seen_record = json.load(open(os.path.join(self.inst, updatectl.RECORD_NAME)))
             updatectl.note_backup(argparse.Namespace(data=self.data, file=self.safe_copy(), to="9.9.9"))
             return subprocess.CompletedProcess(cmd, 0, "Upgraded to 9.9.9 and answering\n", "")
-        return updatectl.install(argparse.Namespace(data=self.data), runner=runner or fake_runner), calls
+        return updatectl.install(argparse.Namespace(data=self.data, version=version), runner=runner or fake_runner), calls
 
     def test_install_needs_recorded_settings(self):
         self.fake_release()
@@ -193,6 +198,28 @@ class UpdateTests(unittest.TestCase):
                 self.run_install(runner=lambda *a, **k: self.fail("nothing may run"))
             self.assertIn(msg, str(e.exception))
         self.assertFalse(os.path.exists(updatectl.STATE_FILE))
+
+    def test_install_one_exact_version_never_older(self):
+        """A restore of a backup this build cannot read updates to exactly the backup's version first (task 279):
+        that release is fetched by its tag, and an older one than the running version is never installed."""
+        self.write(os.path.join(self.inst, "settings.env"), 'PORT="8080"\n')
+        self.fake_release(version="9.9.9")
+        out, calls = self.run_install(version="9.9.9")
+        self.assertEqual((out["ok"], out["to"]), (True, "9.9.9"))
+        for asked, msg in (("9.9.8", "There is no release 9.9.8"), ("1.0; rm -rf /", "Not a version number")):
+            with self.assertRaises(updatectl.UpdateError, msg=asked) as e:
+                self.run_install(version=asked, runner=lambda *a, **k: self.fail("nothing may run"))
+            self.assertIn(msg, str(e.exception))
+        self.fake_release(version="0.7.0")
+        with self.assertRaises(updatectl.UpdateError) as e:
+            self.run_install(version="0.7.0", runner=lambda *a, **k: self.fail("nothing may run"))
+        self.assertIn("an older version is never installed", str(e.exception))
+        # GitHub answering with another release than the one asked for installs nothing.
+        rel = updatectl.latest_release(lambda *a, **k: release_json("9.9.9"))
+        self.assertEqual(rel["version"], "9.9.9")
+        with self.assertRaises(updatectl.UpdateError) as e:
+            updatectl.latest_release(lambda *a, **k: release_json("9.9.9"), version="9.9.7")
+        self.assertIn("when 9.9.7 was asked for", str(e.exception))
 
     def test_prune_keeps_two_days(self):
         folder = os.path.join(self.data, "backups", "pre-update")
@@ -288,7 +315,8 @@ class UpdateTests(unittest.TestCase):
 
             def runner(cmd, **kw):
                 calls.append(cmd)
-                return subprocess.CompletedProcess(cmd, 0, "", "")
+                # A copy without a one-time key: open-safety says so and the copy is used as it is.
+                return subprocess.CompletedProcess(cmd, 3 if "open-safety" in cmd else 0, "", "")
             updatectl.rollback(argparse.Namespace(data=self.data, mode="all"), runner=runner)
             restore = next(c for c in calls if "restore" in c)
             self.assertIn(rec["backup"], restore)
@@ -296,6 +324,34 @@ class UpdateTests(unittest.TestCase):
             if knows:
                 self.assertEqual(restore[restore.index("--expect-sha256") + 1], rec["sha256"])
             self.assertIn(["chown", "-hR", "homelab-monitor:homelab-monitor", self.data, "/etc/homelab-monitor"], calls)
+
+    def test_rollback_all_opens_a_one_time_sealed_copy_for_the_older_sitectl(self):
+        """Task 309: the older build cannot open a safety copy sealed with a one-time key. This build opens it into
+        root's own folder first, the older one restores that copy by its new checksum, and it is removed after."""
+        rec = self.record()
+        self.write(os.path.join(self.app + ".old", "server.py"), 'APP_VERSION = "0.7.0"\n')
+        self.write(os.path.join(self.app + ".old", "sitectl.py"), "p.add_argument('--expect-sha256')\n")
+        self.write(os.path.join(self.app, "server.py"), 'APP_VERSION = "0.8.0"\n')
+        self.write(updatectl.STATE_FILE, json.dumps({"from_version": "0.7.0", "to_version": "0.8.0",
+                                                     "time": int(time.time()), "backup": "", "schema_same": False}))
+        calls, opened = [], []
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            if "open-safety" in cmd:
+                to = cmd[cmd.index("--to") + 1]
+                opened.append(to)
+                self.write(to, "opened copy")
+                return subprocess.CompletedProcess(cmd, 0, "Backup check: the copy root recorded\n" + "a" * 64 + "\n", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        updatectl.rollback(argparse.Namespace(data=self.data, mode="all"), runner=runner)
+        op = next(c for c in calls if "open-safety" in c)
+        self.assertEqual(op[op.index("--expect-sha256") + 1], rec["sha256"])   # this build checks the copy first
+        self.assertTrue(opened[0].startswith(os.path.join(updatectl.SAFE_DIR, "pre-rollback")))
+        restore = next(c for c in calls if "restore" in c and "open-safety" not in c)
+        self.assertIn(opened[0], restore)
+        self.assertEqual(restore[restore.index("--expect-sha256") + 1], "a" * 64)
+        self.assertFalse(os.path.exists(opened[0]))                  # the key in the clear never stays
 
     def test_rollback_code_swaps_back_and_keeps_data(self):
         self.write(os.path.join(self.app + ".old", "server.py"), 'APP_VERSION = "0.7.0"\n')

@@ -2,11 +2,15 @@
 values named in workflow triggers."""
 
 import json
+import os
 import re
+import tempfile
 import unittest
 
 from tests import _env  # noqa: F401
 from tests.helpers import TEST_USER, add_device, request, start_api_server
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import changelog
 import customoids
@@ -44,6 +48,41 @@ class ChangelogTests(unittest.TestCase):
         # Already decided: a restart changes nothing.
         changelog.first_run(database.get_all_settings(), has_accounts=True)
         self.assertEqual(changelog.seen(TEST_USER), changelog.LATEST)
+
+    def test_each_note_carries_its_version(self):
+        """What's new groups notes by version (task 295): a note takes its own version or, without one, the version
+        it shipped in (the next one up); notes not released yet have none. A build reads the list from
+        release-versions.json, which deploy/build.py writes from VERSIONS."""
+        import sys
+        sys.path.insert(0, os.path.join(ROOT, "deploy"))
+        import changelog_md
+        body = request("GET", "/api/changes")[1]
+        by_id = {r["id"]: r["version"] for r in body["releases"]}
+        for rid, version in changelog_md.VERSIONS.items():
+            self.assertEqual(by_id[rid], version)
+        newest = max(changelog_md.VERSIONS)
+        for rid, version in by_id.items():
+            if rid > newest:
+                self.assertEqual(version, "")
+            elif rid not in changelog_md.VERSIONS:
+                self.assertEqual(version, changelog_md.VERSIONS[min(k for k in changelog_md.VERSIONS if k >= rid)])
+        # The packed file wins over the source tree, and an unreadable one leaves the notes without versions.
+        saved = dict(changelog._versions_cache)
+        here = changelog.HERE
+        try:
+            tmp = tempfile.mkdtemp()
+            with open(os.path.join(tmp, "release-versions.json"), "w") as f:
+                json.dump({"46": "7.7.7"}, f)
+            changelog.HERE = tmp
+            changelog._versions_cache.clear()
+            self.assertEqual(changelog.versions(), {46: "7.7.7"})
+            os.remove(os.path.join(tmp, "release-versions.json"))
+            changelog._versions_cache.clear()
+            self.assertEqual(changelog.versions(), {})
+        finally:
+            changelog.HERE = here
+            changelog._versions_cache.clear()
+            changelog._versions_cache.update(saved)
 
     def test_fresh_install_and_new_users_start_read(self):
         database.delete_settings([changelog.SEEN_KEY])

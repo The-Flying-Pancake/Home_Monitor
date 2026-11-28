@@ -20,10 +20,13 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import socketserver
 import sqlite3
 import ssl
+import stat
+import subprocess
 import sys
 import threading
 import time
@@ -145,6 +148,7 @@ STATIC_FILES = {
     "/security.js": ("security.js", "application/javascript; charset=utf-8"),
     "/adddevice.js": ("adddevice.js", "application/javascript; charset=utf-8"),
     "/backups.js": ("backups.js", "application/javascript; charset=utf-8"),
+    "/restore.js": ("restore.js", "application/javascript; charset=utf-8"),
     "/updates.js": ("updates.js", "application/javascript; charset=utf-8"),
     "/charts.js": ("charts.js", "application/javascript; charset=utf-8"),
     "/availability.js": ("availability.js", "application/javascript; charset=utf-8"),
@@ -959,9 +963,9 @@ def backup_passphrase_needed() -> bool:
 REQUIRED_STEPS = [
     {"id": "backup_passphrase", "permission": "settings.system", "needed": backup_passphrase_needed,
      "title": "Set a backup passphrase",
-     "why": ("Without it, backups that leave this box cannot carry the key to your stored passwords, so a rebuild "
-             "would lose them. No backup can be proven unchanged either. It takes a minute. Keep the passphrase in "
-             "your password manager, apart from the backups."),
+     "why": ("Backups are paused until it is set. A backup holds the key to every stored password, so it is only "
+             "made with that key sealed by your passphrase. It takes a minute. Keep the passphrase in your password "
+             "manager, apart from the backups."),
      "other_way": "Or in the container's console as root: /root/backup-passphrase.sh"},
 ]
 REQUIRED_TEXT = "Finish a required step to continue"
@@ -1692,18 +1696,18 @@ def backup_status() -> Dict[str, Any]:
     except OSError:
         pass
     files.sort(key=lambda f: f["time"], reverse=True)
-    results = {k: _read_result(data_dir, k) for k in ("backup", "site", "passphrase")}
+    results = {k: _read_result(data_dir, k) for k in ("backup", "site", "passphrase", "export")}
     pending = {k: _request_time(data_dir, k) > ((results[k] or {}).get("time") or 0) for k in ("backup", "site")}
     # The passphrase request is removed by root as soon as it is read: waiting while it is there.
     pending["passphrase"] = os.path.exists(os.path.join(data_dir, "requests", PASSPHRASE_REQUEST))
+    pending["export"] = os.path.exists(os.path.join(data_dir, "requests", EXPORT_REQUEST))
     # Root keeps the backup passphrase beside install.conf (root only: the app sees only whether it exists).
     install_dir = os.path.dirname(os.environ.get("MONITOR_INSTALL_CONF", "") or "")
     passphrase_set = bool(conf) and bool(install_dir) and os.path.exists(os.path.join(install_dir, "backup-passphrase"))
-    # Where the key goes in the next backup: sealed with a passphrase; without one it stays only in
-    # backups kept inside the container and is left out of those synced off the box.
-    key_state = "sealed" if passphrase_set else ("withheld" if syncthing else "clear-local")
+    # The key in a backup is always sealed with the passphrase; without one no backup is made (task 305).
+    key_state = "sealed" if passphrase_set else "paused"
     return {"installed": bool(conf), "folder": folder, "syncthing": syncthing, "count": len(files),
-            "latest": files[0] if files else None, "total_bytes": sum(f["size"] for f in files),
+            "latest": files[0] if files else None, "total_bytes": sum(f["size"] for f in files), "files": files[:20],
             "schedule": "Daily at 03:30, the newest 7 kept",
             "passphrase_set": passphrase_set, "key_state": key_state,
             "restore_source": conf.get("SYNCTHING_KEYS_NFS") or conf.get("BACKUP_NFS") or "",
@@ -1733,6 +1737,161 @@ def request_root_action(kind: str) -> None:
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, kind), "w", encoding="ascii") as f:
         f.write(str(int(time.time())))
+
+
+# Settings, Backups, Download (task 296): backups are root's files (0600), so root copies the one asked for into
+# DATA/exports for the app to hand over once (sitectl.py export-request, through hm-export.path). Root refuses a
+# backup that holds the vault key unsealed. A copy is deleted when it was downloaded or after EXPORT_KEEP_SECONDS.
+EXPORT_REQUEST = "backup-export"
+EXPORT_DIR = "exports"
+EXPORT_KEEP_SECONDS = 15 * 60
+BACKUP_FILE_RE = re.compile(r"monitor-backup-[A-Za-z0-9._-]{1,80}\.tar\.gz")
+
+
+def _data_dir() -> str:
+    return os.path.dirname(os.path.abspath(database.DB_FILE))
+
+
+def request_backup_export(name: str) -> None:
+    """Asks root for a copy of one backup (only its file name goes into the request; root checks it again)."""
+    if not BACKUP_FILE_RE.fullmatch(name or ""):
+        raise ValueError("not a backup name")
+    folder = os.path.join(_data_dir(), "requests")
+    os.makedirs(folder, exist_ok=True)
+    tmp = os.path.join(folder, f".{EXPORT_REQUEST}.{os.urandom(6).hex()}")
+    with open(tmp, "w", encoding="ascii") as f:
+        f.write(name)
+    os.replace(tmp, os.path.join(folder, EXPORT_REQUEST))
+
+
+def prune_exports(now: Optional[float] = None) -> None:
+    """Copies made for a download are kept only a short while."""
+    folder = os.path.join(_data_dir(), EXPORT_DIR)
+    now = time.time() if now is None else now
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(folder, name)
+        try:
+            if os.path.islink(path) or now - os.lstat(path).st_mtime > EXPORT_KEEP_SECONDS:
+                os.remove(path)
+        except OSError:
+            pass
+
+
+def export_ready(name: str) -> Optional[str]:
+    """The copy root made of this backup, when it is there, a plain file and fresh; else None."""
+    if not BACKUP_FILE_RE.fullmatch(name or ""):
+        return None
+    prune_exports()
+    result = _read_result(_data_dir(), "export") or {}
+    path = os.path.join(_data_dir(), EXPORT_DIR, name)
+    try:
+        st_ = os.lstat(path)
+    except OSError:
+        return None
+    if not result.get("ok") or result.get("file") != name or not stat.S_ISREG(st_.st_mode):
+        return None
+    return path
+
+
+# Restore from the web page (tasks 297 and 299): the backup file is streamed into DATA/uploads, checked with
+# sitectl.py backup-info (run as the app, it only reads), then the request (the version choice and the passphrase
+# sealed with the vault key) goes to root (sitectl.py restore-request through hm-restore.path), which restores it
+# with /root/restore.sh. A backup never goes to an older version (the choices come from backup_choices).
+UPLOAD_ROUTES = {"/api/backups/upload", "/api/setup/restore/upload"}
+UPLOAD_DIR, UPLOAD_NAME = "uploads", "restore-upload.tar.gz"
+UPLOAD_MAX = 8 * 1024 ** 3
+UPLOAD_SECONDS = 60 * 60
+UPLOAD_FREE_MARGIN = 512 * 1024 ** 2
+RESTORE_REQUEST, RESTORE_CONTEXT = "restore", "restore-request"
+
+
+def _upload_path() -> str:
+    return os.path.join(_data_dir(), UPLOAD_DIR, UPLOAD_NAME)
+
+
+def _sitectl_path() -> str:
+    here = os.path.dirname(os.path.abspath(__file__))
+    for candidate in (os.path.join(here, "sitectl.py"), os.path.join(here, "deploy", "sitectl.py")):
+        if os.path.exists(candidate):
+            return candidate
+    return os.path.join(here, "sitectl.py")
+
+
+def restore_pending() -> bool:
+    return os.path.exists(os.path.join(_data_dir(), "requests", RESTORE_REQUEST))
+
+
+def backup_choices(info: Dict[str, Any], newest: str) -> List[Dict[str, str]]:
+    """What a restore of this backup may do: never into an older version. A backup this version
+    cannot read: update to its own version or the newest first. Any other: restore here, or update to the newest
+    first when a newer one is out."""
+    newest = newest if newest and _vt(newest) > _vt(APP_VERSION) else ""
+    own = info.get("version") or ""
+    if info.get("verdict") == "too_old":
+        return []
+    if info.get("verdict") == "newer":
+        out = [{"choice": "backup", "version": own, "label": f"Update to {own} (the backup's version), then restore"}]             if own and _vt(own) > _vt(APP_VERSION) else []
+        if newest:
+            out.append({"choice": "newest", "version": newest, "label": f"Update to {newest} (the newest), then restore"})
+        return out
+    out = [{"choice": "here", "version": APP_VERSION, "label": f"Restore on {APP_VERSION} (this version)"}]
+    if newest:
+        out.append({"choice": "newest", "version": newest, "label": f"Update to {newest} (the newest) first, then restore"})
+    return out
+
+
+def uploaded_backup_info() -> Dict[str, Any]:
+    """What the uploaded backup says about itself and the choices for it. Read by sitectl.py run as the app (it reads
+    the manifest only; the restore checks everything again)."""
+    try:
+        r = subprocess.run([sys.executable, _sitectl_path(), "backup-info", _upload_path()], capture_output=True,
+                           text=True, timeout=120, shell=False)
+        info = json.loads(r.stdout) if r.returncode == 0 else {}
+    except (OSError, ValueError, subprocess.SubprocessError):
+        info = {}
+    if not isinstance(info, dict) or not info:
+        raise RequestError(400, "This file is not a backup the monitor can read.")
+    check = update_status().get("check") or {}
+    choices = backup_choices(info, str(check.get("latest") or ""))
+    message = ""
+    if info.get("verdict") == "too_old":
+        message = "This backup is too old for this version to bring up to date. Restore it with an older release first."
+    elif not choices:
+        message = ("This backup was made with a newer version and no release to update to is known yet. Use Check for "
+                   "updates in Settings, Updates, then try again.")
+    return {"version": info.get("version") or "", "created": info.get("created") or "", "this_version": APP_VERSION,
+            "verdict": info.get("verdict") or "unknown", "choices": choices, "message": message}
+
+
+def request_restore(choice: str, passphrase: str) -> None:
+    """Leaves the restore for root: the choice and the passphrase sealed with the vault key. One at a time."""
+    if not VAULT.enabled:
+        raise RequestError(409, "The vault is locked, so the passphrase cannot be passed on safely. Use /root/restore.sh in the container.")
+    body = json.dumps({"choice": choice, "passphrase": VAULT.encrypt(passphrase, RESTORE_CONTEXT)})
+    folder = os.path.join(_data_dir(), "requests")
+    os.makedirs(folder, exist_ok=True)
+    try:
+        fd = os.open(os.path.join(folder, RESTORE_REQUEST), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except FileExistsError:
+        raise RequestError(409, "A restore is already under way.")
+    with os.fdopen(fd, "w", encoding="ascii") as f:
+        f.write(body)
+
+
+def restore_status() -> Dict[str, Any]:
+    """The page follows the restore with this: root's progress lines, then its result."""
+    data = _data_dir()
+    try:
+        with open(os.path.join(data, "restore-progress.json"), encoding="utf-8") as f:
+            progress = json.load(f)
+    except (OSError, ValueError):
+        progress = None
+    return {"pending": restore_pending(), "uploaded": os.path.exists(_upload_path()), "progress": progress,
+            "result": _read_result(data, "restore-web")}
 
 
 # Settings, Backups, Set backup passphrase: the passphrase goes to root sealed with the vault key
@@ -3690,7 +3849,10 @@ def neighbours_view(device_id: int) -> list:
 
 # Routes reachable without a session: the login screen (with its 2FA step and password recovery) needs them.
 PUBLIC_API = {("GET", "/api/auth/status"), ("POST", "/api/auth/login"), ("POST", "/api/auth/setup"),
-              ("POST", "/api/auth/login/mfa"), ("POST", "/api/auth/recover/start"), ("POST", "/api/auth/recover/finish")}
+              ("POST", "/api/auth/login/mfa"), ("POST", "/api/auth/recover/start"), ("POST", "/api/auth/recover/finish"),
+              # Restore on the setup page (task 299): only while no account exists, with the setup code.
+              ("POST", "/api/setup/restore/start"), ("POST", "/api/setup/restore/upload"), ("POST", "/api/setup/restore"),
+              ("GET", "/api/setup/restore/status")}
 # Step-up tiers per route: rbac.TIER_ROUTES. The setup wizard's apply is stricter: the password
 # (and code) travel in the request itself, every time.
 _USERNAME = re.compile(r"[A-Za-z0-9._-]{1,32}")
@@ -3756,6 +3918,10 @@ class _TimedRaw(io.RawIOBase):
     def limit(self, seconds: float) -> None:
         """Shortens the time left, for example for a body read only so it can be dropped."""
         self.deadline = min(self.deadline, time.monotonic() + seconds)
+
+    def allow(self, seconds: float) -> None:
+        """More time for the whole request: an uploaded backup, after the caller was checked."""
+        self.deadline = max(self.deadline, time.monotonic() + seconds)
 
     def readinto(self, b) -> int:
         left = self.deadline - time.monotonic()
@@ -3847,7 +4013,10 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
             raise RequestError(403, "Cross-origin request rejected")
         if self.command in ("POST", "PUT"):
             ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
-            if ctype != "application/json":
+            # A backup file is sent as it is. A page on another site cannot send this type without asking first
+            # (CORS preflight, which is never granted), so the same-origin rule above still holds.
+            upload = self.command == "POST" and urlparse(self.path).path in UPLOAD_ROUTES and ctype == "application/octet-stream"
+            if ctype != "application/json" and not upload:
                 raise RequestError(415, "Content-Type must be application/json")
 
     def _discard_body(self) -> None:
@@ -3995,6 +4164,122 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _setup_restore_allowed(self, token_given: str) -> None:
+        """The setup page's restore: only while no account exists (afterwards Settings has it), and with the setup
+        code the installer printed, as for creating the first account; without a code, only from this machine."""
+        if database.get_account() is not None:
+            raise RequestError(403, "This monitor is already set up. Restore from Settings, Data and backups.")
+        token = os.environ.get("MONITOR_SETUP_TOKEN", "")
+        if token:
+            if not auth.hmac.compare_digest((token_given or "")[:128].encode("utf-8"), token.encode("utf-8")):
+                raise RequestError(403, "Setup code missing or wrong")
+        elif not ipaddress.ip_address(self.client_address[0]).is_loopback:
+            raise RequestError(403, "Without a setup code, a backup can only be restored from this machine")
+
+    def _setup_restore_route(self, path: str) -> None:
+        """Restore from a file on the setup page of a fresh install (task 299): the same steps as Settings."""
+        header = self.headers.get("X-Setup-Token", "")
+        if path == "/api/setup/restore/upload" and self.command == "POST":
+            self._setup_restore_allowed(header)
+            self._receive_upload()
+            self._send_json(200, uploaded_backup_info())
+            return
+        if path == "/api/setup/restore/status" and self.command == "GET":
+            self._setup_restore_allowed(header)
+            self._send_json(200, restore_status())
+            return
+        payload = self._read_json()
+        self._setup_restore_allowed(payload.get("setup_token") if isinstance(payload, dict) else "")
+        if path == "/api/setup/restore/start" and self.command == "POST":
+            if restore_pending():
+                raise RequestError(409, "A restore is already under way.")
+            self._send_json(200, {"ok": True, "max_bytes": UPLOAD_MAX})
+            return
+        if path == "/api/setup/restore" and self.command == "POST":
+            how = self._start_restore(payload)
+            database.add_audit("backup", "Restore from an uploaded backup requested on the setup page", how,
+                               actor="setup page")
+            self._send_json(202, restore_status())
+            return
+        raise RequestError(404, "Endpoint not found")
+
+    def _start_restore(self, payload: Any) -> str:
+        """Checks a restore request against the uploaded file and leaves it for root (shared with the setup page)."""
+        payload = payload if isinstance(payload, dict) else {}
+        if payload.get("confirm") != "RESTORE":
+            raise RequestError(400, "Type RESTORE to confirm.")
+        if not os.path.exists(_upload_path()):
+            raise RequestError(409, "Upload the backup first.")
+        passphrase = payload.get("passphrase")
+        if not isinstance(passphrase, str) or not passphrase or len(passphrase) > PASSPHRASE_MAX or "\n" in passphrase:
+            raise RequestError(400, "Give the backup passphrase of this backup.")
+        allowed = {c["choice"]: c["label"] for c in uploaded_backup_info()["choices"]}
+        if payload.get("choice") not in allowed:
+            raise RequestError(400, "Choose one of the ways offered for this backup.")
+        request_restore(payload["choice"], passphrase)
+        return allowed[payload["choice"]]
+
+    def _receive_upload(self) -> None:
+        """A backup file sent as the request body (application/octet-stream), into DATA/uploads/restore-upload.tar.gz.
+        Called only after the caller was checked. Size, free space and the gzip start are checked; it is written to a
+        new file (never through a link) and renamed into place when complete. One restore at a time."""
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            raise RequestError(411, "The file's size is missing. Try again.")
+        if restore_pending():
+            raise RequestError(409, "A restore is already under way.")
+        if length <= 0 or length > UPLOAD_MAX:
+            self.close_connection = True
+            self._body_read = True
+            raise RequestError(413, "This file is larger than a backup can be.")
+        folder = os.path.join(_data_dir(), UPLOAD_DIR)
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        if os.path.islink(folder):
+            raise RequestError(409, "The upload folder is a link, so nothing was saved.")
+        if length > shutil.disk_usage(folder).free - UPLOAD_FREE_MARGIN:
+            self.close_connection = True
+            self._body_read = True
+            raise RequestError(507, "There is not enough free disk space for this backup.")
+        raw = getattr(self.rfile, "raw", None)
+        if isinstance(raw, _TimedRaw):
+            raw.allow(UPLOAD_SECONDS)
+        tmp = os.path.join(folder, f".upload.{os.urandom(6).hex()}")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0), 0o600)
+        try:
+            with os.fdopen(fd, "wb") as out:
+                left, first = length, b""
+                while left:
+                    chunk = self.rfile.read(min(left, 1024 * 1024))
+                    if not chunk:
+                        raise RequestError(400, "The upload stopped part way. Try again.")
+                    first = first or chunk[:2]
+                    out.write(chunk)
+                    left -= len(chunk)
+            self._body_read = True
+            if first != b"\x1f\x8b":
+                raise RequestError(400, "This file is not a backup (a monitor-backup-...tar.gz file is expected).")
+            os.replace(tmp, os.path.join(folder, UPLOAD_NAME))
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+    def _send_file_download(self, path: str, mime: str, filename: str) -> None:
+        """A large file the browser saves (a backup), sent in pieces from disk. The file is opened without
+        following a link; the name is made by the monitor."""
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", filename)[:120] or "download"
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+        with os.fdopen(fd, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Disposition", f'attachment; filename="{safe}"')
+            self.send_header("Content-Length", str(size))
+            self._security_headers()
+            self.end_headers()
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                self.wfile.write(chunk)
+
     def _save_report(self, report_id: Optional[int], payload: Dict[str, Any]) -> int:
         """Adds or changes a saved report: a name, the spec, a schedule, the file formats and Telegram."""
         import reports
@@ -4060,6 +4345,9 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
                 raise RequestError(403, tls.REFUSED_TEXT)
             if path.startswith("/api/"):
                 self._require_session(path)
+                if path.startswith("/api/setup/restore"):
+                    self._setup_restore_route(path)
+                    return
                 if path.startswith("/api/auth/"):
                     self._auth_route(path)
                     return
@@ -4154,6 +4442,67 @@ class ApiRequestHandler(_TimedRequest, http.server.BaseHTTPRequestHandler):
                                        f"By {self.user.username}")
                     security_alert("backup_passphrase", how="changed" if had_one else "set")
                     self._send_json(200, backup_status())
+                    return
+                if path == "/api/backups/export" and self.command == "POST":
+                    # Download, step 1 (task 296): root makes a copy the app can hand over.
+                    if not self.user.is_admin:
+                        raise RequestError(403, "Only an administrator can download a backup.")
+                    payload = self._read_json()
+                    name = payload.get("name") if isinstance(payload, dict) else None
+                    if not isinstance(name, str) or not BACKUP_FILE_RE.fullmatch(name)                             or name not in {f["name"] for f in backup_status()["files"]}:
+                        raise RequestError(404, "That backup is not there any more.")
+                    request_backup_export(name)
+                    database.add_audit("backup", "Backup download requested", f"{name}, by {self.user.username}")
+                    self._send_json(202, backup_status())
+                    return
+                if path == "/api/backups/export/file" and self.command == "GET":
+                    # Download, step 2: the copy, once. It holds the device list readably; secrets stay sealed.
+                    if not self.user.is_admin:
+                        raise RequestError(403, "Only an administrator can download a backup.")
+                    name = (parse_qs(parsed.query).get("name") or [""])[0]
+                    copy = export_ready(name)
+                    if not copy:
+                        raise RequestError(404, "The copy for this download is not ready or has expired. Ask for it again.")
+                    database.add_audit("backup", "Backup downloaded", f"{name}, by {self.user.username}")
+                    security_alert("backup_download", file=name)
+                    try:
+                        self._send_file_download(copy, "application/gzip", name)
+                    finally:
+                        try:
+                            os.remove(copy)
+                        except OSError:
+                            pass
+                    return
+                if path == "/api/backups/upload/start" and self.command == "POST":
+                    # Before a large file is sent: the password and code are asked here (tier 3), as a refusal in the
+                    # middle of an upload would reach the browser as a dropped connection.
+                    self._read_json()
+                    if not self.user.is_admin:
+                        raise RequestError(403, "Only an administrator can restore a backup.")
+                    if restore_pending():
+                        raise RequestError(409, "A restore is already under way.")
+                    self._send_json(200, {"ok": True, "max_bytes": UPLOAD_MAX})
+                    return
+                if path == "/api/backups/upload" and self.command == "POST":
+                    # Restore from a file, step 1 (task 297): the file, then what it is and the choices for it.
+                    if not self.user.is_admin:
+                        raise RequestError(403, "Only an administrator can restore a backup.")
+                    self._receive_upload()
+                    self._send_json(200, uploaded_backup_info())
+                    return
+                if path == "/api/backups/restore" and self.command == "POST":
+                    # Step 2: the choice, the passphrase and RESTORE typed; root does the rest.
+                    if not self.user.is_admin:
+                        raise RequestError(403, "Only an administrator can restore a backup.")
+                    how = self._start_restore(self._read_json())
+                    database.add_audit("backup", "Restore from an uploaded backup requested", f"{how}, by {self.user.username}")
+                    security_alert("restore_requested", how=how)
+                    self._send_json(202, restore_status())
+                    return
+                if path == "/api/backups/restore/status" and self.command == "GET":
+                    if not self.user.is_admin:
+                        raise RequestError(403, "Only an administrator can restore a backup.")
+                    self._send_json(200, restore_status())
                     return
                 if path == "/api/backups/run" and self.command == "POST":
                     self._read_json()       # an unread body makes some systems reset the connection
@@ -7477,7 +7826,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:

@@ -95,16 +95,24 @@ def _opened_by() -> str:
 
 
 @contextlib.contextmanager
-def get_connection() -> Iterator[sqlite3.Connection]:
+def get_connection(readings: bool = False) -> Iterator[sqlite3.Connection]:
     """Yields a connection with WAL mode, foreign keys and secure delete, and always closes it.
 
     sqlite3.Connection's own context manager only commits or rolls back; it
     does not close, which leaks a connection per call until garbage collection.
+
+    readings=True is for the many small writes of ordinary readings (a device's status, metric samples,
+    availability beats, snapshot tables). Their commits do not wait for the disk to confirm the write
+    (synchronous NORMAL): on a busy disk that wait took 5 to 20 s per commit while every other job queued
+    behind it (task 283). In WAL mode this cannot damage the database; a power cut can at most lose the last
+    moments of readings, which the next round takes again. Everything else (accounts, settings, the vault,
+    backups) keeps FULL, so a change that is confirmed stays confirmed.
     """
     started = time.monotonic()
     conn = sqlite3.connect(DB_FILE, timeout=BUSY_WAIT)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA synchronous = NORMAL;" if readings else "PRAGMA synchronous = FULL;")
     conn.execute("PRAGMA foreign_keys = ON;")
     # Overwrite deleted content with zeros so replaced secrets do not linger in free pages.
     conn.execute("PRAGMA secure_delete = ON;")
@@ -117,7 +125,8 @@ def get_connection() -> Iterator[sqlite3.Connection]:
         conn.close()
         held = time.monotonic() - started
         if held > SLOW_CONNECTION:
-            log.warning("A database connection was open for %.1f s, opened by %s", held, _opened_by())
+            log.warning("A database connection%s was open for %.1f s, opened by %s",
+                        " for readings" if readings else "", held, _opened_by())
 
 
 DEVICE_COLUMNS = ("id", "hostname", "ip_address", "profile_id", "snmp_version", "snmp_community", "snmp_port",
@@ -1126,7 +1135,7 @@ def update_device_status(device_id: int, status: str, ping_ms: Optional[float] =
     Returns the previous status so callers can detect transitions.
     """
     now = int(time.time())
-    with get_connection() as conn:
+    with get_connection(readings=True) as conn:
         cursor = conn.cursor()
         row = cursor.execute("SELECT status FROM devices WHERE id = ?;", (device_id,)).fetchone()
         previous = row["status"] if row else None
@@ -1422,7 +1431,7 @@ def record_metrics(device_id: int, values: Dict[str, float], timestamp: Optional
         return
     ts = timestamp if timestamp is not None else int(time.time())
     history = history or {}
-    with get_connection() as conn:
+    with get_connection(readings=True) as conn:
         sparse = [k for k in values if history.get(k, "raw") != "raw"]
         last: Dict[str, Any] = {}
         if sparse:
@@ -1553,7 +1562,7 @@ def replace_device_table(device_id: int, table_name: str, rows: Dict[str, Dict[s
                          timestamp: Optional[int] = None) -> None:
     """Replaces all snapshot rows of one table for a device in a single transaction."""
     ts = timestamp if timestamp is not None else int(time.time())
-    with get_connection() as conn:
+    with get_connection(readings=True) as conn:
         conn.execute("DELETE FROM device_tables WHERE device_id = ? AND table_name = ?;", (device_id, table_name))
         conn.executemany(
             """
@@ -1731,7 +1740,7 @@ def list_audit_logs(limit: int = 50) -> List[Dict[str, Any]]:
 
 def set_snmp_status(device_id: int, status: str) -> Optional[str]:
     """Stores whether the SNMP agent answered the last poll. Returns the previous value."""
-    with get_connection() as conn:
+    with get_connection(readings=True) as conn:
         row = conn.execute("SELECT snmp_status FROM devices WHERE id = ?;", (device_id,)).fetchone()
         conn.execute("UPDATE devices SET snmp_status = ? WHERE id = ?;", (status, device_id))
         conn.commit()

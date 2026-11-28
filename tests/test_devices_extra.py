@@ -333,6 +333,35 @@ class PingOnlyTests(unittest.TestCase):
         self.assertIn("holder", logs.records[0].getMessage())
         self.assertIn("test_devices_extra.py", logs.records[0].getMessage())
 
+    def test_readings_do_not_wait_for_the_disk_but_other_writes_do(self):
+        """Ordinary readings commit without waiting for the disk (synchronous NORMAL), so a busy disk does not
+        hold the database for seconds per reading; every other connection stays FULL (task 283)."""
+        from unittest import mock
+        import availability
+        with database.get_connection(readings=True) as conn:
+            self.assertEqual(conn.execute("PRAGMA synchronous;").fetchone()[0], 1)
+        with database.get_connection() as conn:
+            self.assertEqual(conn.execute("PRAGMA synchronous;").fetchone()[0], 2)
+        real = database.get_connection
+        seen = []
+
+        def spy(readings=False):
+            seen.append(readings)
+            return real(readings=readings)
+
+        dev = database.add_device("readings-283", "198.51.100.183", "generic_device")
+        try:
+            with mock.patch.object(database, "get_connection", side_effect=spy):
+                database.update_device_status(dev, "online", 1.0)
+                database.record_metrics(dev, {"icmp_ping_ms": 1.0})
+                database.replace_device_table(dev, "processes", {"x": {"name": "x", "count": 1}})
+                database.set_snmp_status(dev, "ok")
+                availability.record(dev, True, 1.0)
+            self.assertEqual(seen, [True] * len(seen))
+            self.assertGreaterEqual(len(seen), 5)
+        finally:
+            database.delete_device(dev)
+
     def test_ping_test(self):
         from unittest import mock
         with mock.patch.object(poller, "ping_host", side_effect=[(True, 1.0), (False, None), (True, 3.0)]):

@@ -15,6 +15,17 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 1.1.0: Release 49, Restore across versions and sealed backups (2026-11-28)
+
+- A backup made with a newer version can now be restored. The monitor first updates itself to the backup's version or to the newest one, whichever you choose. A backup is never restored into an older version.
+- Restore a backup from the web page: Settings, Data and backups has Restore from a file. A new install can also start from a backup on its first screen with the setup code the installer printed.
+- Administrators can download a backup from Settings after confirming with their password and code.
+- Every backup is now sealed. A backup passphrase is needed before any backup is made, because a backup holds the key to every password the monitor stores. Until one is set, backups are paused and the page says so. Setting it also seals the backups made before.
+- The copies the monitor keeps for itself before an update or a restore are sealed too, each with a key of its own. Undo still works without your passphrase.
+- What's new groups notes by version. When you catch up on several versions, the newest two are open and older ones are folded.
+- A very busy disk no longer holds the database for seconds while ordinary readings are saved.
+- A Proxmox container no longer shows its host's temperature sensors and disk throughput as its own, so one hot host CPU warns once. This needs the Proxmox connection.
+
 ### 1.0.0: Release 46, Home Monitor 1.0 is here (2026-11-24)
 
 - Welcome to Home Monitor 1.0! What began as a small way to watch a home network now looks after your devices, services, Proxmox hosts, backups and updates in one place.

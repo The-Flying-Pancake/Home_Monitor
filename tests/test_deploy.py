@@ -30,8 +30,53 @@ def read_bytes(path):
         return f.read()
 
 
+# Every backup needs a backup passphrase (task 305): a test that does not give one gets this one, and so do the
+# restores that read it. Tests about a missing passphrase give an empty file of their own.
+TEST_PASSPHRASE = "test backup passphrase 305"
+TEST_PF = os.path.join(tempfile.mkdtemp(prefix="hm-test-pf-"), "backup-passphrase")
+with open(TEST_PF, "w", encoding="utf-8") as _f:
+    _f.write(TEST_PASSPHRASE + chr(10))
+
+
 def sitectl(*args, stdin=""):
+    args = list(args)
+    if (args and args[0] in ("backup", "restore", "verify", "check-auth") and "--passphrase-file" not in args
+            and "--passphrase-stdin" not in args and "--safety" not in args):
+        args += ["--passphrase-file", TEST_PF]
     return subprocess.run([sys.executable, SITECTL, *args], input=stdin.encode(), capture_output=True)
+
+
+def legacy(archive, keep_key=True, passphrase=TEST_PASSPHRASE):
+    """A backup as builds before task 305 made it without a passphrase, from a new one: the key in the clear
+    (keep_key) or left out, no tag. Such backups still exist and must still restore. Rewritten in place."""
+    sys.path.insert(0, os.path.join(ROOT, "deploy"))
+    import sitectl as sc
+    work = tempfile.mkdtemp(prefix="hm-legacy-")
+    try:
+        with tarfile.open(archive) as tar:
+            tar.extractall(work, filter="data")
+        sealed = os.path.join(work, "vault.key.sealed")
+        if os.path.exists(sealed):
+            with open(sealed, "rb") as f:
+                key = sc.unseal_key(f.read(), passphrase)
+            os.remove(sealed)
+            if keep_key:
+                with open(os.path.join(work, "vault.key"), "wb") as f:
+                    f.write(key)
+        with open(os.path.join(work, "manifest.json"), encoding="utf-8") as f:
+            manifest = json.load(f)
+        manifest.pop("auth", None)
+        had = manifest.get("includes_key")
+        manifest.update(key_sealed=False, includes_key=bool(had and keep_key), key_withheld=bool(had and not keep_key))
+        with open(os.path.join(work, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f)
+        with tarfile.open(archive, "w:gz") as tar:
+            for m in sc.BACKUP_MEMBERS:
+                if os.path.exists(os.path.join(work, m)):
+                    tar.add(os.path.join(work, m), arcname=m)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return archive
 
 
 class InstallerTests(unittest.TestCase):
@@ -53,8 +98,13 @@ class InstallerTests(unittest.TestCase):
         b64 = self.text.split("\n__PAYLOAD_BEGIN__\n")[1].split("\n__PAYLOAD_END__")[0]
         with tarfile.open(fileobj=io.BytesIO(base64.b64decode(b64)), mode="r:gz") as tar:
             names = tar.getnames()
+            versions = json.loads(tar.extractfile("release-versions.json").read())
         for must in ("server.py", "vault.py", "setup.py", "sitectl.py", "web/index.html", "web/setup.js", "profiles/linux_host.json"):
             self.assertIn(must, names)
+        # Which release note is which version, for What's new grouped by version (task 295).
+        sys.path.insert(0, os.path.join(ROOT, "deploy"))
+        import changelog_md
+        self.assertEqual(versions, {str(k): v for k, v in changelog_md.VERSIONS.items()})
         # No data, keys, logs or development material ship inside the installer.
         for name in names:
             self.assertFalse(name.endswith((".db", ".key", ".log")) or name.startswith(("tests/", "monitor")), name)
@@ -1360,8 +1410,8 @@ class SitectlTests(unittest.TestCase):
         with tarfile.open(archive) as tar:
             names = tar.getnames()
             manifest = json.load(tar.extractfile("manifest.json"))
-        self.assertEqual(sorted(names), ["manifest.json", "monitor.db", "site.json", "vault.json", "vault.key"])
-        self.assertTrue(manifest["includes_key"])
+        self.assertEqual(sorted(names), ["manifest.json", "monitor.db", "site.json", "vault.json", "vault.key.sealed"])
+        self.assertTrue(manifest["includes_key"] and manifest["key_sealed"] and manifest["auth"])
         # A rebuilt container has a different key: the restore puts the backup's key back.
         with open(self.key, "w") as f:
             f.write("a-new-containers-key\n")
@@ -1370,9 +1420,11 @@ class SitectlTests(unittest.TestCase):
         conn.execute("UPDATE marker SET v = 'changed'")
         conn.commit()
         conn.close()
+        none = os.path.join(self.tmp, "no-passphrase")
+        open(none, "w").close()
+        r = sitectl("restore", archive, "--data", self.data, "--key", self.key, "--passphrase-file", none)
+        self.assertEqual(r.returncode, 4, r.stderr)              # sealed and tagged: the passphrase is needed
         r = sitectl("restore", archive, "--data", self.data, "--key", self.key)
-        self.assertEqual(r.returncode, 7, r.stderr)              # no passphrase, no tag: not proven unchanged
-        r = sitectl("restore", archive, "--data", self.data, "--key", self.key, "--accept-unverified")
         self.assertEqual(r.returncode, 0, r.stderr)
         conn = sqlite3.connect(os.path.join(self.data, "monitor.db"))
         self.assertEqual(conn.execute("SELECT v FROM marker").fetchone()[0], "original")
@@ -1444,9 +1496,11 @@ class SitectlTests(unittest.TestCase):
         self.assertEqual(fields[5], "share nas:/share")
         self.assertIn("Syncthing folder", lines[1])
         self.assertIn("this container", lines[2])
+        self.assertEqual(sitectl("verify", made[0]).returncode, 0)        # tagged: proven with the passphrase
+        self.assertEqual(fields[6], "tag")
+        legacy(made[0])                                                   # an old backup without a tag
         self.assertEqual(sitectl("verify", made[0]).returncode, 7)        # untagged: confirmed on purpose
         self.assertEqual(sitectl("verify", made[0], "--accept-unverified").returncode, 0)
-        self.assertEqual(fields[6], "none")
         # Nothing found: no lines, still a clean exit (the installer says so and stops).
         empty = os.path.join(self.tmp, "empty")
         os.makedirs(empty)
@@ -1460,6 +1514,37 @@ class SitectlTests(unittest.TestCase):
         r = sitectl("verify", bad)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("cannot be read", r.stderr.decode())
+
+    def test_backup_info_says_what_this_build_can_do(self):
+        """backup-info reads a backup's manifest without the passphrase and says whether this build can restore it
+        as it is, brings it up to date, or needs an update first (task 279). An older release is never offered."""
+        import database
+
+        def archive(name, manifest):
+            path = os.path.join(self.tmp, name)
+            with tarfile.open(path, "w:gz") as tar:
+                if manifest is not None:
+                    raw = json.dumps(manifest).encode()
+                    info = tarfile.TarInfo("manifest.json")
+                    info.size = len(raw)
+                    tar.addfile(info, io.BytesIO(raw))
+            return path
+
+        def info(manifest):
+            r = sitectl("backup-info", archive("monitor-backup-info.tar.gz", manifest))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return json.loads(r.stdout)
+
+        here = database.SCHEMA_VERSION
+        newer = info({"schema": here + 1, "app_version": "9.1.0", "created": "20261125-120000"})
+        self.assertEqual((newer["verdict"], newer["needs_update"], newer["version"], newer["schema"]), ("newer", True, "9.1.0", here + 1))
+        self.assertEqual(newer["this_schema"], here)
+        self.assertEqual(info({"schema": here, "app_version": "1.0.0"})["verdict"], "same")
+        if here > 1:
+            self.assertEqual(info({"schema": here - 1, "app_version": "0.5.0"})["verdict"], "older")
+        self.assertEqual(info({"schema": here, "app_version": "1.0; rm -rf /"})["version"], "")
+        self.assertEqual(info(None)["verdict"], "unknown")
+        self.assertFalse(info(None)["needs_update"])
 
     def test_restore_rejects_foreign_archives(self):
         evil = os.path.join(self.tmp, "evil.tar.gz")
@@ -1506,6 +1591,50 @@ class SitectlTests(unittest.TestCase):
         r = sitectl("find-backups", "--data", self.data, "--mounts", os.path.join(self.tmp, "none"))
         lines = r.stdout.decode().strip().splitlines()
         self.assertEqual([os.path.basename(l.split("|")[0]) for l in lines], [os.path.basename(good)])
+
+    def test_export_request_copies_only_a_sealed_backup(self):
+        """Download in Settings (task 296): root copies the named backup from the backup folder into DATA/exports.
+        A backup holding the vault key unsealed is refused, and so is anything that is not a backup's name."""
+        self.make_db({})
+        os.makedirs(os.path.dirname(self.key))
+        with open(self.key, "w") as f:
+            f.write("the-real-key-0123456789\n")
+        dest = os.path.join(self.data, "backups")
+        pf, none = os.path.join(self.tmp, "pf"), os.path.join(self.tmp, "none")
+        with open(pf, "w") as f:
+            f.write("a long backup passphrase\n")
+
+        def made(passphrase_file):
+            r = sitectl("backup", "--data", self.data, "--key", self.key, "--dest", dest, "--passphrase-file", passphrase_file)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return os.path.basename(r.stdout.decode().strip().splitlines()[-1])
+
+        def export(name):
+            os.makedirs(os.path.join(self.data, "requests"), exist_ok=True)
+            with open(os.path.join(self.data, "requests", "backup-export"), "w") as f:
+                f.write(name)
+            r = sitectl("export-request", "--data", self.data)
+            self.assertFalse(os.path.exists(os.path.join(self.data, "requests", "backup-export")))
+            return r, json.load(open(os.path.join(self.data, "export.result.json")))
+
+        plain = made(pf)                      # an old backup, from before every backup was sealed
+        legacy(os.path.join(dest, plain), passphrase="a long backup passphrase")
+        r, res = export(plain)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(res["ok"])
+        self.assertIn("unsealed", res["output"])
+        self.assertFalse(os.path.exists(os.path.join(self.data, "exports", plain)))
+        time.sleep(1.1)                       # backup names carry the second
+        sealed = made(pf)
+        r, res = export(sealed)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((res["ok"], res["file"]), (True, sealed))
+        copy = os.path.join(self.data, "exports", sealed)
+        self.assertEqual(open(copy, "rb").read(), open(os.path.join(dest, sealed), "rb").read())
+        for bad in ("../monitor.db", "monitor-backup-x.tar.gz; rm -rf /", "monitor-backup-gone.tar.gz"):
+            r, res = export(bad)
+            self.assertNotEqual(r.returncode, 0, bad)
+            self.assertFalse(res["ok"], bad)
 
     def test_sealed_key_backup(self):
         """With a backup passphrase the key travels sealed: the share alone opens nothing."""
@@ -1714,15 +1843,17 @@ class BackupAuthTests(unittest.TestCase):
                 tar.add(os.path.join(work, n), arcname=n)
         return out
 
-    def test_offbox_backup_without_passphrase_leaves_the_key_out(self):
-        names, manifest = self.contents(self.backup(os.path.join(self.tmp, "share"), passphrase=False))
-        self.assertNotIn("vault.key", names)
-        self.assertNotIn("vault.key.sealed", names)
-        self.assertTrue(manifest["key_withheld"])
-        self.assertNotIn("auth", manifest)
-        result = json.loads(read(os.path.join(self.data, "backup.result.json")))
-        self.assertEqual(result["key"], "withheld")
-        self.assertIn("the key was left out of this backup", result["output"])
+    def test_no_passphrase_no_backup(self):
+        """Task 305: without a backup passphrase no backup is made, inside the container or on a share, and the
+        page is told why in plain words."""
+        for dest in (os.path.join(self.data, "backups"), os.path.join(self.tmp, "share")):
+            r = sitectl("backup", "--data", self.data, "--key", self.key, "--dest", dest, "--passphrase-file", self.none)
+            self.assertEqual(r.returncode, 9, r.stderr)
+            self.assertIn(b"No backup passphrase is set, so no backup was made", r.stderr)
+            self.assertFalse(any(n.startswith("monitor-backup-") for n in (os.listdir(dest) if os.path.isdir(dest) else [])))
+            result = json.loads(read(os.path.join(self.data, "backup.result.json")))
+            self.assertEqual((result["ok"], result["reason"]), (False, "no-passphrase"))
+            self.assertIn("/root/backup-passphrase.sh", result["output"])
 
     def test_a_backup_folder_that_is_a_link_is_refused_in_plain_words(self):
         """The backups folder sits in one the monitor's own user owns: a link there could send root's file
@@ -1741,12 +1872,6 @@ class BackupAuthTests(unittest.TestCase):
         self.assertIn("is a link, so nothing was written", err)
         self.assertNotIn("Traceback", err)
         self.assertEqual(os.listdir(outside), [])
-
-    def test_local_backup_without_passphrase_keeps_the_key(self):
-        names, manifest = self.contents(self.backup(os.path.join(self.data, "backups"), passphrase=False))
-        self.assertIn("vault.key", names)
-        self.assertNotIn("auth", manifest)
-        self.assertEqual(manifest["format"], 3)
 
     def test_every_archive_with_a_passphrase_has_a_tag(self):
         for dest in (os.path.join(self.data, "backups"), os.path.join(self.tmp, "share")):
@@ -1874,7 +1999,7 @@ class BackupAuthTests(unittest.TestCase):
 
     def test_keyless_restore_keeps_the_key_on_the_same_box(self):
         self.vault_meta(KEY_B64)
-        archive = self.backup(os.path.join(self.tmp, "share"), passphrase=False)
+        archive = legacy(self.backup(os.path.join(self.tmp, "share")), keep_key=False, passphrase=PASS)   # an older one
         r = sitectl("restore", archive, "--data", self.data, "--key", self.key, "--passphrase-file", self.none,
                     "--accept-unverified")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -1897,7 +2022,8 @@ class BackupAuthTests(unittest.TestCase):
         r = subprocess.run([sys.executable, "-c", seed], env=env, capture_output=True, text=True, timeout=300)
         self.assertIn("seeded", r.stdout, r.stderr)
         archive = sitectl("backup", "--data", data, "--key", key, "--dest", os.path.join(self.tmp, "share"),
-                          "--passphrase-file", self.none).stdout.decode().strip().splitlines()[-1]
+                          "--passphrase-file", self.pf).stdout.decode().strip().splitlines()[-1]
+        legacy(archive, keep_key=False, passphrase=PASS)            # an older backup that went without its key
         # A new box: another key, which does not open the backup's data.
         new = os.path.join(self.tmp, "new")
         os.makedirs(new)
@@ -1926,6 +2052,37 @@ class BackupAuthTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)                 # the app starts on the cleared copy
         self.assertIn("''", r.stdout)
         self.assertIn("'d'", r.stdout)
+
+    def test_setting_a_passphrase_seals_the_older_backups(self):
+        """Task 308: backups made before a passphrase existed (the key in the clear, or left out) are sealed with it
+        once it is set, and then prove themselves with it. One no key on this box opens stays as it was."""
+        folder = os.path.join(self.data, "backups")
+        self.vault_meta(KEY_B64)
+        clear = legacy(self.backup(folder), keep_key=True, passphrase=PASS)
+        time.sleep(1.1)
+        withheld = legacy(self.backup(folder), keep_key=False, passphrase=PASS)
+        time.sleep(1.1)
+        self.vault_meta(OTHER_B64)                                   # data this box's key does not open
+        foreign = legacy(self.backup(folder), keep_key=False, passphrase=PASS)
+        before = read_bytes(foreign)
+        target = os.path.join(self.tmp, "install", "backup-passphrase")
+        r = sitectl("set-passphrase", "--data", self.data, "--key", self.key, "--file", target,
+                    stdin="the new backup passphrase" + chr(10))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(b"2 older backups sealed with it", r.stdout)
+        self.assertIn(b"1 could not be sealed", r.stdout)
+        for archive in (clear, withheld):
+            names, manifest = self.contents(archive)
+            self.assertIn("vault.key.sealed", names)
+            self.assertNotIn("vault.key", names)
+            self.assertTrue(manifest["key_sealed"] and manifest["resealed"])
+            r = sitectl("verify", archive, "--key", self.key, "--passphrase-file", target)
+            self.assertEqual(r.returncode, 0, r.stderr)              # proven unchanged with the new passphrase
+        self.assertEqual(read_bytes(foreign), before)
+        # Run again: nothing left to do.
+        r = sitectl("set-passphrase", "--data", self.data, "--key", self.key, "--file", target,
+                    stdin="the new backup passphrase" + chr(10))
+        self.assertNotIn(b"sealed with it", r.stdout)
 
     def test_unpack_size_cap(self):
         big = os.path.join(self.tmp, "monitor-backup-20260101-000001.tar.gz")
@@ -1972,34 +2129,73 @@ class BackupAuthTests(unittest.TestCase):
         sc.prune_pre_restore([safe], now)
         self.assertEqual(os.listdir(safe), ["pre-restore-45"])
 
-    def test_safety_backup_has_the_key_and_old_member_names(self):
+    def test_safety_backup_is_sealed_with_a_one_time_key(self):
+        """Task 309: a safety copy never holds the key readable. It is sealed with a key of its own, made for it
+        alone and kept apart from the copies; Undo opens it without the backup passphrase."""
+        sys.path.insert(0, os.path.join(ROOT, "deploy"))
+        import sitectl as sc
+        import hashlib
         safe = os.path.join(self.tmp, "safe")
-        archive = self.backup(os.path.join(safe, "pre-update"), True, "--safety", "--safe-dir", safe)
+        keys = safe + "-keys"
+        archive = self.backup(os.path.join(safe, "pre-update"), False, "--safety", "--safe-dir", safe)
         names, manifest = self.contents(archive)
-        self.assertIn("vault.key", names)                           # in the clear: Undo never needs the passphrase
-        self.assertNotIn("vault.key.sealed", names)
+        self.assertIn("vault.key.sealed", names)
+        self.assertNotIn("vault.key", names)
         self.assertTrue(set(names) <= set(OLD_MEMBERS))
         self.assertIn("auth", manifest)
+        kid = manifest["safety_key"]
+        self.assertEqual(os.listdir(keys), [kid])
+        once = sc.read_safety_key(keys, kid)
+        self.assertTrue(once and once not in read_bytes(archive).decode("latin-1"))
+        # A second copy has a key of its own.
+        time.sleep(1.1)
+        second = self.backup(os.path.join(safe, "pre-update"), False, "--safety", "--safe-dir", safe)
+        self.assertNotEqual(self.contents(second)[1]["safety_key"], kid)
+        # Opened without the passphrase: by the checksum root recorded, or by its own tag.
+        digest = hashlib.sha256(read_bytes(archive)).hexdigest()
+        for extra in (["--expect-sha256", digest], []):
+            r = sitectl("verify", archive, "--passphrase-file", self.none, "--safe-dir", safe, *extra)
+            self.assertEqual(r.returncode, 0, r.stderr)
+        r = sitectl("verify", archive, "--passphrase-file", self.none, "--safe-dir", safe, "--expect-sha256", "0" * 64,
+                    "--accept-unverified")
+        self.assertEqual(r.returncode, 7, r.stderr)
         # Outside root's folder it is refused.
         r = sitectl("backup", "--data", self.data, "--key", self.key, "--dest", os.path.join(self.tmp, "x"), "--safety",
                     "--safe-dir", safe)
         self.assertNotEqual(r.returncode, 0)
-        # Checked by the checksum root recorded, whatever the passphrase is now.
-        import hashlib
-        digest = hashlib.sha256(read_bytes(archive)).hexdigest()
-        r = sitectl("verify", archive, "--passphrase-file", self.none, "--expect-sha256", digest)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        r = sitectl("verify", archive, "--passphrase-file", self.none, "--expect-sha256", "0" * 64, "--accept-unverified")
-        self.assertEqual(r.returncode, 7, r.stderr)
+        # Once its copy is gone, its key goes too (after a short grace for a copy still being written).
+        os.remove(archive)
+        self.assertEqual(sc.sweep_safety_keys(keys), [])
+        self.assertEqual(sc.sweep_safety_keys(keys, time.time() + sc.SAFETY_KEY_GRACE + 5), [kid])
+        r = sitectl("verify", second, "--passphrase-file", self.none, "--safe-dir", safe)
+        self.assertEqual(r.returncode, 0, r.stderr)                 # the other copy's key stays
+        os.remove(os.path.join(keys, self.contents(second)[1]["safety_key"]))
+        r = sitectl("verify", second, "--passphrase-file", self.none, "--safe-dir", safe)
+        self.assertEqual(r.returncode, 8, r.stderr)
+        self.assertIn(b"one-time key is gone", r.stderr)
 
     def test_old_sitectl_restores_a_safety_backup(self):
+        """Undo into an older build: this build opens the copy into root's own folder for it (open-safety)."""
         safe = os.path.join(self.tmp, "safe")
-        for passphrase in (True, False):
-            archive = self.backup(os.path.join(safe, "pre-update"), passphrase, "--safety", "--safe-dir", safe)
-            self.assertTrue(old_0112_accepts(archive))
-            time.sleep(1.1)
+        archive = self.backup(os.path.join(safe, "pre-update"), False, "--safety", "--safe-dir", safe)
+        opened = os.path.join(safe, "pre-rollback", "opened.tar.gz")
+        r = sitectl("open-safety", archive, "--to", opened, "--safe-dir", safe)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        import hashlib
+        self.assertEqual(r.stdout.decode().strip().splitlines()[-1], hashlib.sha256(read_bytes(opened)).hexdigest())
+        names, manifest = self.contents(opened)
+        self.assertIn("vault.key", names)
+        self.assertNotIn("safety_key", manifest)
+        self.assertTrue(old_0112_accepts(opened))
+        # Only into root's own folder; a copy without a one-time key is used as it is (exit 3).
+        r = sitectl("open-safety", archive, "--to", os.path.join(self.tmp, "out.tar.gz"), "--safe-dir", safe)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "out.tar.gz")))
+        plain = self.backup(os.path.join(self.tmp, "share"))
+        r = sitectl("open-safety", plain, "--to", os.path.join(safe, "x.tar.gz"), "--safe-dir", safe)
+        self.assertEqual(r.returncode, 3, r.stderr)
         # Every other kind of backup made now is readable by 0.11.2 too.
-        self.assertTrue(old_0112_accepts(self.backup(os.path.join(self.tmp, "share"))))
+        self.assertTrue(old_0112_accepts(plain))
 
     def test_set_passphrase_file_mode_and_length(self):
         target = os.path.join(self.tmp, "install", "backup-passphrase")
@@ -2111,6 +2307,22 @@ class RestoreScriptTests(unittest.TestCase):
                      ("$APP/sitectl.py", '"$APP/sitectl.py"')):
             self.assertIn(a, body)
             body = body.replace(a, b)
+        # GitHub and the update stand in: check answers HM_FAKE_NEWEST (or fails like an unreachable GitHub),
+        # install notes its arguments and answers like the real one.
+        self.updates = os.path.join(self.tmp, "updates.log")
+        fake_update = os.path.join(self.tmp, "fake_updatectl.py")
+        with open(fake_update, "w", newline="\n") as f:
+            f.write("import json, os, sys\n"
+                    "if sys.argv[1] == 'check':\n"
+                    "    newest = os.environ.get('HM_FAKE_NEWEST', '')\n"
+                    "    if not newest: sys.exit(1)\n"
+                    "    print(json.dumps({'latest': newest}))\n"
+                    "elif sys.argv[1] == 'install':\n"
+                    f"    open({q(self.updates)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
+                    "    args = sys.argv[2:]\n"
+                    "    print(json.dumps({'ok': True, 'to': args[args.index('--version') + 1] if '--version' in args else os.environ['HM_FAKE_NEWEST']}))\n")
+        self.assertIn("$APP/updatectl.py", body)
+        body = body.replace("$APP/updatectl.py", f"'{q(fake_update)}'")
         self.script = os.path.join(self.tmp, "restore.sh")
         with open(self.script, "w", newline="\n") as f:
             f.write(body)
@@ -2135,9 +2347,10 @@ class RestoreScriptTests(unittest.TestCase):
         conn.close()
         with open(self.key, "w") as f:
             f.write(KEY_B64 + "\n")
-        # An unproven backup (no passphrase, so no tag) with its key, as a host copy would bring in.
-        made = sitectl("backup", "--data", self.data, "--key", self.key, "--dest", os.path.join(self.data, "backups"),
-                       "--passphrase-file", os.path.join(self.tmp, "none")).stdout.decode().strip().splitlines()[-1]
+        # An unproven backup (an older one made without a passphrase, so no tag) with its key, as a host copy
+        # would bring in.
+        made = legacy(sitectl("backup", "--data", self.data, "--key", self.key, "--dest", os.path.join(self.data, "backups"))
+                      .stdout.decode().strip().splitlines()[-1])
         self.archive = os.path.join(self.safe, "from-share", os.path.basename(made))
         shutil.move(made, self.archive)
         conn = sqlite3.connect(os.path.join(self.data, "monitor.db"))
@@ -2176,6 +2389,101 @@ class RestoreScriptTests(unittest.TestCase):
         self.assertIn("RESTORE_UNVERIFIED is yes", out)
         self.assertEqual(self.marker(), "live")
         self.assertEqual(read(os.path.join(self.data, "restored-from")).strip(), os.path.basename(self.archive))
+
+
+    def web_restore(self, phrase_given, choice="here"):
+        """A backup sealed with a passphrase, uploaded as the web page leaves it, then sitectl.py restore-request
+        (what hm-restore.path runs) with the passphrase sealed with the vault key."""
+        import base64
+        import vault
+        conn = sqlite3.connect(os.path.join(self.data, "monitor.db"))
+        conn.execute("UPDATE marker SET v = 'web backup'")
+        conn.commit()
+        conn.close()
+        pf = os.path.join(self.tmp, "pf")
+        with open(pf, "w") as f:
+            f.write("a long backup passphrase")
+        made = sitectl("backup", "--data", self.data, "--key", self.key, "--dest", os.path.join(self.tmp, "made"),
+                       "--passphrase-file", pf).stdout.decode().strip().splitlines()[-1]
+        os.makedirs(os.path.join(self.data, "uploads"), exist_ok=True)
+        shutil.copy(made, os.path.join(self.data, "uploads", "restore-upload.tar.gz"))
+        conn = sqlite3.connect(os.path.join(self.data, "monitor.db"))
+        conn.execute("UPDATE marker SET v = 'after'")
+        conn.commit()
+        conn.close()
+        token = vault.Vault._seal(vault.AESGCM(base64.b64decode(KEY_B64)), phrase_given, "restore-request")
+        os.makedirs(os.path.join(self.data, "requests"), exist_ok=True)
+        with open(os.path.join(self.data, "requests", "restore"), "w") as f:
+            json.dump({"choice": choice, "passphrase": token}, f)
+        r = subprocess.run([sys.executable, SITECTL, "restore-request", "--data", self.data, "--key", self.key,
+                            "--script", self.script], capture_output=True, env=self.env, timeout=300)
+        self.assertFalse(os.path.exists(os.path.join(self.data, "requests", "restore")))
+        self.assertFalse(os.path.exists(os.path.join(self.data, "uploads", "restore-upload.tar.gz")))
+        result = json.loads(read(os.path.join(self.data, "restore-web.result.json")))
+        return r, result, json.loads(read(os.path.join(self.data, "restore-progress.json")))
+
+    def test_web_restore_with_its_passphrase(self):
+        """Tasks 297 and 299: the uploaded backup is restored by restore.sh without questions; the passphrase
+        reaches it on stdin; the page reads the progress and the outcome."""
+        r, res, progress = self.web_restore("a long backup passphrase")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual((progress["state"], progress["step"]), ("done", "done"))
+        self.assertEqual(self.marker(), "web backup")
+        self.assertNotIn("a long backup passphrase", json.dumps(res) + json.dumps(progress))
+
+    def test_web_restore_with_a_wrong_passphrase_changes_nothing(self):
+        r, res, progress = self.web_restore("not the passphrase at all")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(res["ok"])
+        self.assertIn("passphrase given does not prove this backup unchanged", res["output"])
+        self.assertEqual(progress["state"], "failed")
+        self.assertEqual(self.marker(), "after")
+
+    def newer_layout(self, version="9.9.9"):
+        """The backup's manifest says it was made by version with a layout newer than this build knows."""
+        import database
+        work = os.path.join(self.tmp, "repack")
+        with tarfile.open(self.archive) as tar:
+            tar.extractall(work, filter="data")
+        manifest = json.load(open(os.path.join(work, "manifest.json")))
+        manifest.update(schema=database.SCHEMA_VERSION + 1, app_version=version)
+        with open(os.path.join(work, "manifest.json"), "w") as f:
+            json.dump(manifest, f)
+        with tarfile.open(self.archive, "w:gz") as tar:
+            for name in sorted(os.listdir(work)):
+                tar.add(os.path.join(work, name), arcname=name)
+
+    def test_restore_latest_updates_first_for_a_newer_layout(self):
+        """Task 294: a backup this version cannot read is restored after an update to the newest release (no
+        question with RESTORE="latest"), never into this version."""
+        self.newer_layout()
+        r = self.run_script(HM_RESTORE_UNVERIFIED="1", HM_FAKE_NEWEST="9.9.10")
+        out = r.stdout.decode(errors="replace") + r.stderr.decode(errors="replace")
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("cannot read its data", out)
+        self.assertIn("Updated to 9.9.10", out)
+        self.assertEqual(read(self.updates).split()[0:3], ["install", "--data", self.data.replace("\\", "/")])
+        self.assertNotIn("--version", read(self.updates))
+        self.assertEqual(self.marker(), "live")
+
+    def test_restore_latest_uses_the_backups_own_version_when_the_list_is_unreadable(self):
+        self.newer_layout(version="9.9.9")
+        r = self.run_script(HM_RESTORE_UNVERIFIED="1")
+        out = r.stdout.decode(errors="replace") + r.stderr.decode(errors="replace")
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("--version 9.9.9", read(self.updates))
+        self.assertEqual(self.marker(), "live")
+
+    def test_restore_of_a_newer_layout_without_github_changes_nothing(self):
+        """No release list and no version of its own to update to: nothing is updated or restored."""
+        self.newer_layout(version="")
+        r = self.run_script(HM_RESTORE_UNVERIFIED="1")
+        out = r.stdout.decode(errors="replace") + r.stderr.decode(errors="replace")
+        self.assertEqual(r.returncode, 1, out)
+        self.assertIn("could not be read, so nothing was updated or restored", out)
+        self.assertFalse(os.path.exists(self.updates))
+        self.assertEqual(self.marker(), "changed since")
 
 
 class RootWriteTests(unittest.TestCase):

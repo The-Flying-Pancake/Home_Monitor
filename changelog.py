@@ -11,10 +11,14 @@ newest id, so a new install starts with nothing to read. Accounts made later are
 having seen everything up to then.
 """
 
+import ast
 import json
+import os
 from typing import Any, Dict, List
 
 import database
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 SEEN_KEY = "changes_seen"
 
@@ -366,6 +370,16 @@ RELEASES: List[Dict[str, Any]] = [
         "An outage review always shows the incident's own notes and changes on its timeline, however busy the network was.",
         "A backup folder that is a link is refused before anything is written, with a clear message.",
     ]},
+    {"id": 49, "date": "2026-11-28", "title": "Restore across versions and sealed backups", "items": [
+        "A backup made with a newer version can now be restored. The monitor first updates itself to the backup's version or to the newest one, whichever you choose. A backup is never restored into an older version.",
+        "Restore a backup from the web page: Settings, Data and backups has Restore from a file. A new install can also start from a backup on its first screen with the setup code the installer printed.",
+        "Administrators can download a backup from Settings after confirming with their password and code.",
+        "Every backup is now sealed. A backup passphrase is needed before any backup is made, because a backup holds the key to every password the monitor stores. Until one is set, backups are paused and the page says so. Setting it also seals the backups made before.",
+        "The copies the monitor keeps for itself before an update or a restore are sealed too, each with a key of its own. Undo still works without your passphrase.",
+        "What's new groups notes by version. When you catch up on several versions, the newest two are open and older ones are folded.",
+        "A very busy disk no longer holds the database for seconds while ordinary readings are saved.",
+        "A Proxmox container no longer shows its host's temperature sensors and disk throughput as its own, so one hot host CPU warns once. This needs the Proxmox connection.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 
@@ -397,8 +411,42 @@ def mark_seen(username: str, upto: int = LATEST) -> None:
     database.set_internal_setting(SEEN_KEY, json.dumps(m))
 
 
+_versions_cache: Dict[int, str] = {}
+
+
+def versions() -> Dict[int, str]:
+    """Which release note is which version: release-versions.json in a build (deploy/build.py writes it from
+    VERSIONS), else VERSIONS read from deploy/changelog_md.py in the source tree (parsed, never run). Notes not
+    released yet have no version. Empty when neither can be read: the notes still show, without versions."""
+    if _versions_cache:
+        return _versions_cache
+    found: Dict[int, str] = {}
+    try:
+        with open(os.path.join(HERE, "release-versions.json"), encoding="utf-8") as f:
+            found = {int(k): str(v) for k, v in json.load(f).items()}
+    except (OSError, ValueError, AttributeError):
+        try:
+            with open(os.path.join(HERE, "deploy", "changelog_md.py"), encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+            for node in tree.body:
+                if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "VERSIONS" for t in node.targets):
+                    found = {int(k): str(v) for k, v in ast.literal_eval(node.value).items()}
+        except (OSError, SyntaxError, ValueError):
+            found = {}
+    _versions_cache.update(found)
+    return found
+
+
 def view(username: str) -> Dict[str, Any]:
-    """Every release, newest first, and which of them this user has not read yet."""
+    """Every release, newest first, with its version when it has one, and which of them this user has not read
+    yet. After a restore of an older backup or an update that jumps several versions this can be many: the page
+    groups them by version and folds the older ones (task 295)."""
     s = seen(username)
-    return {"releases": sorted(RELEASES, key=lambda r: -r["id"]), "latest": LATEST,
-            "unseen": [r["id"] for r in RELEASES if r["id"] > s]}
+    known = versions()
+
+    def version_of(rid: int) -> str:
+        # A note without its own entry shipped with the next version up (the ship skill numbers the newest note).
+        later = [k for k in known if k >= rid]
+        return known[min(later)] if later else ""
+    releases = [dict(r, version=version_of(r["id"])) for r in sorted(RELEASES, key=lambda r: -r["id"])]
+    return {"releases": releases, "latest": LATEST, "unseen": [r["id"] for r in RELEASES if r["id"] > s]}

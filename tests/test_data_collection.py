@@ -305,6 +305,56 @@ class LldpTests(unittest.TestCase):
         self.assertEqual(server.lldp_neighbours(b), {})
 
 
+class HostHardwareTests(unittest.TestCase):
+    """Task 304: a Proxmox LXC container's SNMP agent reports its host's temperature sensors and disks, so the same
+    host reading came in once per container (three "Sensor Tctl at 87 C" warnings for one CPU). On a container these
+    tables are not read and what was stored is cleared; a VM (its own kernel) and other devices still read them."""
+
+    TEMPS = {"2.1": "Tctl", "3.1": 87000}          # a walk answers column.index under the table
+
+    def collector(self, dev):
+        return poller.TableCollector(database.get_device(dev), {"tables": ["sensors", "diskio"]}, 1.0, 0)
+
+    def test_containers_skip_host_sensors_and_disks(self):
+        import json
+        import proxmox
+        start_api_server()
+        ct = database.add_device("ct-host-sensors", "192.0.2.71", "linux_host", snmp_community="public")
+        vm = database.add_device("vm-own-sensors", "192.0.2.72", "linux_host", snmp_community="public")
+        saved = database.get_all_settings().get(proxmox.LAYOUT_KEY)
+        on = mock.patch.object(proxmox, "is_enabled", return_value=True)      # only the Proxmox connection knows
+        on.start()
+        try:
+            # Before the Proxmox connection knows it is a container: read as before.
+            tc = self.collector(ct)
+            with mock.patch.object(tc, "walk", side_effect=lambda oid: self.TEMPS if oid == poller.LM_TEMP else {}):
+                self.assertTrue(tc.collect_sensors())
+            self.assertEqual(database.get_device_table(ct, "sensors")["1"]["temp_c"], 87.0)
+            database.replace_device_table(ct, "diskio", {"8": {"name": "sda"}})
+            database.set_internal_setting(proxmox.LAYOUT_KEY, json.dumps({"guests": [
+                {"vmid": 101, "node": "pve", "type": "lxc", "device_id": ct},
+                {"vmid": 102, "node": "pve", "type": "qemu", "device_id": vm}]}))
+            self.assertEqual(proxmox.container_devices(), {ct: "pve"})
+            tc = self.collector(ct)
+            with mock.patch.object(tc, "walk", side_effect=AssertionError("a container's host hardware is not read")):
+                self.assertFalse(tc.collect_sensors())
+                self.assertFalse(tc.collect_diskio())
+            self.assertEqual(database.get_device_table(ct, "sensors"), {})          # cleared, so its warning closes
+            self.assertEqual(database.get_device_table(ct, "diskio"), {})
+            # A VM has its own kernel and sensors: read as before.
+            tv = self.collector(vm)
+            with mock.patch.object(tv, "walk", side_effect=lambda oid: self.TEMPS if oid == poller.LM_TEMP else {}):
+                self.assertTrue(tv.collect_sensors())
+        finally:
+            on.stop()
+            if saved is None:
+                database.delete_settings([proxmox.LAYOUT_KEY])
+            else:
+                database.set_internal_setting(proxmox.LAYOUT_KEY, saved)
+            database.delete_device(ct)
+            database.delete_device(vm)
+
+
 class CapacityOidTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

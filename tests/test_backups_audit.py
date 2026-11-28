@@ -63,6 +63,157 @@ class BackupRouteTests(unittest.TestCase):
         self.assertTrue(body["results"]["backup"]["ok"])
 
 
+    def test_download_a_backup(self):
+        """Download (task 296): an administrator asks after password and code, root copies the backup into
+        DATA/exports, the app hands that copy over once with a security alert. Names are checked against the list."""
+        from tests.helpers import TEST_PASSWORD
+        request("PUT", "/api/backups/site", {"enabled": False})
+        folder = os.path.join(self.data, "backups")
+        os.makedirs(folder, exist_ok=True)
+        name = "monitor-backup-20260101-000000.tar.gz"
+        with open(os.path.join(folder, name), "w") as f:
+            f.write("the backup")
+        req = self.request_file("backup-export")
+        for s in auth.SESSIONS.sessions.values():
+            s["tier2_until"] = s["tier3_until"] = 0
+        status, body, _ = request("POST", "/api/backups/export", {"name": name})
+        self.assertEqual((status, body.get("auth")), (403, "confirm"))
+        self.assertEqual(request("POST", "/api/auth/confirm", {"password": TEST_PASSWORD, "tier": 3})[0], 200)
+        for bad in ("monitor-backup-gone.tar.gz", "../monitor.db", 7):
+            self.assertEqual(request("POST", "/api/backups/export", {"name": bad})[0], 404, bad)
+        self.assertFalse(os.path.exists(req))
+        status, body, _ = request("POST", "/api/backups/export", {"name": name})
+        self.assertEqual(status, 202, body)
+        self.assertTrue(body["pending"]["export"])
+        self.assertIn(name, [f["name"] for f in body["files"]])
+        self.assertEqual(open(req).read(), name)
+        os.remove(req)
+        # Nothing to hand over until root has made the copy.
+        self.assertEqual(request("GET", f"/api/backups/export/file?name={name}")[0], 404)
+        os.makedirs(os.path.join(self.data, "exports"), exist_ok=True)
+        with open(os.path.join(self.data, "exports", name), "w") as f:
+            f.write("the copy")
+        with open(os.path.join(self.data, "export.result.json"), "w") as f:
+            json.dump({"time": int(time.time()), "ok": True, "output": "Ready to download.", "file": name}, f)
+        with mock.patch.object(server, "security_alert") as alert:
+            status, body, headers = request("GET", f"/api/backups/export/file?name={name}")
+        self.assertEqual((status, body), (200, "the copy"))
+        self.assertIn(f'filename="{name}"', headers.get("Content-Disposition", ""))
+        self.assertEqual(alert.call_args[0][0], "backup_download")
+        # Once only: the copy is gone (removed just after the last byte is sent).
+        for _ in range(50):
+            if not os.path.exists(os.path.join(self.data, "exports", name)):
+                break
+            time.sleep(0.05)
+        self.assertFalse(os.path.exists(os.path.join(self.data, "exports", name)))
+        self.assertEqual(request("GET", f"/api/backups/export/file?name={name}")[0], 404)
+        os.remove(os.path.join(folder, name))
+
+    @staticmethod
+    def backup_file(schema, version):
+        import io
+        import tarfile
+        raw = json.dumps({"schema": schema, "app_version": version, "created": "20261127-090000"}).encode()
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            info = tarfile.TarInfo("manifest.json")
+            info.size = len(raw)
+            tar.addfile(info, io.BytesIO(raw))
+        return buf.getvalue()
+
+    def test_restore_choices_never_go_back(self):
+        """Owner's rule (task 294): a backup this version cannot read offers only updates; any other restores here,
+        with an update to the newest first as a second choice when one is out."""
+        here = server.APP_VERSION
+        major = int(here.split(".")[0])
+        newer, newest = f"{major + 1}.0.0", f"{major + 2}.0.0"
+        pick = lambda info, latest: [c["choice"] for c in server.backup_choices(info, latest)]
+        self.assertEqual(pick({"verdict": "newer", "version": newer}, newest), ["backup", "newest"])
+        self.assertEqual(pick({"verdict": "newer", "version": newer}, ""), ["backup"])
+        self.assertEqual(pick({"verdict": "newer", "version": ""}, ""), [])
+        self.assertEqual(pick({"verdict": "older", "version": "0.5.0"}, newest), ["here", "newest"])
+        self.assertEqual(pick({"verdict": "same", "version": here}, here), ["here"])
+        self.assertEqual(pick({"verdict": "too_old", "version": "0.1.0"}, newest), [])
+
+    def test_restore_from_an_uploaded_file(self):
+        """Restore from a file (task 297): asked after password and code, the file streamed in and read, then the
+        choice and the passphrase (sealed with the vault key) left for root. One at a time."""
+        from tests.helpers import TEST_PASSWORD
+        req, upload = self.request_file("restore"), os.path.join(self.data, "uploads", "restore-upload.tar.gz")
+        octet = {"Content-Type": "application/octet-stream"}
+        for s in auth.SESSIONS.sessions.values():
+            s["tier2_until"] = s["tier3_until"] = 0
+        status, body, _ = request("POST", "/api/backups/upload/start", {})
+        self.assertEqual((status, body.get("auth")), (403, "confirm"))
+        self.assertEqual(request("POST", "/api/auth/confirm", {"password": TEST_PASSWORD, "tier": 3})[0], 200)
+        self.assertEqual(request("POST", "/api/backups/upload/start", {})[0], 200)
+        # Not a backup: refused, nothing kept.
+        self.assertEqual(request("POST", "/api/backups/upload", raw=b"not a backup at all", headers=octet)[0], 400)
+        self.assertFalse(os.path.exists(upload))
+        # Only the upload routes take a file; others still want JSON.
+        self.assertEqual(request("POST", "/api/backups/run", raw=b"x", headers=octet)[0], 415)
+        status, info, _ = request("POST", "/api/backups/upload", raw=self.backup_file(database.SCHEMA_VERSION, server.APP_VERSION), headers=octet)
+        self.assertEqual(status, 200, info)
+        self.assertEqual((info["verdict"], [c["choice"] for c in info["choices"]][:1]), ("same", ["here"]))
+        self.assertTrue(os.path.exists(upload))
+        phrase = "the backup passphrase"
+        for bad in ({"choice": "here", "passphrase": phrase}, {"choice": "backup", "passphrase": phrase, "confirm": "RESTORE"},
+                    {"choice": "here", "passphrase": "", "confirm": "RESTORE"}):
+            self.assertEqual(request("POST", "/api/backups/restore", bad)[0], 400, bad)
+        self.assertFalse(os.path.exists(req))
+        with mock.patch.object(server, "security_alert") as alert:
+            status, body, _ = request("POST", "/api/backups/restore", {"choice": "here", "passphrase": phrase, "confirm": "RESTORE"})
+        self.assertEqual(status, 202, body)
+        self.assertEqual(alert.call_args[0][0], "restore_requested")
+        self.assertTrue(body["pending"])
+        sent = json.loads(open(req).read())
+        self.assertEqual(sent["choice"], "here")
+        self.assertNotIn(phrase, json.dumps(sent))
+        self.assertEqual(server.VAULT.decrypt(sent["passphrase"], "restore-request"), phrase)
+        # One at a time.
+        self.assertEqual(request("POST", "/api/backups/restore", {"choice": "here", "passphrase": phrase, "confirm": "RESTORE"})[0], 409)
+        self.assertEqual(request("POST", "/api/backups/upload", raw=self.backup_file(1, "0.1.0"), headers=octet)[0], 409)
+        # The page follows root's progress and result.
+        with open(os.path.join(self.data, "restore-progress.json"), "w") as f:
+            json.dump({"state": "running", "step": "restore", "lines": ["Now restoring."]}, f)
+        status = request("GET", "/api/backups/restore/status")[1]
+        self.assertEqual(status["progress"]["step"], "restore")
+        os.remove(req)
+        os.remove(upload)
+        os.remove(os.path.join(self.data, "restore-progress.json"))
+
+    def test_restore_on_the_setup_page(self):
+        """Task 299: before any account exists the setup page can restore a backup, with the setup code on every
+        request; once an account exists it is refused (Settings has it)."""
+        req, upload = self.request_file("restore"), os.path.join(self.data, "uploads", "restore-upload.tar.gz")
+        octet = {"Content-Type": "application/octet-stream"}
+        file = self.backup_file(database.SCHEMA_VERSION, server.APP_VERSION)
+        status, body, _ = request("POST", "/api/setup/restore/start", {"setup_token": "x"}, session=False)
+        self.assertEqual(status, 403)
+        self.assertIn("already set up", body["error"])
+        with mock.patch.object(database, "get_account", return_value=None),                 mock.patch.dict(os.environ, {"MONITOR_SETUP_TOKEN": "the-setup-code-1234"}):
+            for wrong in ("", "nope"):
+                self.assertEqual(request("POST", "/api/setup/restore/start", {"setup_token": wrong}, session=False)[0], 403)
+                self.assertEqual(request("POST", "/api/setup/restore/upload", raw=file, session=False,
+                                         headers=dict(octet, **{"X-Setup-Token": wrong}))[0], 403)
+            self.assertFalse(os.path.exists(upload))
+            ok = {"setup_token": "the-setup-code-1234"}
+            self.assertEqual(request("POST", "/api/setup/restore/start", ok, session=False)[0], 200)
+            status, info, _ = request("POST", "/api/setup/restore/upload", raw=file, session=False,
+                                      headers=dict(octet, **{"X-Setup-Token": "the-setup-code-1234"}))
+            self.assertEqual(status, 200, info)
+            self.assertEqual(info["choices"][0]["choice"], "here")
+            status, body, _ = request("POST", "/api/setup/restore", dict(ok, choice="here", passphrase="the backup passphrase",
+                                                                         confirm="RESTORE"), session=False)
+            self.assertEqual(status, 202, body)
+            self.assertTrue(os.path.exists(req))
+            status, body, _ = request("GET", "/api/setup/restore/status", session=False,
+                                      headers={"X-Setup-Token": "the-setup-code-1234"})
+            self.assertEqual((status, body["pending"]), (200, True))
+            self.assertEqual(request("GET", "/api/setup/restore/status", session=False)[0], 403)
+        os.remove(req)
+        os.remove(upload)
+
     def test_set_backup_passphrase_from_settings(self):
         """The passphrase leaves the app sealed with the vault key, after a fresh password, once at a time."""
         from tests.helpers import TEST_PASSWORD
@@ -190,7 +341,7 @@ class PassphraseStatusTests(unittest.TestCase):
         b = server.backup_status()
         self.assertTrue(b["installed"])
         self.assertFalse(b["passphrase_set"])
-        self.assertIn(b["key_state"], ("withheld", "clear-local"))
+        self.assertEqual(b["key_state"], "paused")                  # no passphrase, no backup (task 305)
         self.assertNotIn("includes_key", b)
 
     def test_status_quiet_with_a_passphrase(self):
@@ -212,8 +363,11 @@ class SitectlResultTests(unittest.TestCase):
             conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, description TEXT, updated_at INTEGER NOT NULL)")
             conn.commit()
             conn.close()
+            pf = os.path.join(tmp, "pf")
+            with open(pf, "w", encoding="utf-8") as f:
+                f.write("a long backup passphrase" + chr(10))
             r = subprocess.run([sys.executable, os.path.join(ROOT, "deploy", "sitectl.py"), "backup", "--data", data,
-                                "--dest", os.path.join(tmp, "out")], capture_output=True)
+                                "--dest", os.path.join(tmp, "out"), "--passphrase-file", pf], capture_output=True)
             self.assertEqual(r.returncode, 0, r.stderr)
             with open(os.path.join(data, "backup.result.json"), encoding="utf-8") as f:
                 res = json.load(f)

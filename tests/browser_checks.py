@@ -501,24 +501,77 @@ def t_settings_sidebar(b):
     return "menu swapped in Settings and back on leaving"
 
 
-@check("Settings, Backups: no backup passphrase shows the warning and Set backup passphrase; a passphrase hides it")
+@check("Settings, Backups: no backup passphrase shows that backups are paused and Set backup passphrase; a passphrase hides it")
 def t_backup_passphrase_bar(b):
     goto(b, "#/settings/backups")
     b.wait_for("!!document.getElementById('backups-panel')")
     # The card as an installed monitor shows it (this test server is a development copy without one).
     base = ("{installed: true, folder: '/var/lib/homelab-monitor/backups', syncthing: true, count: 0, latest: null, "
-            "total_bytes: 0, schedule: 'Daily', results: {}, pending: {}, syncthing_settings: {}, key_state: 'withheld', ")
+            "total_bytes: 0, schedule: 'Daily', results: {}, pending: {}, syncthing_settings: {}, key_state: 'paused', ")
     got = run(b, "const d = document.createElement('div'); "
                  f"d.innerHTML = backupsSection({base} passphrase_set: false}}); "
                  "const bar = d.querySelector('#bk-no-passphrase'); "
                  f"const e = document.createElement('div'); e.innerHTML = backupsSection({base} passphrase_set: true, key_state: 'sealed'}}); "
                  f"const dev = document.createElement('div'); dev.innerHTML = backupsSection(Object.assign({base} passphrase_set: false}}, {{installed: false}})); "
                  "const btn = x => (x.querySelector('[data-backup-action=passphrase]') || {}).textContent || ''; "
-                 "[!!bar && bar.textContent.includes('Set backup passphrase'), d.textContent.includes('Left out of backups that leave this box'), "
+                 "[!!bar && bar.textContent.includes('Set backup passphrase'), d.textContent.includes('Backups are paused') && d.textContent.includes('No backups are made until a backup passphrase is set'), "
                  "!!e.querySelector('#bk-no-passphrase'), e.textContent.includes('Sealed with your passphrase'), "
                  "!!dev.querySelector('#bk-no-passphrase'), btn(d).trim(), btn(e).trim(), btn(dev)]")
     assert got == [True, True, False, True, False, "Set backup passphrase", "Change backup passphrase", ""], got
     return "warning and Set button without a passphrase, Change with one, nothing on a development copy"
+
+
+@check("Settings, Backups: Restore from a file uploads, shows the version and choices, then follows the restore")
+def t_restore_from_file(b):
+    import base64
+    import io
+    import tarfile
+    import auth
+    import database
+    import server
+    data = os.path.join(_env.TMP, "data")
+    raw = json.dumps({"schema": database.SCHEMA_VERSION, "app_version": server.APP_VERSION, "created": "20261127-090000"}).encode()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("manifest.json")
+        info.size = len(raw)
+        tar.addfile(info, io.BytesIO(raw))
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    for sess in auth.SESSIONS.sessions.values():
+        sess["tier2_until"] = sess["tier3_until"] = time.time() + 600
+    req, progress = os.path.join(data, "requests", "restore"), os.path.join(data, "restore-progress.json")
+    try:
+        goto(b, "#/settings/backups")
+        b.wait_for("!!document.querySelector('[data-backup-action=restore]')")
+        b.eval("document.querySelector('[data-backup-action=restore]').click(); true")
+        b.wait_for("!!document.getElementById('restore-file')")
+        run(b, f"const bytes = Uint8Array.from(atob('{b64}'), c => c.charCodeAt(0)); "
+               "const dt = new DataTransfer(); dt.items.add(new File([bytes], 'monitor-backup-20261127-090000.tar.gz')); "
+               "document.getElementById('restore-file').files = dt.files; document.getElementById('restore-go').click(); true")
+        b.wait_for("!document.querySelector('[data-step=choose]').classList.contains('hidden')", timeout=15)
+        about = b.eval("document.getElementById('restore-about').textContent")
+        assert f"version {server.APP_VERSION}" in about, about
+        labels = b.eval("[...document.querySelectorAll('#restore-choices label')].map(l => l.textContent.trim())")
+        assert labels and labels[0].startswith("Restore on"), labels
+        # RESTORE must be typed.
+        b.eval("document.getElementById('restore-pass').value = 'the backup passphrase'; document.getElementById('restore-go').click(); true")
+        b.wait_for("!document.getElementById('restore-err').classList.contains('hidden')")
+        assert not os.path.exists(req)
+        b.eval("document.getElementById('restore-confirm').value = 'RESTORE'; document.getElementById('restore-go').click(); true")
+        b.wait_for("!!document.querySelector('.restore-screen')", timeout=10)
+        assert os.path.exists(req)
+        # Root refuses it: the screen says so with its lines, and Close ends it.
+        with open(progress, "w") as f:
+            json.dump({"state": "failed", "step": "check", "lines": ["The passphrase given does not prove this backup unchanged."]}, f)
+        b.wait_for("document.querySelector('.restore-screen').textContent.includes('Not restored')", timeout=15)
+        assert "does not prove" in b.eval("document.querySelector('.restore-screen pre').textContent")
+        b.eval("document.querySelector('.restore-screen [data-close]').click(); true")
+        b.wait_for("!document.querySelector('.restore-screen')")
+    finally:
+        for path in (req, progress, os.path.join(data, "uploads", "restore-upload.tar.gz")):
+            if os.path.exists(path):
+                os.remove(path)
+    return "uploaded, version and choices shown, RESTORE required, refusal shown with root's lines"
 
 
 @check("Updates: red number on Settings while a version waits, skip hides it; new version card, live progress and result")
@@ -1394,6 +1447,12 @@ def t_changes(b):
     assert n == len(changelog.RELEASES), n
     first = b.eval("document.querySelector('.changes-window .changes-release h3').textContent")
     assert first.startswith(changelog.RELEASES[-1]["title"]), first
+    # Grouped by version, the newest two open and older ones folded, with a line saying how many (task 295).
+    groups = b.eval("[...document.querySelectorAll('.changes-window .changes-version')].map(d => [d.querySelector('summary').textContent, d.open])")
+    labels = [g[0] for g in groups]
+    assert any(l.startswith("Version 1.0.0") for l in labels), labels
+    assert [g[1] for g in groups] == [i < 2 for i in range(len(groups))], groups
+    assert "versions to catch up on" in b.eval("document.querySelector('.changes-window .changes-intro').textContent")
     b.eval("document.querySelector('.changes-window [data-ok]').click(); true")
     b.wait_for("!document.querySelector('.changes-window')")
     time.sleep(0.5)
@@ -2506,7 +2565,7 @@ def main() -> int:
 
         print(f"Browser checks against {BASE} (isolated database {_env.TMP})")
         for test in shard_checks([t_login, t_dashboard, t_resize, t_move, t_columns, t_graph_tile, t_content_follows, t_map, t_sort, t_groups,
-                     t_ack, t_incidents, t_live, t_snmp_check, t_snmp_v3_fields, t_snmp_test_before_saving, t_reload_after_update, t_reports, t_report_builder, t_alert_wifi, t_map_wifi_traffic, t_map_lldp, t_map_fold, t_scan_hide_monitored, t_inventory_groups, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_backup_passphrase_bar, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_custom_oid_capacity, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_guide_search, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
+                     t_ack, t_incidents, t_live, t_snmp_check, t_snmp_v3_fields, t_snmp_test_before_saving, t_reload_after_update, t_reports, t_report_builder, t_alert_wifi, t_map_wifi_traffic, t_map_lldp, t_map_fold, t_scan_hide_monitored, t_inventory_groups, t_required_screen, t_settings, t_settings_invalid, t_alert_rules, t_shell, t_event_log, t_settings_guard, t_two_factor, t_users, t_confirm_on_top, t_availability, t_series_toggle, t_settings_sidebar, t_backup_passphrase_bar, t_restore_from_file, t_updates, t_demo_card, t_message_rows, t_changed_alerts, t_command_replies, t_service_check, t_add_ping, t_setup_services, t_groups_tags, t_https, t_tag_quick, t_custom_snmp, t_custom_oid_capacity, t_changes, t_lan_ui, t_pihole_http_warning, t_inventory_quiet, t_host_actions, t_credentials_use_hiding, t_scoped_user_hiding, t_wifi_pihole, t_guide, t_guide_search, t_credentials, t_task, t_workflow, t_quiet_steps, t_telegram_editor, t_setup_preview, t_bulk_delete, t_hostkey, t_run, t_dashboards, t_login_page, t_https_lost_login, t_forced_2fa_enrolment, t_logout, t_device_text_stays_text, t_audit_columns, t_phone, t_no_js_errors]):
             test(browser)
     finally:
         if browser:

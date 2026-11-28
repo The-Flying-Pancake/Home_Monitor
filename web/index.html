@@ -188,6 +188,7 @@
       </div>
       <div class="auth-error hidden" id="auth-error"></div>
       <button type="submit" class="btn btn-primary" id="auth-submit">Log in</button>
+      <button type="button" class="btn hidden" id="auth-restore">Restore from a backup instead</button>
       <button type="button" class="link-btn hidden" id="auth-forgot">Forgot your password?</button>
     </form>
     <form id="recover-form" class="auth-card hidden" autocomplete="off">
@@ -1951,6 +1952,7 @@ pveum acl modify /vms --tokens 'root@pam!monitor-actions' --roles MonitorActions
   <script src="/snmp.js"></script>
   <script src="/adddevice.js"></script>
   <script src="/backups.js"></script>
+  <script src="/restore.js"></script>
   <script src="/updates.js"></script>
   <script src="/taxonomy.js"></script>
   <script src="/tls.js"></script>

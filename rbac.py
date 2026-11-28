@@ -159,11 +159,16 @@ ROUTE_PERMISSIONS = [
     ("PUT", r"/api/backups/site", "settings.system"),
     ("POST", r"/api/backups/run", "settings.system"),
     ("POST", r"/api/backups/passphrase", "settings.system"),
+    ("POST", r"/api/backups/export", "settings.system"),
+    ("POST", r"/api/backups/upload(?:/start)?", "settings.system"),
+    ("POST", r"/api/backups/restore", "settings.system"),
     ("POST", r"/api/proxmox/(?:fingerprint|test)", "settings.system"),
 ]
 # Read routes that need a permission (everything else is readable by every signed-in user).
 READ_PERMISSIONS = [
     (r"/api/audit", "audit.view"),
+    (r"/api/backups/export/file", "settings.system"),
+    (r"/api/backups/restore/status", "settings.system"),
     (r"/api/users(?:/[\w.-]+)?", "users.manage"),
     (r"/api/credentials", ("automation.edit", "credentials.manage")),
     (r"/api/automation", ("automation.edit", "automation.run", "devices.manage", "credentials.manage")),
@@ -212,6 +217,10 @@ TIER_ROUTES = [
     ("POST", r"/api/wifi/reconnect", 2),          # drops a device off the Wi-Fi
     ("PUT", r"/api/backups/site", 2),             # where backups go, and the Syncthing identity source
     ("POST", r"/api/backups/passphrase", 3),      # what opens and proves every backup from now on
+    ("POST", r"/api/backups/export", 3),          # a copy of everything (secrets stay sealed) leaves the box
+    ("GET", r"/api/backups/export/file", 3),
+    ("POST", r"/api/backups/upload(?:/start)?", 3),  # replaces everything on the box
+    ("POST", r"/api/backups/restore", 3),
     ("POST", r"/api/(?:pihole|unifi|proxmox)/test", 2),   # sends the stored secret to the stored address
     ("POST", r"/api/workflows", 2),               # saved workflows run unattended on devices
     ("PUT", r"/api/workflows/\d+", 2),
@@ -224,6 +233,12 @@ _TIERS = [(m, re.compile(p), t) for m, p, t in TIER_ROUTES]
 # password prompt. Path patterns match the whole path.
 UNSCOPED_ROUTES = [
     ("POST", r"/api/backups/passphrase"),
+    ("POST", r"/api/backups/export"),
+    ("GET", r"/api/backups/export/file"),
+    ("POST", r"/api/backups/upload/start"),
+    ("POST", r"/api/backups/upload"),
+    ("POST", r"/api/backups/restore"),
+    ("GET", r"/api/backups/restore/status"),
     ("POST", r"/api/pihole/blocking"),
     ("POST", r"/api/wifi/reconnect"),
     ("POST", r"/api/inventory"),

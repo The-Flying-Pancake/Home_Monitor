@@ -119,7 +119,7 @@ def record(device_id: int, up: bool, ms: Optional[float], ts: Optional[int] = No
     hour = ts - ts % 3600
     ms = float(ms) if ms is not None and math.isfinite(ms) else None
     if planned and not up:
-        with database.get_connection() as conn:
+        with database.get_connection(readings=True) as conn:
             conn.execute("INSERT INTO avail_beats (device_id, ts, up, ms) VALUES (?, ?, 2, NULL);", (device_id, ts))
             conn.commit()
         return
@@ -129,7 +129,7 @@ def record(device_id: int, up: bool, ms: Optional[float], ts: Optional[int] = No
         sent = int(echo["sent"])
         recv = max(0, min(sent, int(echo.get("received") or 0)))
         rmin, rmax, jit = _num(echo.get("min")), _num(echo.get("max")), _num(echo.get("jitter"))
-    with database.get_connection() as conn:
+    with database.get_connection(readings=True) as conn:
         conn.execute("INSERT INTO avail_beats (device_id, ts, up, ms, echo_sent, echo_recv, rtt_min, rtt_max, jitter) "
                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
                      (device_id, ts, 1 if up else 0, ms if up else None, sent, recv, rmin, rmax, jit))
