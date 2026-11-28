@@ -15,6 +15,12 @@ Version numbers were not recorded per release before 0.3.0, so releases 1 to 19 
 
 ## Releases
 
+### 1.2.1: Release 51, Check for updates answers after a restart (2026-11-28)
+
+- After the monitor's machine restarted, Check for updates could stay on Checking for ever. The helper that answers it now always starts again.
+- A check asked while that helper was not running is answered once the machine has started again.
+- Checking for updates no longer spins for ever: after 5 minutes without an answer the page says so and lets you ask again.
+
 ### 1.2.0: Release 50, A second look: Modern (2026-11-28)
 
 - Settings has a new Themes page. Classic is the monitor as it has always looked and stays the default. Modern uses calm neutral greys, softer corners and quieter controls.

@@ -484,6 +484,28 @@ class UserApiTests(unittest.TestCase):
                 if os.path.exists(p):
                     os.remove(p)
 
+    def test_unanswered_check_is_not_waited_for(self):
+        """A check asked more than 5 minutes ago with no answer (the helper was not running) stops spinning: the
+        page says why and Check for updates can ask again (task 319). A recent one is still waited for."""
+        import os
+        data_dir = os.path.dirname(os.path.abspath(database.DB_FILE))
+        req = os.path.join(data_dir, "requests")
+        os.makedirs(req, exist_ok=True)
+        path = os.path.join(req, "update-check")
+        try:
+            for age, waiting in ((30, True), (server.CHECK_ANSWER_SECONDS + 60, False)):
+                with open(path, "w") as f:
+                    f.write(str(int(time.time()) - age))
+                u = server.update_status()
+                self.assertEqual(u["pending"]["check"], waiting, age)
+                if not waiting:
+                    self.assertFalse(u["check"]["ok"])
+                    self.assertTrue(u["check"]["unanswered"])
+                    self.assertIn("did not answer", u["check"]["error"])
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+
     def test_demo_routes(self):
         """Settings, Demo data: hidden (off) on a monitor without demo data; removing is for administrators."""
         self.assertEqual(request("GET", "/api/system")[1]["demo"], {"on": False, "devices": 0})

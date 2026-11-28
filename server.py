@@ -1735,6 +1735,7 @@ def backup_status() -> Dict[str, Any]:
 # Root-side actions (see deploy/sitectl.py and the hm-site / hm-backup-now path units): the app
 # writes DATA/requests/<kind>; root applies it and leaves DATA/<kind>.result.json.
 ROOT_REQUESTS = ("site", "backup", "update-check", "update-install", "rollback-code", "rollback-all")
+CHECK_ANSWER_SECONDS = 5 * 60                 # a check the update helper has not answered by then is not waited for
 UPDATE_KEEP_SECONDS = 2 * 24 * 3600          # how long an update can be undone (updatectl.py keeps the copy as long)
 UPDATE_STATE = "/etc/homelab-monitor-install/last-update.json"
 # Written by root (updatectl.py), readable by the app's group: the history and one log file per entry.
@@ -1989,7 +1990,15 @@ def update_status() -> Dict[str, Any]:
         check["current"] = APP_VERSION
         if not check["newer"]:
             check.pop("changes", None)
-    pending_check = _request_time(data_dir, "update-check") > ((check or {}).get("time") or 0)
+    asked_check = _request_time(data_dir, "update-check")
+    pending_check = asked_check > ((check or {}).get("time") or 0)
+    if pending_check and time.time() - asked_check > CHECK_ANSWER_SECONDS:
+        # Never answered: the page stops waiting, says why and lets the check be asked again (task 319).
+        pending_check = False
+        check = {"ok": False, "time": asked_check, "unanswered": True,
+                 "error": "The update helper on the monitor's machine did not answer within 5 minutes, so it may not "
+                          "be running. Check for updates asks again. If it still does not answer, restart the "
+                          "monitor's machine or run systemctl restart hm-update.path in its shell."}
     pending_work = max(_request_time(data_dir, k) for k in ("update-install", "rollback-code", "rollback-all")) \
         > ((last or {}).get("time") or 0)
     try:
@@ -7851,7 +7860,7 @@ def format_duration(seconds: float) -> str:
 
 
 scheduler = PollScheduler()
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 # When the installer that delivered this code was built (deploy/build.py writes BUILD beside it);
 # empty when running from the source tree.
 try:

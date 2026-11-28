@@ -1468,14 +1468,34 @@ LockPersonality=yes
 RestrictRealtime=yes
 UNIT
 
+# After a restart: the path unit fires only when a request is written, so one written while it was not
+# running (before a restart, or while it was stopped) would wait for ever. This asks the updater once, after
+# the network is up; with nothing waiting it only tidies old copies.
+cat > "$FILES/hm-update-waiting.service" <<UNIT
+[Unit]
+Description=Answer an update request that waited through a restart
+Wants=network-online.target
+After=network-online.target hm-egress.service hm-update.path homelab-monitor.service
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl start --no-block hm-update.service
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 # At boot, before the monitor starts: an update or undo that a restart cut short is closed (the app
 # folder put in one piece, the result recorded), so the page does not wait for it for ever. It runs
 # the updater from the app folder, or from the one beside it when the app folder is missing.
 cat > "$FILES/hm-update-recover.service" <<UNIT
 [Unit]
 Description=Close an update that a restart cut short
+# Early at boot, outside the usual ordering: with it a service comes after basic.target, which comes after
+# paths.target and so after hm-update.path, and Before= below made a loop. systemd broke the loop by dropping a
+# start job, sometimes hm-update.path's, so Check for updates went unanswered after a reboot (2026-11-28).
+DefaultDependencies=no
 After=local-fs.target
-Before=homelab-monitor.service hm-update.path
+Before=homelab-monitor.service hm-update.path shutdown.target
+Conflicts=shutdown.target
 [Service]
 Type=oneshot
 ExecStart=/bin/bash /root/.hm-update-recover.sh ${APP_DIR} ${DATA_DIR}
@@ -2362,7 +2382,7 @@ install_services() {
     cd / && rm -rf \$d /root/.hm-files.tgz
     systemctl daemon-reload
     systemctl enable --now hm-egress.service hm-egress-refresh.timer homelab-monitor.service homelab-monitor-backup.timer hm-site.path hm-backup-now.path hm-passphrase.path hm-export.path hm-restore.path hm-update.path
-    systemctl enable hm-update-recover.service"
+    systemctl enable hm-update-recover.service hm-update-waiting.service"
   load_ingress
 }
 
@@ -2390,7 +2410,7 @@ load_ingress() {
 # folder for install.conf and layout (read by root, so the app's user cannot change them).
 files_into_place() {
   cat <<CMDS
-    install -m 0644 homelab-monitor.service hm-egress.service hm-egress-refresh.service hm-egress-refresh.timer hm-ingress.service homelab-monitor-backup.service homelab-monitor-backup.timer hm-site.path hm-site.service hm-backup-now.path hm-passphrase.path hm-passphrase.service hm-export.path hm-export.service hm-restore.path hm-restore.service hm-update.path hm-update.service hm-update-recover.service /etc/systemd/system/
+    install -m 0644 homelab-monitor.service hm-egress.service hm-egress-refresh.service hm-egress-refresh.timer hm-ingress.service homelab-monitor-backup.service homelab-monitor-backup.timer hm-site.path hm-site.service hm-backup-now.path hm-passphrase.path hm-passphrase.service hm-export.path hm-export.service hm-restore.path hm-restore.service hm-update.path hm-update.service hm-update-recover.service hm-update-waiting.service /etc/systemd/system/
     install -d -m 0755 /etc/homelab-monitor-egress
     install -m 0644 egress-hosts /etc/homelab-monitor-egress/hosts
     install -m 0644 github-hosts /etc/homelab-monitor-egress/github-hosts
@@ -2520,7 +2540,7 @@ install_helpers() {
     systemctl daemon-reload
     systemctl restart hm-egress.service
     systemctl enable --now hm-site.path hm-backup-now.path hm-passphrase.path hm-export.path hm-restore.path hm-update.path
-    systemctl enable hm-update-recover.service     # at boot only: an update from the app may be running now
+    systemctl enable hm-update-recover.service hm-update-waiting.service     # at boot only: an update from the app may be running now
     if [ '$1' = yes ]; then systemctl start homelab-monitor; fi"
   load_ingress
 }

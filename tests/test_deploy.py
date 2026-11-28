@@ -173,10 +173,40 @@ class InstallerTests(unittest.TestCase):
         unit = tpl.split('cat > "$FILES/hm-update-recover.service" <<UNIT')[1].split("\nUNIT\n")[0]
         self.assertIn("Before=homelab-monitor.service hm-update.path", unit)
         self.assertIn("WantedBy=multi-user.target", unit)
-        self.assertIn("hm-update-recover.service /etc/systemd/system/", tpl)
+        self.assertIn("hm-update-recover.service hm-update-waiting.service /etc/systemd/system/", tpl)
         self.assertIn("install -m 0700 update-recover.sh /root/.hm-update-recover.sh", tpl)
         self.assertIn("systemctl enable hm-update-recover.service", tpl)
         self.assertNotRegex(tpl, r"(enable --now|start|restart)[^\n]*hm-update-recover")
+
+    def test_no_boot_ordering_loop_with_a_path_unit(self):
+        """A service ordered before a path unit must leave systemd's default ordering: with it, the service comes
+        after basic.target, which comes after paths.target and every path unit, a loop systemd breaks by dropping
+        a start job. On an owner's box it dropped hm-update.path, so Check for updates went unanswered after every
+        reboot (2026-11-28)."""
+        tpl = read(os.path.join(ROOT, "deploy", "install-template.sh"))
+        units = re.findall(r'cat > "\$FILES/([\w@.-]+\.service)" <<\'?UNIT\'?\n(.*?)\nUNIT\n', tpl, re.S)
+        self.assertTrue(units)
+        checked = 0
+        for name, body in units:
+            before = " ".join(l.split("=", 1)[1] for l in body.splitlines() if l.startswith("Before="))
+            if any(u.endswith(".path") for u in before.split()):
+                checked += 1
+                self.assertIn("DefaultDependencies=no", body, name)
+                self.assertIn("Conflicts=shutdown.target", body, name)
+        self.assertGreaterEqual(checked, 1)
+
+    def test_waiting_update_request_is_answered_after_a_restart(self):
+        """The path unit fires only when a request is written: hm-update-waiting asks the updater once after boot
+        so a request written while it was not running is answered (2026-11-28). Installed and enabled for boot by
+        a new install and by an upgrade, never started there (an update may be running)."""
+        tpl = read(os.path.join(ROOT, "deploy", "install-template.sh"))
+        unit = tpl.split('cat > "$FILES/hm-update-waiting.service" <<UNIT')[1].split("\nUNIT\n")[0]
+        self.assertIn("ExecStart=/bin/systemctl start --no-block hm-update.service", unit)
+        self.assertIn("After=network-online.target hm-egress.service hm-update.path", unit)
+        self.assertIn("WantedBy=multi-user.target", unit)
+        self.assertIn("hm-update-waiting.service /etc/systemd/system/", tpl)
+        self.assertEqual(tpl.count("systemctl enable hm-update-recover.service hm-update-waiting.service"), 2)
+        self.assertNotRegex(tpl, r"(enable --now|start|restart)[^\n]*hm-update-waiting")
 
     def test_settings_folder_made_before_use(self):
         """Upgrading an install from before 0.8.0: the folder exists before settings.env goes into it."""

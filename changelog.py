@@ -385,6 +385,11 @@ RELEASES: List[Dict[str, Any]] = [
         "Each person picks their own theme and it follows them to any browser. Everything works the same in both, in light and in dark.",
         "In Modern, on or off settings are switches and status labels read in normal words.",
     ]},
+    {"id": 51, "date": "2026-11-28", "title": "Check for updates answers after a restart", "items": [
+        "After the monitor's machine restarted, Check for updates could stay on Checking for ever. The helper that answers it now always starts again.",
+        "A check asked while that helper was not running is answered once the machine has started again.",
+        "Checking for updates no longer spins for ever: after 5 minutes without an answer the page says so and lets you ask again.",
+    ]},
 ]
 LATEST = max(r["id"] for r in RELEASES)
 
